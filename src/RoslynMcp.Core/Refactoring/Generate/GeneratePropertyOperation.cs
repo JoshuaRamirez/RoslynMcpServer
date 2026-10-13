@@ -734,10 +734,12 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
     /// True when <paramref name="requestedType"/> matches
     /// <paramref name="fieldType"/> via display string / FQN / name / special-type
     /// keyword alias. Delegates to
-    /// <see cref="SpecialTypeAliasHelpers.MatchesRequestedType"/>.
+    /// <see cref="SpecialTypeAliasHelpers.MatchesRequestedType"/> without the
+    /// nint/nuint/void aliases, preserving generate_property's original
+    /// 15-entry alias map (behavior-preserving; no widening).
     /// </summary>
     internal static bool PropertyTypeMatchesField(string requestedType, ITypeSymbol fieldType) =>
-        SpecialTypeAliasHelpers.MatchesRequestedType(requestedType, fieldType);
+        SpecialTypeAliasHelpers.MatchesRequestedType(requestedType, fieldType, includeNativeAndVoidAliases: false);
 
     internal static string DerivePropertyName(string fieldName)
     {

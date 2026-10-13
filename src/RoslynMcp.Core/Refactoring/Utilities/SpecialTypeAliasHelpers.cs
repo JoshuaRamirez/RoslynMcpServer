@@ -52,7 +52,15 @@ internal static class SpecialTypeAliasHelpers
     /// generate_property's <c>PropertyTypeMatchesField</c> and
     /// generate_method_stub's <c>ParameterTypeMatches</c>.
     /// </summary>
-    internal static bool MatchesRequestedType(string requestedType, ITypeSymbol type)
+    /// <param name="includeNativeAndVoidAliases">
+    /// When false, the <c>nint</c>/<c>nuint</c>/<c>void</c> aliases are not
+    /// added as candidates. generate_property passes false to keep its original
+    /// 15-entry alias map (no widening for IntPtr/UIntPtr/Void fields).
+    /// </param>
+    internal static bool MatchesRequestedType(
+        string requestedType,
+        ITypeSymbol type,
+        bool includeNativeAndVoidAliases = true)
     {
         requestedType = requestedType.Trim();
         var candidates = new HashSet<string>(StringComparer.Ordinal)
@@ -63,9 +71,17 @@ internal static class SpecialTypeAliasHelpers
             type.Name
         };
 
-        if (TryGetSpecialTypeAlias(type.SpecialType, out var alias))
+        if (TryGetSpecialTypeAlias(type.SpecialType, out var alias)
+            && (includeNativeAndVoidAliases || !IsNativeOrVoidSpecialType(type.SpecialType)))
             candidates.Add(alias);
 
         return candidates.Contains(requestedType);
     }
+
+    /// <summary>
+    /// True for the special types whose aliases (<c>nint</c>, <c>nuint</c>,
+    /// <c>void</c>) were only in generate_method_stub's former map.
+    /// </summary>
+    internal static bool IsNativeOrVoidSpecialType(SpecialType specialType) =>
+        specialType is SpecialType.System_IntPtr or SpecialType.System_UIntPtr or SpecialType.System_Void;
 }

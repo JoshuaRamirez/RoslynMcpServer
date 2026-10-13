@@ -87,6 +87,50 @@ public class SpecialTypeAliasHelpersTests
         Assert.True(SpecialTypeAliasHelpers.MatchesRequestedType("  string  ", field.Type));
     }
 
+    [Theory]
+    [InlineData("nint", "System.IntPtr")]
+    [InlineData("nuint", "System.UIntPtr")]
+    public void PropertyTypeMatchesField_NativeIntAlias_DoesNotMatchPointerField(string requested, string fieldType)
+    {
+        // Self-contained corlib without RuntimeFeature.NumericIntPtr: the
+        // field's display string is System.IntPtr / System.UIntPtr (not
+        // nint / nuint), so only the alias map could produce a nint/nuint
+        // match. Old generate_property map had no IntPtr/UIntPtr entries.
+        var compilation = CreateCorlibCompilation($$"""
+            namespace System
+            {
+                public class Object { }
+                public abstract class ValueType { }
+                public struct Void { }
+                public struct Boolean { }
+                public struct Int32 { }
+                public struct IntPtr { }
+                public struct UIntPtr { }
+                public class String { }
+                public class Attribute { }
+            }
+            public class C
+            {
+                public {{fieldType}} Field;
+            }
+            """);
+        var type = compilation.GetTypeByMetadataName("C")!;
+        var field = type.GetMembers("Field").OfType<IFieldSymbol>().Single();
+
+        // generate_property keeps its original alias map: no nint/nuint widening.
+        Assert.False(RoslynMcp.Core.Refactoring.Generate.GeneratePropertyOperation.PropertyTypeMatchesField(requested, field.Type));
+        Assert.True(RoslynMcp.Core.Refactoring.Generate.GeneratePropertyOperation.PropertyTypeMatchesField(fieldType, field.Type));
+        // generate_method_stub path keeps the full map.
+        Assert.True(SpecialTypeAliasHelpers.MatchesRequestedType(requested, field.Type));
+    }
+
+    private static Compilation CreateCorlibCompilation(string source) =>
+        CSharpCompilation.Create(
+            "MiniCorlib",
+            new[] { CSharpSyntaxTree.ParseText(source) },
+            Array.Empty<MetadataReference>(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
     private static Compilation CreateCompilation(string source)
     {
         var tree = CSharpSyntaxTree.ParseText(source);
