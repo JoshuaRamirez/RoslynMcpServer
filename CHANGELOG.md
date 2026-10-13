@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- Folded AddBraces / RemoveBraces private `BuildDescription` copies (singular/plural count + `ScopeType` / `ScopeFile` / default description wording) onto new `BraceTypeNameHelpers.BuildDescription(verbPhrase, scope, count, typeName)`; call sites pass "Add braces to" / "Remove braces from". No behavior change. (#2646)
 - Folded ChangeReturnType / ReorderParameters private `ParameterTypesMatch` copies (per-parameter `RefKind` + `TypeEquivalenceHelpers.TypesEquivalent` loop for the overload-collision check) onto new `TypeEquivalenceHelpers.ParameterListsMatch` / `ParameterListsMatchReordered`. No behavior change. (#2632)
 - Folded ImplementAbstract (`IMethodSymbol`) and SyntaxGenerationHelper (`IPropertySymbol`) private `RequiresThrowBody` copies (the CS8156 ref-return throw gate) onto new `ThrowNotImplementedBodyHelpers.RequiresThrowBody` overloads (same predicate); generate_method_stub keeps its string-based check. No behavior change. (#2618)
 - Folded six identical `while (expr is ParenthesizedExpressionSyntax p) expr = p.Expression;` loops (`ConvertTupleToStructOperation` `IsIdentitySelectInvocation` / `IsIdentityConvertAllInvocation` / `IsIdentityLambdaBody` ×2, `ExtractVariableOperation.Unwrap`, `SafeDeleteOperation.IsPureInitializer`) onto new `ParenthesizedExpressionHelpers.SkipParentheses` (same loop body). No behavior change. (#2602)
