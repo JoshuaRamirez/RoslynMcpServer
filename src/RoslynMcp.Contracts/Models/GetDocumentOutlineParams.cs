@@ -45,4 +45,24 @@ public sealed class GetDocumentOutlineParams
     /// Omit, empty, or whitespace for no name filter (return every declaration).
     /// </summary>
     public string? NameFilter { get; init; }
+
+    /// <summary>
+    /// Optional declared accessibility to keep (same values and parsing as <c>search_symbols</c>
+    /// <c>accessibilityFilter</c>): one of the C# spellings <c>public</c>, <c>internal</c>, <c>protected</c>,
+    /// <c>private</c>, <c>protected internal</c>, or <c>private protected</c> (case-insensitive; surrounding
+    /// whitespace trimmed and inner whitespace runs collapsed; <c>internal protected</c> /
+    /// <c>protected private</c> also accepted). When set, an outline entry is kept if its declared symbol's
+    /// <c>ISymbol.DeclaredAccessibility</c> equals it exactly or any descendant matches (non-matching
+    /// ancestors are kept only as containers); subtrees with no match are dropped, exactly like
+    /// <see cref="KindFilter"/>. Semantic, so implicit defaults count (a top-level type with no modifier is
+    /// <c>internal</c>, a class member with no modifier is <c>private</c>, an interface member or enum member
+    /// is <c>public</c>) even though the entry's syntactic <c>Accessibility</c> stays <c>null</c>; the match is
+    /// exact (<c>protected internal</c> is not matched by <c>protected</c> or <c>internal</c>); namespaces never
+    /// match. Combined with <see cref="KindFilter"/> / <see cref="NameFilter"/>, an entry matches only when it
+    /// satisfies all of them. Applied before <see cref="MaxDepth"/> and <see cref="MaxResults"/>, so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the filtered tree; no match returns an empty outline. An
+    /// unrecognized value fails with <c>InvalidVisibility</c>. Omit, empty, or whitespace for no
+    /// accessibility filter (return every declaration).
+    /// </summary>
+    public string? AccessibilityFilter { get; init; }
 }

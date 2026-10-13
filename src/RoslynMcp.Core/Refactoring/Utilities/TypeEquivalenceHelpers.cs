@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 
 namespace RoslynMcp.Core.Refactoring.Utilities;
@@ -7,6 +8,10 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// for signature collision and related checks. Same body as the two
 /// identical copies (distinct from <see cref="SymbolEqualityComparer"/> alone:
 /// matches type parameters by kind/ordinal and recurses into arrays / generics).
+/// <see cref="ParameterListsMatch"/> / <see cref="ParameterListsMatchReordered"/>
+/// carry the per-parameter <see cref="RefKind"/> + <see cref="TypesEquivalent"/>
+/// loop shared by the two <c>ValidateNoOverloadCollision</c> checks on
+/// change_return_type (identity order) and reorder_parameters (reordered).
 /// </summary>
 internal static class TypeEquivalenceHelpers
 {
@@ -55,4 +60,57 @@ internal static class TypeEquivalenceHelpers
 
         return false;
     }
+
+    /// <summary>
+    /// True when <paramref name="left"/> and <paramref name="right"/> have the
+    /// same length and each positional parameter pair shares its
+    /// <see cref="RefKind"/> and has equivalent types via
+    /// <see cref="TypesEquivalent"/>. Used by change_return_type's overload
+    /// collision check (same body as its former private ParameterTypesMatch).
+    /// </summary>
+    internal static bool ParameterListsMatch(
+        ImmutableArray<IParameterSymbol> left,
+        ImmutableArray<IParameterSymbol> right)
+    {
+        if (left.Length != right.Length)
+            return false;
+
+        for (var i = 0; i < left.Length; i++)
+        {
+            if (!ParametersMatch(left[i], right[i]))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="source"/> reordered by
+    /// <paramref name="newOrder"/> (position <c>i</c> takes
+    /// <c>source[newOrder[i]]</c>) matches <paramref name="target"/>
+    /// position-by-position on <see cref="RefKind"/> and
+    /// <see cref="TypesEquivalent"/>. Used by reorder_parameters' overload
+    /// collision check (same body as its former private ParameterTypesMatch).
+    /// Callers validate <paramref name="newOrder"/> as a permutation of
+    /// <paramref name="source"/>'s indices.
+    /// </summary>
+    internal static bool ParameterListsMatchReordered(
+        ImmutableArray<IParameterSymbol> source,
+        int[] newOrder,
+        ImmutableArray<IParameterSymbol> target)
+    {
+        if (newOrder.Length != target.Length)
+            return false;
+
+        for (var i = 0; i < newOrder.Length; i++)
+        {
+            if (!ParametersMatch(source[newOrder[i]], target[i]))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool ParametersMatch(IParameterSymbol left, IParameterSymbol right) =>
+        left.RefKind == right.RefKind && TypesEquivalent(left.Type, right.Type);
 }

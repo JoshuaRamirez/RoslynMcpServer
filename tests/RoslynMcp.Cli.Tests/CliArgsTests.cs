@@ -179,4 +179,13 @@ public class CliArgsTests
         Assert.Equal("Widget", result.Options["query"]);
         Assert.Equal("private protected", result.Options["accessibility-filter"]);
     }
+
+    [Fact]
+    public void GetDocumentOutline_AccessibilityFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-document-outline", "--source-file", "/src/Widget.cs", "--accessibility-filter", "protected internal"]);
+        Assert.Equal("get-document-outline", result.ToolName);
+        Assert.Equal("/src/Widget.cs", result.Options["source-file"]);
+        Assert.Equal("protected internal", result.Options["accessibility-filter"]);
+    }
 }

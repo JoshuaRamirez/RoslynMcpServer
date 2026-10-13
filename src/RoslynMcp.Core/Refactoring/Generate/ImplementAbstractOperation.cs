@@ -792,7 +792,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         bool throwNotImplemented = true)
     {
         var parameters = method.Parameters.Select(CreateParameter);
-        var body = RequiresThrowBody(method, throwNotImplemented)
+        var body = ThrowNotImplementedBodyHelpers.RequiresThrowBody(method, throwNotImplemented)
             ? ThrowNotImplementedBodyHelpers.CreateThrowNotImplementedBody()
             : SyntaxGenerationHelper.CreateDefaultReturnBody(method.ReturnType);
         var methodDecl = SyntaxFactory.MethodDeclaration(
@@ -916,7 +916,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     {
         BlockSyntax body;
         if (kind == SyntaxKind.GetAccessorDeclaration
-            ? RequiresThrowBody(accessor, throwNotImplemented)
+            ? ThrowNotImplementedBodyHelpers.RequiresThrowBody(accessor, throwNotImplemented)
             : throwNotImplemented)
         {
             body = ThrowNotImplementedBodyHelpers.CreateThrowNotImplementedBody();
@@ -941,9 +941,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
         return declaration;
     }
-
-    private static bool RequiresThrowBody(IMethodSymbol method, bool throwNotImplemented)
-        => throwNotImplemented || method.ReturnsByRef || method.ReturnsByRefReadonly;
 
     private static SyntaxTokenList CreateAccessorModifiers(
         Accessibility accessorAccessibility,

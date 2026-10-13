@@ -13,7 +13,8 @@ namespace RoslynMcp.Core.Query;
 
 /// <summary>
 /// Gets a structured outline of all declarations in a document.
-/// Pure syntax traversal — no semantic model needed.
+/// Pure syntax traversal; the semantic model is requested only when
+/// <see cref="GetDocumentOutlineParams.AccessibilityFilter"/> is set, to resolve declared accessibility.
 /// </summary>
 public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocumentOutlineParams, GetDocumentOutlineResult>
 {
@@ -41,6 +42,9 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
 
         // Same parsing and InvalidSymbolKind error as search_symbols kindFilter.
         SymbolKindFilterParser.Parse(@params.KindFilter);
+
+        // Same parsing and InvalidVisibility error as search_symbols accessibilityFilter.
+        AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
     }
 
     /// <inheritdoc />
@@ -58,17 +62,24 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         var entries = new List<OutlineEntry>();
         var totalCount = 0;
 
+        // When accessibilityFilter is set, remember each entry's declaration node so its declared
+        // accessibility can be resolved semantically (implicit defaults and other partial parts count).
+        var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+        var declarations = accessibilityFilter.HasValue
+            ? new Dictionary<OutlineEntry, SyntaxNode>(ReferenceEqualityComparer.Instance)
+            : null;
+
         // Process top-level namespace declarations
         foreach (var ns in root.DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>())
         {
-            var nsEntry = BuildNamespaceEntry(ns, ref totalCount);
+            var nsEntry = BuildNamespaceEntry(ns, ref totalCount, declarations);
             entries.Add(nsEntry);
         }
 
         // Process top-level type declarations (not inside namespaces — for top-level types)
         foreach (var type in root.ChildNodes().OfType<TypeDeclarationSyntax>())
         {
-            var typeEntry = BuildTypeEntry(type, ref totalCount);
+            var typeEntry = BuildTypeEntry(type, ref totalCount, declarations);
             entries.Add(typeEntry);
         }
 
@@ -76,23 +87,34 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         foreach (var enumDecl in root.ChildNodes().OfType<EnumDeclarationSyntax>())
         {
             totalCount++;
-            entries.Add(BuildEnumEntry(enumDecl, ref totalCount));
+            entries.Add(BuildEnumEntry(enumDecl, ref totalCount, declarations));
         }
 
         // Process top-level delegate declarations
         foreach (var del in root.ChildNodes().OfType<DelegateDeclarationSyntax>())
         {
             totalCount++;
-            entries.Add(CreateEntry(del.Identifier.Text, "Delegate",
-                del.GetLocation(), GetAccessibility(del.Modifiers), del.ReturnType.ToString()));
+            entries.Add(Track(CreateEntry(del.Identifier.Text, "Delegate",
+                del.GetLocation(), GetAccessibility(del.Modifiers), del.ReturnType.ToString()), del, declarations));
         }
 
         IReadOnlyList<OutlineEntry> returned = entries;
         var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
         var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
-        if (kindFilter.HasValue || nameFilter != null)
+        Func<OutlineEntry, bool>? accessibilityMatches = null;
+        if (accessibilityFilter.HasValue)
         {
-            returned = FilterOutlineForest(entries, entry => OutlineEntryMatches(entry, kindFilter, nameFilter));
+            var semanticModel = await document.GetSemanticModelAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not get semantic model.");
+            accessibilityMatches = entry => OutlineAccessibilityMatches(
+                entry, accessibilityFilter.Value, declarations!, semanticModel, cancellationToken);
+        }
+
+        if (kindFilter.HasValue || nameFilter != null || accessibilityMatches != null)
+        {
+            returned = FilterOutlineForest(entries, entry =>
+                OutlineEntryMatches(entry, kindFilter, nameFilter) &&
+                (accessibilityMatches == null || accessibilityMatches(entry)));
             totalCount = CountNodes(returned);
         }
 
@@ -176,6 +198,36 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
             return false;
 
         return nameFilter == null || entry.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Whether an outline entry's declared symbol has exactly <paramref name="accessibility"/> as its
+    /// <see cref="ISymbol.DeclaredAccessibility"/> (the same exact, semantic match as <c>search_symbols</c>
+    /// <c>accessibilityFilter</c>, so implicit defaults count). Namespaces and entries without a tracked
+    /// declaration or a declared symbol never match.
+    /// </summary>
+    private static bool OutlineAccessibilityMatches(
+        OutlineEntry entry,
+        Accessibility accessibility,
+        IReadOnlyDictionary<OutlineEntry, SyntaxNode> declarations,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (!declarations.TryGetValue(entry, out var node))
+            return false;
+
+        var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+        return symbol is not null and not INamespaceSymbol && symbol.DeclaredAccessibility == accessibility;
+    }
+
+    /// <summary>
+    /// Records <paramref name="node"/> as the declaration of <paramref name="entry"/> when
+    /// <paramref name="declarations"/> is tracked (accessibilityFilter set) and returns the entry.
+    /// </summary>
+    private static OutlineEntry Track(OutlineEntry entry, SyntaxNode node, Dictionary<OutlineEntry, SyntaxNode>? declarations)
+    {
+        declarations?.Add(entry, node);
+        return entry;
     }
 
     /// <summary>
@@ -308,27 +360,28 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         return count;
     }
 
-    private static OutlineEntry BuildNamespaceEntry(BaseNamespaceDeclarationSyntax ns, ref int totalCount)
+    private static OutlineEntry BuildNamespaceEntry(
+        BaseNamespaceDeclarationSyntax ns, ref int totalCount, Dictionary<OutlineEntry, SyntaxNode>? declarations)
     {
         totalCount++;
         var children = new List<OutlineEntry>();
 
         foreach (var type in ns.Members.OfType<TypeDeclarationSyntax>())
         {
-            children.Add(BuildTypeEntry(type, ref totalCount));
+            children.Add(BuildTypeEntry(type, ref totalCount, declarations));
         }
 
         foreach (var enumDecl in ns.Members.OfType<EnumDeclarationSyntax>())
         {
             totalCount++;
-            children.Add(BuildEnumEntry(enumDecl, ref totalCount));
+            children.Add(BuildEnumEntry(enumDecl, ref totalCount, declarations));
         }
 
         foreach (var del in ns.Members.OfType<DelegateDeclarationSyntax>())
         {
             totalCount++;
-            children.Add(CreateEntry(del.Identifier.Text, "Delegate",
-                del.GetLocation(), GetAccessibility(del.Modifiers), del.ReturnType.ToString()));
+            children.Add(Track(CreateEntry(del.Identifier.Text, "Delegate",
+                del.GetLocation(), GetAccessibility(del.Modifiers), del.ReturnType.ToString()), del, declarations));
         }
 
         var lineSpan = ns.GetLocation().GetLineSpan();
@@ -342,7 +395,8 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         };
     }
 
-    private static OutlineEntry BuildTypeEntry(TypeDeclarationSyntax type, ref int totalCount)
+    private static OutlineEntry BuildTypeEntry(
+        TypeDeclarationSyntax type, ref int totalCount, Dictionary<OutlineEntry, SyntaxNode>? declarations)
     {
         totalCount++;
         var children = new List<OutlineEntry>();
@@ -358,31 +412,31 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         // Nested types
         foreach (var nested in type.Members.OfType<TypeDeclarationSyntax>())
         {
-            children.Add(BuildTypeEntry(nested, ref totalCount));
+            children.Add(BuildTypeEntry(nested, ref totalCount, declarations));
         }
 
         // Constructors
         foreach (var ctor in type.Members.OfType<ConstructorDeclarationSyntax>())
         {
             totalCount++;
-            children.Add(CreateEntry(ctor.Identifier.Text, "Constructor",
-                ctor.GetLocation(), GetAccessibility(ctor.Modifiers)));
+            children.Add(Track(CreateEntry(ctor.Identifier.Text, "Constructor",
+                ctor.GetLocation(), GetAccessibility(ctor.Modifiers)), ctor, declarations));
         }
 
         // Methods
         foreach (var method in type.Members.OfType<MethodDeclarationSyntax>())
         {
             totalCount++;
-            children.Add(CreateEntry(method.Identifier.Text, "Method",
-                method.GetLocation(), GetAccessibility(method.Modifiers), method.ReturnType.ToString()));
+            children.Add(Track(CreateEntry(method.Identifier.Text, "Method",
+                method.GetLocation(), GetAccessibility(method.Modifiers), method.ReturnType.ToString()), method, declarations));
         }
 
         // Properties
         foreach (var prop in type.Members.OfType<PropertyDeclarationSyntax>())
         {
             totalCount++;
-            children.Add(CreateEntry(prop.Identifier.Text, "Property",
-                prop.GetLocation(), GetAccessibility(prop.Modifiers), prop.Type.ToString()));
+            children.Add(Track(CreateEntry(prop.Identifier.Text, "Property",
+                prop.GetLocation(), GetAccessibility(prop.Modifiers), prop.Type.ToString()), prop, declarations));
         }
 
         // Fields
@@ -392,8 +446,8 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
             {
                 totalCount++;
                 var fieldKind = field.Modifiers.Any(SyntaxKind.ConstKeyword) ? "Constant" : "Field";
-                children.Add(CreateEntry(variable.Identifier.Text, fieldKind,
-                    variable.GetLocation(), GetAccessibility(field.Modifiers), field.Declaration.Type.ToString()));
+                children.Add(Track(CreateEntry(variable.Identifier.Text, fieldKind,
+                    variable.GetLocation(), GetAccessibility(field.Modifiers), field.Declaration.Type.ToString()), variable, declarations));
             }
         }
 
@@ -401,8 +455,8 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         foreach (var evt in type.Members.OfType<EventDeclarationSyntax>())
         {
             totalCount++;
-            children.Add(CreateEntry(evt.Identifier.Text, "Event",
-                evt.GetLocation(), GetAccessibility(evt.Modifiers), evt.Type.ToString()));
+            children.Add(Track(CreateEntry(evt.Identifier.Text, "Event",
+                evt.GetLocation(), GetAccessibility(evt.Modifiers), evt.Type.ToString()), evt, declarations));
         }
 
         foreach (var evtField in type.Members.OfType<EventFieldDeclarationSyntax>())
@@ -410,8 +464,8 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
             foreach (var variable in evtField.Declaration.Variables)
             {
                 totalCount++;
-                children.Add(CreateEntry(variable.Identifier.Text, "Event",
-                    variable.GetLocation(), GetAccessibility(evtField.Modifiers), evtField.Declaration.Type.ToString()));
+                children.Add(Track(CreateEntry(variable.Identifier.Text, "Event",
+                    variable.GetLocation(), GetAccessibility(evtField.Modifiers), evtField.Declaration.Type.ToString()), variable, declarations));
             }
         }
 
@@ -419,11 +473,11 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         foreach (var enumDecl in type.Members.OfType<EnumDeclarationSyntax>())
         {
             totalCount++;
-            children.Add(BuildEnumEntry(enumDecl, ref totalCount));
+            children.Add(BuildEnumEntry(enumDecl, ref totalCount, declarations));
         }
 
         var lineSpan = type.GetLocation().GetLineSpan();
-        return new OutlineEntry
+        return Track(new OutlineEntry
         {
             Name = type.Identifier.Text,
             Kind = kind,
@@ -431,20 +485,21 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
             Column = lineSpan.StartLinePosition.Character + 1,
             Accessibility = GetAccessibility(type.Modifiers),
             Children = children.Count > 0 ? children : null
-        };
+        }, type, declarations);
     }
 
-    private static OutlineEntry BuildEnumEntry(EnumDeclarationSyntax enumDecl, ref int totalCount)
+    private static OutlineEntry BuildEnumEntry(
+        EnumDeclarationSyntax enumDecl, ref int totalCount, Dictionary<OutlineEntry, SyntaxNode>? declarations)
     {
         var children = new List<OutlineEntry>();
         foreach (var member in enumDecl.Members)
         {
             totalCount++;
-            children.Add(CreateEntry(member.Identifier.Text, "EnumMember", member.GetLocation()));
+            children.Add(Track(CreateEntry(member.Identifier.Text, "EnumMember", member.GetLocation()), member, declarations));
         }
 
         var lineSpan = enumDecl.GetLocation().GetLineSpan();
-        return new OutlineEntry
+        return Track(new OutlineEntry
         {
             Name = enumDecl.Identifier.Text,
             Kind = "Enum",
@@ -452,7 +507,7 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
             Column = lineSpan.StartLinePosition.Character + 1,
             Accessibility = GetAccessibility(enumDecl.Modifiers),
             Children = children.Count > 0 ? children : null
-        };
+        }, enumDecl, declarations);
     }
 
     private static OutlineEntry CreateEntry(string name, string kind, Location location,

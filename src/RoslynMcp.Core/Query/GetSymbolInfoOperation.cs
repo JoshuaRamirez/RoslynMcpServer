@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Query.Base;
+using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
@@ -41,6 +42,9 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
 
         if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+
+        // Same parsing and InvalidSymbolKind error as search_symbols / get_document_outline kindFilter.
+        SymbolKindFilterParser.Parse(@params.KindFilter);
     }
 
     /// <inheritdoc />
@@ -53,15 +57,16 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
         var symbol = resolved.Symbol;
-        var info = BuildDetailedInfo(symbol, @params.MaxResults);
+        var info = BuildDetailedInfo(symbol, @params.MaxResults, @params.KindFilter);
 
         return QueryResult<DetailedSymbolInfo>.Succeeded(operationId, info);
     }
 
-    private static DetailedSymbolInfo BuildDetailedInfo(ISymbol symbol, int? maxResults)
+    private static DetailedSymbolInfo BuildDetailedInfo(ISymbol symbol, int? maxResults, string? kindFilter)
     {
         var modifiers = GetModifiers(symbol);
         var location = GetLocation(symbol);
+        var kindFilterValue = SymbolKindFilterParser.Parse(kindFilter);
 
         // Gather type-specific fields
         string? baseType = null;
@@ -78,13 +83,20 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                 ? null
                 : namedType.BaseType?.ToDisplayString();
             interfaces = namedType.Interfaces.Select(i => i.ToDisplayString()).ToList();
-            var allMembers = namedType.GetMembers()
-                .Where(m => !m.IsImplicitlyDeclared && m.CanBeReferencedByName)
+            IEnumerable<ISymbol> memberSymbols = namedType.GetMembers()
+                .Where(m => !m.IsImplicitlyDeclared && m.CanBeReferencedByName);
+            if (kindFilterValue.HasValue)
+            {
+                memberSymbols = memberSymbols
+                    .Where(m => SymbolKindMapper.Map(m) == kindFilterValue.Value);
+            }
+
+            var allMembers = memberSymbols
                 .Select(m => m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
                 .ToList();
 
-            // maxResults caps only Members (first N in today's enumeration order);
-            // TotalCount stays the full member count.
+            // kindFilter applies first; maxResults caps only Members (first N in today's
+            // enumeration order); TotalCount stays the kind-filtered member count.
             totalCount = allMembers.Count;
             if (maxResults.HasValue && allMembers.Count > maxResults.Value)
             {

@@ -2194,6 +2194,29 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GetSymbolInfo_ShowsKindFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-symbol-info")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("get-symbol-info", help);
+        Assert.Contains("kindFilter (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.DoesNotContain("--kind-filter", requiredSection);
+        Assert.Contains("--kind-filter", optionalSection);
+        Assert.Contains("--max-results", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GoToDefinition_ShowsDefinitionFile()
     {
         var registry = ToolRegistry.BuildDefault();
@@ -2366,5 +2389,27 @@ public class HelpGeneratorTests
         Assert.DoesNotContain("--accessibility-filter", requiredSection);
         Assert.Contains("--accessibility-filter", optionalSection);
         Assert.Contains("--namespace-filter", optionalSection);
+    }
+
+    [Fact]
+    public void GenerateToolHelp_GetDocumentOutline_ShowsAccessibilityFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-document-outline")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("accessibilityFilter", tool.Description, StringComparison.Ordinal);
+        Assert.Contains("declared accessibility", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.DoesNotContain("--accessibility-filter", requiredSection);
+        Assert.Contains("--accessibility-filter", optionalSection);
+        Assert.Contains("--name-filter", optionalSection);
     }
 }
