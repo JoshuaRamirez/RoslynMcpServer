@@ -97,6 +97,114 @@ public class TypeEquivalenceHelpersTests
         Assert.True(TypeEquivalenceHelpers.TypesEquivalent(a.Parameters[0].Type, b.Parameters[0].Type));
     }
 
+    [Fact]
+    public void ParameterListsMatch_SameRefKindsAndTypes_ReturnsTrue()
+    {
+        var (m, n) = GetMethods("""
+            public class C
+            {
+                public void M<T>(ref int a, T[] b) { }
+                public void N<T>(ref int a, T[] b) { }
+            }
+            """, "M", "N");
+
+        Assert.True(TypeEquivalenceHelpers.ParameterListsMatch(m.Parameters, n.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatch_RefKindMismatch_ReturnsFalse()
+    {
+        var (m, n) = GetMethods("""
+            public class C
+            {
+                public void M(ref int a) { }
+                public void N(out int a) { a = 0; }
+            }
+            """, "M", "N");
+
+        Assert.False(TypeEquivalenceHelpers.ParameterListsMatch(m.Parameters, n.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatch_TypeMismatch_ReturnsFalse()
+    {
+        var (m, n) = GetMethods("""
+            public class C
+            {
+                public void M(int a, string b) { }
+                public void N(int a, object b) { }
+            }
+            """, "M", "N");
+
+        Assert.False(TypeEquivalenceHelpers.ParameterListsMatch(m.Parameters, n.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatch_LengthMismatch_ReturnsFalse()
+    {
+        var (m, n) = GetMethods("""
+            public class C
+            {
+                public void M(int a) { }
+                public void N(int a, int b) { }
+            }
+            """, "M", "N");
+
+        Assert.False(TypeEquivalenceHelpers.ParameterListsMatch(m.Parameters, n.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatchReordered_ReorderedMatchesTarget_ReturnsTrue()
+    {
+        var (m, n) = GetMethods("""
+            public class C
+            {
+                public void M(int a, ref string b) { }
+                public void N(ref string b, int a) { }
+            }
+            """, "M", "N");
+
+        Assert.False(TypeEquivalenceHelpers.ParameterListsMatch(m.Parameters, n.Parameters));
+        Assert.True(TypeEquivalenceHelpers.ParameterListsMatchReordered(m.Parameters, [1, 0], n.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatchReordered_IdentityOrderAgainstSwappedTarget_ReturnsFalse()
+    {
+        var (m, n) = GetMethods("""
+            public class C
+            {
+                public void M(int a, string b) { }
+                public void N(string b, int a) { }
+            }
+            """, "M", "N");
+
+        Assert.False(TypeEquivalenceHelpers.ParameterListsMatchReordered(m.Parameters, [0, 1], n.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatchReordered_RefKindMismatchAfterReorder_ReturnsFalse()
+    {
+        var (m, n) = GetMethods("""
+            public class C
+            {
+                public void M(int a, ref string b) { }
+                public void N(string b, int a) { }
+            }
+            """, "M", "N");
+
+        Assert.False(TypeEquivalenceHelpers.ParameterListsMatchReordered(m.Parameters, [1, 0], n.Parameters));
+    }
+
+    private static (IMethodSymbol Left, IMethodSymbol Right) GetMethods(string source, string left, string right)
+    {
+        var compilation = CreateCompilation(source);
+        var type = compilation.GetTypeByMetadataName("C")!;
+        return (
+            type.GetMembers(left).OfType<IMethodSymbol>().Single(),
+            type.GetMembers(right).OfType<IMethodSymbol>().Single());
+    }
+
     private static CSharpCompilation CreateCompilation(string source)
     {
         var tree = CSharpSyntaxTree.ParseText(source);

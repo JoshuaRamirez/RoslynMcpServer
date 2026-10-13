@@ -640,28 +640,13 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                 continue;
             if (candidate.TypeParameters.Length != method.TypeParameters.Length)
                 continue;
-            if (!ParameterTypesMatch(method, newOrder, candidate))
+            if (!TypeEquivalenceHelpers.ParameterListsMatchReordered(method.Parameters, newOrder, candidate.Parameters))
                 continue;
 
             throw new RefactoringException(
                 ErrorCodes.SignatureMatchesOverload,
                 $"Reordering parameters of '{method.Name}' would match an existing overload.");
         }
-    }
-
-    private static bool ParameterTypesMatch(IMethodSymbol method, int[] newOrder, IMethodSymbol other)
-    {
-        for (var i = 0; i < newOrder.Length; i++)
-        {
-            var reordered = method.Parameters[newOrder[i]];
-            var existing = other.Parameters[i];
-            if (reordered.RefKind != existing.RefKind)
-                return false;
-            if (!TypeEquivalenceHelpers.TypesEquivalent(reordered.Type, existing.Type))
-                return false;
-        }
-
-        return true;
     }
 
 
