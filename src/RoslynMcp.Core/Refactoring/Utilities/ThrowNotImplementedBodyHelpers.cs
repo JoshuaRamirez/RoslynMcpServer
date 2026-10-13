@@ -6,8 +6,11 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
 /// Shared <c>throw new global::System.NotImplementedException();</c> block
-/// and CS8156 ref-return throw gate used by implement_abstract and
-/// generate_method_stub / SyntaxGenerationHelper placeholder bodies.
+/// (implement_abstract / generate_method_stub / SyntaxGenerationHelper) and
+/// the CS8156 ref-return throw gate used by implement_abstract and
+/// <see cref="SyntaxGenerationHelper"/> property getters. Distinct from
+/// generate_method_stub's string-based <c>RequiresThrowBody</c>, which stays
+/// local to that operation.
 /// </summary>
 internal static class ThrowNotImplementedBodyHelpers
 {
