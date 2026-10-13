@@ -52,6 +52,8 @@ internal static class SpecialTypeAliasHelpers
     /// generate_property's <c>PropertyTypeMatchesField</c> and
     /// generate_method_stub's <c>ParameterTypeMatches</c>.
     /// </summary>
+    /// <param name="requestedType">The caller-supplied type text to match.</param>
+    /// <param name="type">The symbol's type to compare against.</param>
     /// <param name="includeNativeAndVoidAliases">
     /// When false, the <c>nint</c>/<c>nuint</c>/<c>void</c> aliases are not
     /// added as candidates. generate_property passes false to keep its original
