@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-## [0.10.0] - 2026-10-08
+## [0.10.0] - 2026-10-13
 
 ### Added
 
@@ -23,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- Folded ChangeReturnType / ReorderParameters private `ParameterTypesMatch` copies (per-parameter `RefKind` + `TypeEquivalenceHelpers.TypesEquivalent` loop for the overload-collision check) onto new `TypeEquivalenceHelpers.ParameterListsMatch` / `ParameterListsMatchReordered`. No behavior change. (#2632)
+- Folded ImplementAbstract (`IMethodSymbol`) and SyntaxGenerationHelper (`IPropertySymbol`) private `RequiresThrowBody` copies (the CS8156 ref-return throw gate) onto new `ThrowNotImplementedBodyHelpers.RequiresThrowBody` overloads (same predicate); generate_method_stub keeps its string-based check. No behavior change. (#2618)
 - Folded six identical `while (expr is ParenthesizedExpressionSyntax p) expr = p.Expression;` loops (`ConvertTupleToStructOperation` `IsIdentitySelectInvocation` / `IsIdentityConvertAllInvocation` / `IsIdentityLambdaBody` ×2, `ExtractVariableOperation.Unwrap`, `SafeDeleteOperation.IsPureInitializer`) onto new `ParenthesizedExpressionHelpers.SkipParentheses` (same loop body). No behavior change. (#2602)
 - Folded UseBaseType / PushMembersDown private `ImplementsInterfaceMember` loops and RenameSymbol's implicit-implementation discovery loop (`AllInterfaces` → same-name members → `FindImplementationForInterfaceMember` identity check) onto new `MethodInterfaceHelpers.ImplicitlyImplementedInterfaceMembers` / `ImplicitlyImplementsInterfaceMember` (same lazy interface-then-member order). No behavior change. (#2592)
 - Folded ImplementInterface / ImplementAbstract / GenerateOverrides private `AddUnique` copies and ImplementInterface's `AddUniqueByIdentity` onto new `MemberSignatureMatchHelpers.AddUnique(members, member, matches)`; each caller passes its own predicate (its `SignaturesMatch`, or `SymbolEqualityComparer.Default` identity for explicit implementations). No behavior change. (#2583)
