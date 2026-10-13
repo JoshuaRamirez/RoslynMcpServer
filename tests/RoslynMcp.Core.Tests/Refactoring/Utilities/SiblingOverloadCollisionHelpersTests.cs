@@ -383,12 +383,14 @@ public class SiblingOverloadCollisionHelpersTests
     [Fact]
     public void EnumerateSameShapeSiblings_IgnoresNonMethodsAndOtherNames()
     {
+        // Same-name nested type M is retained despite CS0102 so GetMembers("M")
+        // returns it before OfType<IMethodSymbol>() filters non-methods.
         var compilation = CreateCompilation("""
             public class C
             {
                 public void M(int a) { }
+                public class M { }
                 public void N(string a) { }
-                public class Nested { }
             }
 
             public class D
@@ -396,8 +398,10 @@ public class SiblingOverloadCollisionHelpersTests
                 public void M(string a) { }
             }
             """);
-        var method = compilation.GetTypeByMetadataName("C")!
-            .GetMembers("M").OfType<IMethodSymbol>().Single();
+        var type = compilation.GetTypeByMetadataName("C")!;
+        var sameNameMembers = type.GetMembers("M").ToList();
+        Assert.Contains(sameNameMembers, m => m is INamedTypeSymbol);
+        var method = sameNameMembers.OfType<IMethodSymbol>().Single();
 
         Assert.Empty(SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(method, 1));
     }
