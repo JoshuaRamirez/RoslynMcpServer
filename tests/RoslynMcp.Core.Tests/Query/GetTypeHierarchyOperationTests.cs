@@ -1287,6 +1287,354 @@ public class GetTypeHierarchyOperationTests
 
     #endregion
 
+    #region namespaceFilter
+
+    // App.Core.Shape (Root, IMarker) is derived from in App.Services (S1), App.Services.Orders (S2, S3 : S1,
+    // Outer.Nested), the sibling-prefix namespace App.ServicesExtra (X1), and the global namespace (G1).
+    // Transitive descendants: S1, S2, S3, Nested, X1, G1; direct: all but S3.
+    private static readonly Dictionary<string, string> NamespaceSources = new()
+    {
+        ["Shape.cs"] = """
+            namespace App.Core
+            {
+                public class Shape : Root, IMarker { }
+                public class Root { }
+                public interface IMarker { }
+            }
+            """,
+        ["Services.cs"] = """
+            namespace App.Services
+            {
+                public class S1 : App.Core.Shape { }
+            }
+
+            namespace App.Services.Orders
+            {
+                public class S2 : App.Core.Shape { }
+                public class S3 : App.Services.S1 { }
+                public class Outer
+                {
+                    public class Nested : App.Core.Shape { }
+                }
+            }
+            """,
+        ["Extra.cs"] = """
+            namespace App.ServicesExtra
+            {
+                public class X1 : App.Core.Shape { }
+            }
+            """,
+        ["Global.cs"] = """
+            public class G1 : App.Core.Shape { }
+            """
+    };
+
+    private static readonly string[] AllNamespaceDescendants = { "G1", "Nested", "S1", "S2", "S3", "X1" };
+
+    private static GetTypeHierarchyParams ShapeParams(TempWorkspace workspace, string? namespaceFilter) => new()
+    {
+        SourceFile = workspace.SourcePath,
+        SymbolName = "Shape",
+        Direction = "Descendants",
+        NamespaceFilter = namespaceFilter
+    };
+
+    [Fact]
+    public void NamespaceFilter_DefaultsToNull()
+    {
+        var @params = new GetTypeHierarchyParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.NamespaceFilter);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilterOmittedBlankOrBareGlobal_ReturnsEveryNamespace()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        foreach (var filter in new[] { null, "", "   ", "global::", " global:: " })
+        {
+            var result = await operation.ExecuteAsync(ShapeParams(workspace, filter));
+
+            Assert.True(result.Success);
+            Assert.Equal(AllNamespaceDescendants, SortedNames(result.Data!.DerivedTypes));
+            Assert.Equal(6, result.Data.TotalCount);
+            Assert.False(result.Data.Truncated);
+        }
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilter_KeepsEqualAndNestedNamespacesOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // App.Services matches App.Services and App.Services.Orders, never the sibling-prefix
+        // App.ServicesExtra nor the global namespace.
+        var services = await operation.ExecuteAsync(ShapeParams(workspace, "App.Services"));
+
+        Assert.True(services.Success);
+        Assert.Equal(new[] { "Nested", "S1", "S2", "S3" }, SortedNames(services.Data!.DerivedTypes));
+        Assert.Equal(4, services.Data.TotalCount);
+        Assert.False(services.Data.Truncated);
+
+        var orders = await operation.ExecuteAsync(ShapeParams(workspace, "App.Services.Orders"));
+
+        Assert.True(orders.Success);
+        Assert.Equal(new[] { "Nested", "S2", "S3" }, SortedNames(orders.Data!.DerivedTypes));
+        Assert.Equal(3, orders.Data.TotalCount);
+
+        var extra = await operation.ExecuteAsync(ShapeParams(workspace, "App.ServicesExtra"));
+
+        Assert.True(extra.Success);
+        Assert.Equal(new[] { "X1" }, SortedNames(extra.Data!.DerivedTypes));
+
+        var app = await operation.ExecuteAsync(ShapeParams(workspace, "App"));
+
+        Assert.True(app.Success);
+        Assert.Equal(new[] { "Nested", "S1", "S2", "S3", "X1" }, SortedNames(app.Data!.DerivedTypes));
+        Assert.Equal(5, app.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilter_LineColumnResolution_KeepsMatchingNamespace()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 3,
+            Column = 18,
+            Direction = "Descendants",
+            NamespaceFilter = "App.Services.Orders"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("Shape", result.Data!.TypeName);
+        Assert.Equal(new[] { "Nested", "S2", "S3" }, SortedNames(result.Data.DerivedTypes));
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilterWithGlobalPrefixAndWhitespace_IsNormalized()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var plain = await operation.ExecuteAsync(ShapeParams(workspace, "App.Services"));
+        var prefixed = await operation.ExecuteAsync(ShapeParams(workspace, "  global::App.Services  "));
+
+        Assert.True(prefixed.Success);
+        Assert.Equal(SortedSites(plain.Data!.DerivedTypes), SortedSites(prefixed.Data!.DerivedTypes));
+        Assert.Equal(plain.Data.TotalCount, prefixed.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilterIsCaseSensitiveOrUnknown_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        foreach (var filter in new[] { "app.services", "App.Missing", "App.Serv" })
+        {
+            var result = await operation.ExecuteAsync(ShapeParams(workspace, filter));
+
+            Assert.True(result.Success);
+            Assert.Empty(result.Data!.DerivedTypes);
+            Assert.Equal(0, result.Data.TotalCount);
+            Assert.False(result.Data.Truncated);
+        }
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilter_DoesNotFilterBaseTypesOrInterfaces()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Root and IMarker live in App.Core, outside the filter, yet stay in BaseTypes / Interfaces.
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            NamespaceFilter = "App.ServicesExtra"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "X1" }, SortedNames(result.Data!.DerivedTypes));
+        Assert.Contains(result.Data.BaseTypes, b => b.TypeName == "Root");
+        Assert.Contains(result.Data.Interfaces, i => i.TypeName == "IMarker");
+
+        var ancestors = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Ancestors",
+            NamespaceFilter = "App.Missing"
+        });
+
+        Assert.True(ancestors.Success);
+        Assert.Empty(ancestors.Data!.DerivedTypes);
+        Assert.Contains(ancestors.Data.BaseTypes, b => b.TypeName == "Root");
+        Assert.Contains(ancestors.Data.Interfaces, i => i.TypeName == "IMarker");
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilterWithMaxResults_CapsFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            NamespaceFilter = "App.Services",
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.DerivedTypes.Count);
+        Assert.All(capped.Data.DerivedTypes, d => Assert.Contains(d.TypeName, new[] { "Nested", "S1", "S2", "S3" }));
+        Assert.Equal(4, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var exact = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            NamespaceFilter = "App.Services",
+            MaxResults = 4
+        });
+
+        Assert.True(exact.Success);
+        Assert.Equal(4, exact.Data!.DerivedTypes.Count);
+        Assert.Equal(4, exact.Data.TotalCount);
+        Assert.False(exact.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilterWithTransitiveFalse_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // S3 derives through S1, so the direct App.Services set drops it.
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            Transitive = false,
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Nested", "S1", "S2" }, SortedNames(result.Data!.DerivedTypes));
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilterWithDerivedFile_AndsTheScopes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var orders = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            DerivedFile = workspace.PathOf("Services.cs"),
+            NamespaceFilter = "App.Services.Orders"
+        });
+
+        Assert.True(orders.Success);
+        Assert.Equal(new[] { "Nested", "S2", "S3" }, SortedNames(orders.Data!.DerivedTypes));
+        Assert.All(orders.Data.DerivedTypes, d => Assert.True(SamePath(d.File, workspace.PathOf("Services.cs"))));
+        Assert.Equal(3, orders.Data.TotalCount);
+
+        // Extra.cs declares only App.ServicesExtra types, so the App.Services scope finds none there.
+        var none = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            DerivedFile = workspace.PathOf("Extra.cs"),
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(none.Success);
+        Assert.Empty(none.Data!.DerivedTypes);
+        Assert.Equal(0, none.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilterWithProjectPath_AndsTheScopes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            ProjectPath = workspace.ProjectPath,
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Nested", "S1", "S2", "S3" }, SortedNames(result.Data!.DerivedTypes));
+        Assert.Equal(4, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NamespaceFilterWithProjectPath_TwoProjects_AndsTheScopes()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // TwoProjectWorkspace declares every type in the global namespace, so a named filter keeps
+        // nothing in either project while a bare global:: keeps the whole project-scoped set.
+        var named = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath,
+            NamespaceFilter = "App"
+        });
+
+        Assert.True(named.Success);
+        Assert.Empty(named.Data!.DerivedTypes);
+        Assert.Equal(0, named.Data.TotalCount);
+
+        var bareGlobal = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath,
+            NamespaceFilter = "global::"
+        });
+        var omitted = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath
+        });
+
+        Assert.True(bareGlobal.Success);
+        Assert.NotEmpty(omitted.Data!.DerivedTypes);
+        Assert.Equal(SortedSites(omitted.Data.DerivedTypes), SortedSites(bareGlobal.Data!.DerivedTypes));
+        Assert.Equal(omitted.Data.TotalCount, bareGlobal.Data.TotalCount);
+    }
+
+    #endregion
+
     private static List<string> SortedNames(IEnumerable<TypeHierarchyEntry> entries) =>
         entries.Select(e => e.TypeName).OrderBy(n => n, StringComparer.Ordinal).ToList();
 
