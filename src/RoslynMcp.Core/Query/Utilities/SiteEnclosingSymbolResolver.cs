@@ -45,8 +45,11 @@ internal sealed class SiteEnclosingSymbolResolver
     /// (expression / statement body sites). A declaration covers a position only within its
     /// <see cref="SyntaxNode.Span"/>, so trivia before a declaration (e.g. a <c>#warning</c> directive
     /// immediately before <c>public class C</c>) does not inherit that declaration; documentation
-    /// comment trivia is the exception and belongs to the declaration it documents. Null when there is
-    /// no tree, no semantic model, or neither path yields a symbol.
+    /// comment trivia is the exception and belongs to the declaration it documents. Symbols declared by
+    /// an expression (anonymous types and their properties, tuple types and their elements) are looked
+    /// through to the enclosing source member, so <c>new { P = Missing }</c> in a <c>private</c>
+    /// method is a <c>private</c> site. Null when there is no tree, no semantic model, or neither path
+    /// yields a symbol.
     /// </summary>
     public async Task<ISymbol?> GetDeclaredOrEnclosingSymbolAsync(
         SyntaxTree? tree, Document? document, int position, CancellationToken cancellationToken)
@@ -69,7 +72,7 @@ internal sealed class SiteEnclosingSymbolResolver
                 continue;
 
             var declared = GetDeclaredSymbol(semanticModel, node, cancellationToken);
-            if (declared != null)
+            if (declared != null && !IsSynthesizedExpressionMember(declared))
                 return declared;
         }
 
@@ -90,6 +93,24 @@ internal sealed class SiteEnclosingSymbolResolver
 
         return semanticModel.GetDeclaredSymbol(node, cancellationToken);
     }
+
+    /// <summary>
+    /// Whether <paramref name="symbol"/> is declared by an expression rather than by a source member:
+    /// an anonymous type (<c>new { ... }</c>), one of its synthesized properties (an
+    /// <see cref="AnonymousObjectMemberDeclaratorSyntax"/> such as <c>P = Missing</c>), a tuple type
+    /// (declared by a <see cref="TupleExpressionSyntax"/>), or a tuple element (a named tuple argument
+    /// such as <c>(a: Missing, 1)</c>). Those report a synthesized accessibility (anonymous-type
+    /// properties and tuple elements are <c>public</c>) and their containing-symbol chain does not lead
+    /// back to the member whose body holds the expression, so the site walk looks through them to the
+    /// enclosing source member (e.g. a <c>private</c> method).
+    /// </summary>
+    private static bool IsSynthesizedExpressionMember(ISymbol symbol) => symbol switch
+    {
+        INamedTypeSymbol type => type.IsAnonymousType || type.IsTupleType,
+        IPropertySymbol property => property.ContainingType is { IsAnonymousType: true },
+        IFieldSymbol field => field.ContainingType is { IsTupleType: true },
+        _ => false
+    };
 
     private static bool IsDocumentationComment(SyntaxTrivia trivia) =>
         trivia.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia)

@@ -1691,6 +1691,53 @@ public class GetDiagnosticsOperationTests
         Assert.Equal(new[] { "NopePrivate" }, VariableNames(priv.Data!));
     }
 
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_AnonymousObjectAndTupleMembersUseEnclosingMember()
+    {
+        // An anonymous-object member declarator (`P = Missing`) declares a synthesized public property
+        // of the anonymous type, and a named tuple argument declares a public tuple element field; the
+        // site must look through both to the enclosing source member's accessibility.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class C
+            {
+                private void Priv()
+                {
+                    var anon = new { P = MissingAnonPrivate };
+                    var projected = new { MissingProjectedPrivate };
+                    var tuple = (a: MissingTuplePrivate, b: 1);
+                }
+
+                public void Pub()
+                {
+                    var anon = new { P = MissingAnonPublic };
+                }
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS0103" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "public"
+        });
+        var priv = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(omitted.Success);
+        Assert.Equal(4, omitted.Data!.TotalCount);
+        Assert.True(pub.Success);
+        Assert.Equal(new[] { "MissingAnonPublic" }, VariableNames(pub.Data!));
+        Assert.True(priv.Success);
+        Assert.Equal(
+            new[] { "MissingAnonPrivate", "MissingProjectedPrivate", "MissingTuplePrivate" },
+            VariableNames(priv.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+    }
+
     #endregion
 
 
