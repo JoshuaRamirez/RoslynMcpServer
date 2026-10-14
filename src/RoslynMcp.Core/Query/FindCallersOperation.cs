@@ -150,7 +150,7 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
 
                 if (callers.Count < maxResults)
                 {
-                    var snippet = await GetSnippetAsync(location, cancellationToken);
+                    var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(location, cancellationToken);
 
                     callers.Add(new CallerInfo
                     {
@@ -175,18 +175,5 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         };
 
         return QueryResult<FindCallersResult>.Succeeded(operationId, result);
-    }
-
-
-    private static async Task<string?> GetSnippetAsync(Location location, CancellationToken cancellationToken)
-    {
-        if (!location.IsInSource || location.SourceTree == null) return null;
-
-        var text = await location.SourceTree.GetTextAsync(cancellationToken);
-        var lineSpan = location.GetLineSpan();
-        var lineIndex = lineSpan.StartLinePosition.Line;
-
-        if (lineIndex < 0 || lineIndex >= text.Lines.Count) return null;
-        return text.Lines[lineIndex].ToString().Trim();
     }
 }
