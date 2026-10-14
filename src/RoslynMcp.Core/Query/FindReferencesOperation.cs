@@ -153,7 +153,7 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 totalCount++;
                 if (locations.Count < maxResults)
                 {
-                    var snippet = await GetContextSnippetAsync(defLocation, cancellationToken);
+                    var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(defLocation, cancellationToken);
 
                     locations.Add(new ReferenceLocationInfo
                     {
@@ -189,7 +189,7 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
 
                 if (locations.Count < maxResults)
                 {
-                    var snippet = await GetContextSnippetAsync(refLocation.Location, cancellationToken);
+                    var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(refLocation.Location, cancellationToken);
 
                     locations.Add(new ReferenceLocationInfo
                     {
@@ -214,21 +214,5 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         };
 
         return QueryResult<FindReferencesResult>.Succeeded(operationId, result);
-    }
-
-    private static async Task<string?> GetContextSnippetAsync(Location location, CancellationToken cancellationToken)
-    {
-        if (!location.IsInSource) return null;
-
-        var tree = location.SourceTree;
-        if (tree == null) return null;
-
-        var text = await tree.GetTextAsync(cancellationToken);
-        var lineSpan = location.GetLineSpan();
-        var lineIndex = lineSpan.StartLinePosition.Line;
-
-        if (lineIndex < 0 || lineIndex >= text.Lines.Count) return null;
-
-        return text.Lines[lineIndex].ToString().Trim();
     }
 }
