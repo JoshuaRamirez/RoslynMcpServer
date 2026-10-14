@@ -29,6 +29,42 @@ internal sealed class SiteEnclosingSymbolResolver
     public async Task<ISymbol?> GetEnclosingSymbolAsync(
         SyntaxTree? tree, Document? document, int position, CancellationToken cancellationToken)
     {
+        var semanticModel = await GetCachedSemanticModelAsync(tree, document, cancellationToken);
+        return semanticModel?.GetEnclosingSymbol(position, cancellationToken);
+    }
+
+    /// <summary>
+    /// Symbol for a diagnostic site at <paramref name="position"/>: the nearest declared symbol
+    /// whose syntax contains that position (so a declaration-attached diagnostic such as CS0169 on a
+    /// field identifier resolves to that field rather than the enclosing type — a field without an
+    /// initializer does not establish a member semantic scope for
+    /// <see cref="SemanticModel.GetEnclosingSymbol"/>), falling back to
+    /// <see cref="SemanticModel.GetEnclosingSymbol"/> when no declaration covers the position
+    /// (expression / statement body sites). Null when there is no tree, no semantic model, or neither
+    /// path yields a symbol.
+    /// </summary>
+    public async Task<ISymbol?> GetDeclaredOrEnclosingSymbolAsync(
+        SyntaxTree? tree, Document? document, int position, CancellationToken cancellationToken)
+    {
+        var semanticModel = await GetCachedSemanticModelAsync(tree, document, cancellationToken);
+        if (semanticModel == null || tree == null)
+            return null;
+
+        var root = await tree.GetRootAsync(cancellationToken);
+        var token = root.FindToken(position);
+        for (SyntaxNode? node = token.Parent; node != null; node = node.Parent)
+        {
+            var declared = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+            if (declared != null)
+                return declared;
+        }
+
+        return semanticModel.GetEnclosingSymbol(position, cancellationToken);
+    }
+
+    private async Task<SemanticModel?> GetCachedSemanticModelAsync(
+        SyntaxTree? tree, Document? document, CancellationToken cancellationToken)
+    {
         if (tree == null) return null;
 
         if (!_semanticModelCache.TryGetValue(tree, out var semanticModel))
@@ -37,7 +73,7 @@ internal sealed class SiteEnclosingSymbolResolver
             _semanticModelCache[tree] = semanticModel;
         }
 
-        return semanticModel?.GetEnclosingSymbol(position, cancellationToken);
+        return semanticModel;
     }
 
     /// <summary>

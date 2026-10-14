@@ -68,10 +68,12 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
 
         // Optional accessibilityFilter (same values / parsing as search_symbols / find_references
         // accessibilityFilter): keep only diagnostics whose site symbol has a DeclaredAccessibility
-        // equal to the filter exactly. The site is the member / type / namespace enclosing the location
-        // (same enclosing-symbol notion namespaceFilter uses), looking through lambdas / local functions
-        // / locals / params to the declaring member (see DeclaringSiteSymbol). Null when omitted /
-        // blank (no accessibility filtering). Invalid values already rejected in ValidateParams.
+        // equal to the filter exactly. The site prefers the nearest declared member at the diagnostic
+        // span (declaration-attached diagnostics such as CS0169 on a field identifier) and falls back
+        // to the enclosing symbol (same notion namespaceFilter uses), then looks through lambdas /
+        // local functions / locals / params to the declaring member (see DeclaringSiteSymbol). Null
+        // when omitted / blank (no accessibility filtering). Invalid values already rejected in
+        // ValidateParams.
         var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
 
         // Both site filters share one resolver so each file is bound at most once when both are set.
@@ -144,12 +146,12 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                         continue;
 
                     var tree = diag.Location.SourceTree;
-                    var enclosing = await siteResolver!.GetEnclosingSymbolAsync(
+                    var site = await siteResolver!.GetDeclaredOrEnclosingSymbolAsync(
                         tree,
                         tree == null ? null : Context.Solution.GetDocument(tree),
                         diag.Location.SourceSpan.Start,
                         cancellationToken);
-                    if (!MatchesAccessibility(DeclaringSiteSymbol.Resolve(enclosing)))
+                    if (!MatchesAccessibility(DeclaringSiteSymbol.Resolve(site)))
                         continue;
                 }
 

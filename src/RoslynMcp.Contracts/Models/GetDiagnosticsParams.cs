@@ -69,10 +69,13 @@ public sealed class GetDiagnosticsParams
     /// <c>accessibilityFilter</c> (<c>public</c>, <c>internal</c>, <c>protected</c>, <c>private</c>,
     /// <c>protected internal</c>, or <c>private protected</c>; case-insensitive; surrounding whitespace
     /// trimmed and inner whitespace runs collapsed; <c>internal protected</c> / <c>protected private</c>
-    /// also accepted). When set, only diagnostics whose <b>diagnostic site</b> — the member / type /
-    /// namespace declaration enclosing the diagnostic location (via <c>SemanticModel.GetEnclosingSymbol</c>
-    /// at the location start, then the same declaring-site walk as <c>find_references</c>: look through
-    /// lambdas / local functions / locals / params to the declaring member) — has an
+    /// also accepted). When set, only diagnostics whose <b>diagnostic site</b> — the nearest declared
+    /// member at the diagnostic span when the diagnostic is attached to a declaration (e.g. CS0169 on a
+    /// field identifier; a field without an initializer does not establish a member semantic scope for
+    /// <c>GetEnclosingSymbol</c>), otherwise the member / type / namespace declaration enclosing the
+    /// location via <c>SemanticModel.GetEnclosingSymbol</c>, then the same declaring-site walk as
+    /// <c>find_references</c> (look through lambdas / local functions / locals / params to the declaring
+    /// member) — has an
     /// <c>ISymbol.DeclaredAccessibility</c> equal to it exactly are returned (semantic, so implicit
     /// defaults count: a class member with no modifier is <c>private</c>); the match is exact
     /// (<c>protected internal</c> is not matched by <c>protected</c> or <c>internal</c>). Namespace-level

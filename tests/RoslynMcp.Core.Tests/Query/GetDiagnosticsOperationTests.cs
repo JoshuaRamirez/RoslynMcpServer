@@ -1532,6 +1532,47 @@ public class GetDiagnosticsOperationTests
         Assert.Equal(new[] { "inBarPrivate" }, VariableNames(none.Data!));
     }
 
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_DeclarationAttachedFieldDiagnosticsUseFieldAccessibility()
+    {
+        // CS0169 / CS0414 attach to the field identifier. GetEnclosingSymbol is the enclosing public
+        // type (a field without an initializer does not establish a member semantic scope), so without
+        // resolving the declared field first, accessibilityFilter=public would incorrectly include
+        // these private-field diagnostics. Compiler only emits CS0169/CS0414 for non-public fields.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class C
+            {
+                private int privateUnused;
+                private int privateAssignedUnused = 1;
+                public void Pub() { int inPublic; }
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = new[] { "CS0169", "CS0414", "CS0168" },
+            AccessibilityFilter = "public"
+        });
+        var priv = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = new[] { "CS0169", "CS0414", "CS0168" },
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(pub.Success);
+        Assert.True(priv.Success);
+        // Public: only the method-body CS0168 site — not the private-field declaration diagnostics.
+        Assert.Equal(new[] { "inPublic" }, VariableNames(pub.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+        Assert.DoesNotContain("C.privateUnused", VariableNames(pub.Data!));
+        Assert.DoesNotContain("C.privateAssignedUnused", VariableNames(pub.Data!));
+        // Private: both field diagnostics; not the public method's unused local.
+        Assert.Equal(
+            new[] { "C.privateAssignedUnused", "C.privateUnused" },
+            VariableNames(priv.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+        Assert.DoesNotContain("inPublic", VariableNames(priv.Data!));
+    }
+
     #endregion
 
 
