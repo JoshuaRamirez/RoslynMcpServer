@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -94,6 +95,14 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
             || (siteSymbol is not null and not INamespaceSymbol
                 && siteSymbol.DeclaredAccessibility == accessibilityFilter.Value);
 
+        // Occurrence index of each in-source diagnostic among the diagnostics sharing its tree, id, and
+        // span, counted in compilation order before any filter runs. Collocated parser diagnostics (two
+        // zero-width CS1513 at the end of `public class C { private class D {`, one per missing `}`) are
+        // equal values and Roslyn does not preserve Diagnostic identity, so the accessibility site of
+        // the k-th one is the carrier of the k-th such diagnostic in the tree (see
+        // SiteEnclosingSymbolResolver.GetDeclaredOrEnclosingSymbolAsync).
+        var siteOccurrences = new Dictionary<(SyntaxTree Tree, string Id, TextSpan Span), int>();
+
         foreach (var project in ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath))
         {
             var compilation = await project.GetCompilationAsync(cancellationToken);
@@ -101,6 +110,14 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
 
             foreach (var diag in compilation.GetDiagnostics(cancellationToken))
             {
+                var occurrence = 0;
+                if (accessibilityFilter.HasValue && diag.Location.SourceTree is { } occurrenceTree)
+                {
+                    var occurrenceKey = (occurrenceTree, diag.Id, diag.Location.SourceSpan);
+                    occurrence = siteOccurrences.GetValueOrDefault(occurrenceKey);
+                    siteOccurrences[occurrenceKey] = occurrence + 1;
+                }
+
                 if (!PassesSeverityFilter(diag.Severity, severityFilter))
                     continue;
 
@@ -151,6 +168,7 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                         tree == null ? null : Context.Solution.GetDocument(tree),
                         diag.Location.SourceSpan,
                         diag.Id,
+                        occurrence,
                         cancellationToken);
                     if (!MatchesAccessibility(DeclaringSiteSymbol.Resolve(site)))
                         continue;

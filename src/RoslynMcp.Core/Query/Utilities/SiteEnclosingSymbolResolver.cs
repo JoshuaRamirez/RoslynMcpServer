@@ -18,7 +18,7 @@ internal sealed class SiteEnclosingSymbolResolver
 {
     private readonly WorkspaceContext _context;
     private readonly Dictionary<SyntaxTree, SemanticModel?> _semanticModelCache = new();
-    private readonly Dictionary<SyntaxTree, HashSet<(string Id, TextSpan Span)>> _syntaxDiagnosticCache = new();
+    private readonly Dictionary<SyntaxTree, Dictionary<(string Id, TextSpan Span), List<ISymbol?>>> _syntaxDiagnosticCarrierCache = new();
 
     public SiteEnclosingSymbolResolver(WorkspaceContext context)
     {
@@ -38,6 +38,15 @@ internal sealed class SiteEnclosingSymbolResolver
     }
 
     /// <summary>
+    /// Symbol for a diagnostic site at <paramref name="span"/>; the first occurrence of
+    /// <paramref name="diagnosticId"/> at that span (see the overload taking an occurrence index).
+    /// </summary>
+    public Task<ISymbol?> GetDeclaredOrEnclosingSymbolAsync(
+        SyntaxTree? tree, Document? document, TextSpan span, string? diagnosticId,
+        CancellationToken cancellationToken) =>
+        GetDeclaredOrEnclosingSymbolAsync(tree, document, span, diagnosticId, occurrence: 0, cancellationToken);
+
+    /// <summary>
     /// Symbol for a diagnostic site at <paramref name="span"/> (the diagnostic's source span; its start
     /// is the site position): the nearest declared symbol whose syntax contains that position (so a
     /// declaration-attached diagnostic such as CS0169 on a field identifier, or CS0246 on a field's
@@ -53,7 +62,13 @@ internal sealed class SiteEnclosingSymbolResolver
     /// diagnostic at <paramref name="span"/>) resolves through the declaration containing that missing
     /// syntax first (see <see cref="GetMissingSyntaxCarrierSymbol"/>): CS1002 for
     /// <c>public class C { private int field}</c> is reported on the type's <c>}</c> but belongs to the
-    /// private field, while any other diagnostic on that <c>}</c> still resolves to the type. A
+    /// private field, while any other diagnostic on that <c>}</c> still resolves to the type. Several
+    /// syntax diagnostics can share an id and span (two CS1513 at the end of
+    /// <c>public class C { private class D {</c>, one per missing <c>}</c>) and Roslyn does not preserve
+    /// <see cref="Diagnostic"/> object identity across <see cref="SyntaxTree.GetDiagnostics(CancellationToken)"/>
+    /// / compilation calls, so <paramref name="occurrence"/> (zero-based) names which of those
+    /// diagnostics this is: the k-th diagnostic with this id and span in the tree's diagnostic order
+    /// (which <see cref="Compilation.GetDiagnostics(CancellationToken)"/> preserves for parse diagnostics). A
     /// zero-width diagnostic at the end of an unterminated declaration that no declaration span covers
     /// (e.g. CS1002 for <c>private int field</c> at the end of a file with no trailing newline, where
     /// <c>FindToken</c> lands on the end-of-file token) also resolves through that preceding declaration
@@ -64,7 +79,7 @@ internal sealed class SiteEnclosingSymbolResolver
     /// yields a symbol.
     /// </summary>
     public async Task<ISymbol?> GetDeclaredOrEnclosingSymbolAsync(
-        SyntaxTree? tree, Document? document, TextSpan span, string? diagnosticId,
+        SyntaxTree? tree, Document? document, TextSpan span, string? diagnosticId, int occurrence,
         CancellationToken cancellationToken)
     {
         var position = span.Start;
@@ -83,7 +98,7 @@ internal sealed class SiteEnclosingSymbolResolver
         // containing that missing syntax, not to whatever declaration covers the reported location.
         if (diagnosticId != null && !inDocumentationComment)
         {
-            var carrier = GetMissingSyntaxCarrierSymbol(semanticModel, root, span, diagnosticId, cancellationToken);
+            var carrier = GetMissingSyntaxCarrierSymbol(semanticModel, root, span, diagnosticId, occurrence, cancellationToken);
             if (carrier != null)
                 return carrier;
         }
@@ -113,49 +128,126 @@ internal sealed class SiteEnclosingSymbolResolver
 
     /// <summary>
     /// Symbol of the declaration containing the missing (parser-inserted) syntax that reports the
-    /// syntax diagnostic <paramref name="diagnosticId"/> at <paramref name="span"/>. Roslyn reports a
-    /// missing-token error at an adjusted location (on the following token, or at the end of the
-    /// preceding one), so the reported span can fall outside the declaration the missing token belongs
-    /// to: CS1002 for <c>public class C { private int field}</c> spans the type's <c>}</c>. Descends from
-    /// the root through the children whose diagnostics include this one to the innermost carrier; only
-    /// a missing token or an all-missing node (e.g. the missing expression behind CS1525 for
-    /// <c>private int field = }</c>) counts, so a diagnostic on real syntax (including a directive or
-    /// other trivia) keeps the positional resolution. Null when the diagnostic is not such a syntax
-    /// diagnostic or no declaration encloses its carrier.
+    /// <paramref name="occurrence"/>-th syntax diagnostic <paramref name="diagnosticId"/> at
+    /// <paramref name="span"/>. Roslyn reports a missing-token error at an adjusted location (on the
+    /// following token, or at the end of the preceding one), so the reported span can fall outside the
+    /// declaration the missing token belongs to: CS1002 for <c>public class C { private int field}</c>
+    /// spans the type's <c>}</c>. The carrier is the node or token that owns the diagnostic (see
+    /// <see cref="GetSyntaxDiagnosticCarriers"/>); only a missing token or an all-missing node (e.g.
+    /// the missing expression behind CS1525 for <c>private int field = }</c>) counts, so a diagnostic
+    /// on real syntax (including a directive or other trivia) keeps the positional resolution. Null
+    /// when the diagnostic is not such a syntax diagnostic or no declaration encloses its carrier.
     /// </summary>
     private ISymbol? GetMissingSyntaxCarrierSymbol(
-        SemanticModel semanticModel, SyntaxNode root, TextSpan span, string diagnosticId,
+        SemanticModel semanticModel, SyntaxNode root, TextSpan span, string diagnosticId, int occurrence,
         CancellationToken cancellationToken)
     {
         var tree = root.SyntaxTree;
-        if (!_syntaxDiagnosticCache.TryGetValue(tree, out var syntaxDiagnostics))
+        if (!_syntaxDiagnosticCarrierCache.TryGetValue(tree, out var carriers))
         {
-            syntaxDiagnostics = tree.GetDiagnostics(cancellationToken)
-                .Select(d => (d.Id, d.Location.SourceSpan))
-                .ToHashSet();
-            _syntaxDiagnosticCache[tree] = syntaxDiagnostics;
+            carriers = GetSyntaxDiagnosticCarriers(semanticModel, root, cancellationToken);
+            _syntaxDiagnosticCarrierCache[tree] = carriers;
         }
 
-        if (!syntaxDiagnostics.Contains((diagnosticId, span)))
-            return null;
+        return carriers.TryGetValue((diagnosticId, span), out var symbols)
+               && occurrence >= 0 && occurrence < symbols.Count
+            ? symbols[occurrence]
+            : null;
+    }
 
-        bool Carries(SyntaxNodeOrToken nodeOrToken) =>
-            nodeOrToken.ContainsDiagnostics
-            && tree.GetDiagnostics(nodeOrToken).Any(d => d.Id == diagnosticId && d.Location.SourceSpan == span);
+    /// <summary>
+    /// Carrier index for every syntax diagnostic of <paramref name="root"/>'s tree, built in one walk:
+    /// for each diagnostic id and span, one entry per diagnostic occurrence in the tree's diagnostic
+    /// order (the pre-order <see cref="SyntaxTree.GetDiagnostics(CancellationToken)"/> walk, where a
+    /// node's own diagnostics precede its children's), holding the symbol of the declaration enclosing
+    /// the missing node or token that owns that occurrence, or null when its owner is real syntax. A
+    /// node or token owns the diagnostics in its subtree that none of its children carries, so
+    /// collocated diagnostics (the two zero-width CS1513 of nested unterminated types at end of file)
+    /// stay distinct, each with its own carrier. Only nodes and tokens containing diagnostics are
+    /// visited, so a file with many syntax errors is indexed once rather than searched from the root
+    /// for every diagnostic.
+    /// </summary>
+    private static Dictionary<(string Id, TextSpan Span), List<ISymbol?>> GetSyntaxDiagnosticCarriers(
+        SemanticModel semanticModel, SyntaxNode root, CancellationToken cancellationToken)
+    {
+        var tree = root.SyntaxTree;
+        var carriers = new Dictionary<(string Id, TextSpan Span), List<ISymbol?>>();
+        if (!root.ContainsDiagnostics)
+            return carriers;
 
-        SyntaxNodeOrToken carrier = root;
-        while (carrier.IsNode)
+        // Explicit stack (pre-order, children pushed in reverse) so deeply nested malformed syntax does
+        // not recurse.
+        var pending = new Stack<SyntaxNodeOrToken>();
+        pending.Push(root);
+        var childKeys = new Dictionary<(string Id, TextSpan Span), int>();
+        var children = new List<SyntaxNodeOrToken>();
+        while (pending.Count > 0)
         {
-            var child = carrier.ChildNodesAndTokens().FirstOrDefault(Carries);
-            if (child.RawKind == 0)
-                break;
-            carrier = child;
+            cancellationToken.ThrowIfCancellationRequested();
+            var nodeOrToken = pending.Pop();
+
+            childKeys.Clear();
+            children.Clear();
+            if (nodeOrToken.IsNode)
+            {
+                foreach (var child in nodeOrToken.ChildNodesAndTokens())
+                {
+                    if (!child.ContainsDiagnostics)
+                        continue;
+
+                    children.Add(child);
+                    foreach (var diagnostic in tree.GetDiagnostics(child))
+                    {
+                        var key = (diagnostic.Id, diagnostic.Location.SourceSpan);
+                        childKeys[key] = childKeys.GetValueOrDefault(key) + 1;
+                    }
+                }
+            }
+
+            ISymbol? carrierSymbol = null;
+            var carrierResolved = false;
+            foreach (var diagnostic in tree.GetDiagnostics(nodeOrToken))
+            {
+                var key = (diagnostic.Id, diagnostic.Location.SourceSpan);
+                if (childKeys.TryGetValue(key, out var carriedByChildren) && carriedByChildren > 0)
+                {
+                    childKeys[key] = carriedByChildren - 1;
+                    continue;
+                }
+
+                if (!carrierResolved)
+                {
+                    carrierSymbol = nodeOrToken.IsMissing
+                        ? GetEnclosingDeclaredSymbol(
+                            semanticModel, nodeOrToken.IsNode ? nodeOrToken.AsNode() : nodeOrToken.Parent,
+                            cancellationToken)
+                        : null;
+                    carrierResolved = true;
+                }
+
+                if (!carriers.TryGetValue(key, out var symbols))
+                {
+                    symbols = new List<ISymbol?>();
+                    carriers[key] = symbols;
+                }
+
+                symbols.Add(carrierSymbol);
+            }
+
+            for (var i = children.Count - 1; i >= 0; i--)
+                pending.Push(children[i]);
         }
 
-        if (!carrier.IsMissing)
-            return null;
+        return carriers;
+    }
 
-        for (var node = carrier.IsNode ? carrier.AsNode() : carrier.Parent; node != null; node = node.Parent)
+    /// <summary>
+    /// The innermost declared (non-synthesized) symbol of <paramref name="node"/> or its ancestors.
+    /// </summary>
+    private static ISymbol? GetEnclosingDeclaredSymbol(
+        SemanticModel semanticModel, SyntaxNode? node, CancellationToken cancellationToken)
+    {
+        for (; node != null; node = node.Parent)
         {
             var declared = GetDeclaredSymbol(semanticModel, node, cancellationToken);
             if (declared != null && !IsSynthesizedExpressionMember(declared))

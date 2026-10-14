@@ -2114,6 +2114,133 @@ public class GetDiagnosticsOperationTests
         Assert.Equal(new[] { "CS1002" }, priv.Data!.Diagnostics.Select(d => d.Id).ToArray());
     }
 
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_NestedMissingCloseBracesAtEofUseEachTypeAccessibility()
+    {
+        // `public class C { private class D {` at EOF: Roslyn reports two CS1513 with the same id and the
+        // same zero-width span at EOF, one carried by each type's missing `}`. The two are equal values
+        // (Diagnostic identity is not preserved), so each occurrence must keep its own carrier: the
+        // public filter gets exactly C's, the private filter exactly D's.
+        await using var workspace = await TempWorkspace.CreateAsync("public class C { private class D {");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS1513" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "public"
+        });
+        var priv = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(omitted.Success);
+        Assert.Equal(2, omitted.Data!.TotalCount);
+        Assert.True(pub.Success);
+        Assert.Equal(1, pub.Data!.TotalCount);
+        Assert.Single(pub.Data.Diagnostics, d => d.Id == "CS1513");
+        Assert.True(priv.Success);
+        Assert.Equal(1, priv.Data!.TotalCount);
+        Assert.Single(priv.Data.Diagnostics, d => d.Id == "CS1513");
+
+        // Both CS1513 share one span; occurrence k resolves to the carrier of the k-th one in tree
+        // diagnostic order (the inner type's `}` comes first).
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath)!;
+        var tree = (await document.GetSyntaxTreeAsync())!;
+        var cs1513 = (await tree.GetRootAsync()).GetDiagnostics().Where(d => d.Id == "CS1513").ToArray();
+        Assert.Equal(2, cs1513.Length);
+        Assert.All(cs1513, d => Assert.Equal(new TextSpan(tree.Length, 0), d.Location.SourceSpan));
+        var resolver = new SiteEnclosingSymbolResolver(workspace.Context);
+        var span = cs1513[0].Location.SourceSpan;
+        var first = await resolver.GetDeclaredOrEnclosingSymbolAsync(
+            tree, document, span, "CS1513", 0, CancellationToken.None);
+        var second = await resolver.GetDeclaredOrEnclosingSymbolAsync(
+            tree, document, span, "CS1513", 1, CancellationToken.None);
+        Assert.Equal("D", Assert.IsAssignableFrom<INamedTypeSymbol>(first).Name);
+        Assert.Equal("C", Assert.IsAssignableFrom<INamedTypeSymbol>(second).Name);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_ThreeNestedMissingCloseBracesAtEofUseEachTypeAccessibility()
+    {
+        // Three collocated CS1513 at EOF, each carried by a different type's missing `}`.
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "public class C { private class D { internal class E {");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS1513" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        Assert.True(omitted.Success);
+        Assert.Equal(3, omitted.Data!.TotalCount);
+
+        foreach (var filter in new[] { "public", "private", "internal" })
+        {
+            var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+            {
+                DiagnosticIds = ids,
+                AccessibilityFilter = filter
+            });
+            Assert.True(filtered.Success);
+            Assert.Equal(1, filtered.Data!.TotalCount);
+        }
+
+        var prot = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "protected"
+        });
+        Assert.True(prot.Success);
+        Assert.Equal(0, prot.Data!.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_ManyMalformedFieldsUseEachFieldAccessibility()
+    {
+        // Many fields each missing `;` (CS1002 per field, carried by that field's missing `;`), the
+        // last one reported on the type's `}`, and the type itself unterminated at EOF (CS1513). The
+        // per-tree carrier index attributes every occurrence to its own declaration.
+        const int pairs = 150;
+        var builder = new System.Text.StringBuilder("public class C\n{\n");
+        for (var i = 0; i < pairs; i++)
+        {
+            builder.Append("    private int p").Append(i).Append('\n');
+            builder.Append("    public int q").Append(i).Append('\n');
+        }
+
+        builder.Append("    private class Inner { private int last}\n");
+        await using var workspace = await TempWorkspace.CreateAsync(builder.ToString());
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS1002", "CS1513" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "public"
+        });
+        var priv = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(omitted.Success);
+        Assert.Equal(2 * pairs + 2, omitted.Data!.TotalCount);
+        Assert.True(pub.Success);
+        // q0..q149 (CS1002) plus C's missing `}` (CS1513).
+        Assert.Equal(pairs, pub.Data!.Diagnostics.Count(d => d.Id == "CS1002"));
+        Assert.Single(pub.Data.Diagnostics, d => d.Id == "CS1513");
+        Assert.Equal(pairs + 1, pub.Data.TotalCount);
+        Assert.True(priv.Success);
+        // p0..p149 plus `last` (CS1002 on Inner's `}`).
+        Assert.Equal(pairs + 1, priv.Data!.Diagnostics.Count(d => d.Id == "CS1002"));
+        Assert.DoesNotContain(priv.Data.Diagnostics, d => d.Id == "CS1513");
+        Assert.Equal(pairs + 1, priv.Data.TotalCount);
+    }
+
     #endregion
 
 
