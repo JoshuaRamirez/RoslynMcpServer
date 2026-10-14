@@ -347,6 +347,44 @@ public class ArgsToJsonConverterTests
     }
 
     [Fact]
+    public void FindReferences_AccessibilityFilter_RoundTripsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Target.cs",
+            ["symbol-name"] = "Run",
+            ["accessibility-filter"] = "private protected",
+            ["include-declaration"] = "false",
+            ["max-results"] = "3"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("private protected", doc.RootElement.GetProperty("accessibilityFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.FindReferencesParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("private protected", p.AccessibilityFilter);
+        Assert.False(p.IncludeDeclaration);
+        Assert.Equal(3, p.MaxResults);
+    }
+
+    [Fact]
+    public void FindReferences_AccessibilityFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Target.cs",
+            ["symbol-name"] = "Run"
+        });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.FindReferencesParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.AccessibilityFilter);
+    }
+
+    [Fact]
     public void FindImplementations_NamespaceFilter_RoundTripsToParams()
     {
         var dict = new Dictionary<string, string>

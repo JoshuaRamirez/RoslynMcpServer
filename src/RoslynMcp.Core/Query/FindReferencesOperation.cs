@@ -14,7 +14,9 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Finds all references to a symbol across the solution (or within one project when
 /// <see cref="FindReferencesParams.ProjectPath"/> is set), optionally narrowed to reference sites in one
-/// namespace (<see cref="FindReferencesParams.NamespaceFilter"/>).
+/// namespace (<see cref="FindReferencesParams.NamespaceFilter"/>), and optionally to reference sites
+/// whose enclosing symbol has a given declared accessibility
+/// (<see cref="FindReferencesParams.AccessibilityFilter"/>).
 /// Delegates to Roslyn's SymbolFinder.FindReferencesAsync.
 /// </summary>
 public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesParams, FindReferencesResult>
@@ -60,6 +62,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         }
 
         ProjectPathFilter.Validate(@params.ProjectPath);
+
+        AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
     }
 
     /// <inheritdoc />
@@ -123,15 +127,34 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         bool IsInProjectScope(DocumentId? documentId) =>
             projectScope == null || (documentId != null && projectScope.Contains(documentId.ProjectId));
 
+        // Optional accessibilityFilter (same values / parsing as search_symbols / find_callers
+        // accessibilityFilter): keep only locations whose site symbol has a DeclaredAccessibility equal
+        // to the filter exactly. For a usage that is the member / type / namespace enclosing it (the
+        // same enclosing-symbol notion namespaceFilter uses, not the target symbol); for a definition
+        // location it is the declared symbol itself (see DeclaringSiteSymbol). Null when omitted /
+        // blank (no accessibility filtering). Invalid values already rejected in ValidateParams.
+        var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+
+        // Both site filters share one resolver so each file is bound at most once.
+        var siteResolver = new SiteEnclosingSymbolResolver(Context);
+
         // Optional namespaceFilter (same normalization / matching as search_symbols and
         // find_implementations): keep only locations whose reference site, i.e. the symbol enclosing
         // the location (member, type, or namespace declaration), lives in the filter namespace or one
         // nested inside it. The target symbol's own namespace is irrelevant (it is the same for every
         // reference). Null when no filter applies.
-        var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter);
+        var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter, siteResolver);
+
+        bool MatchesAccessibility(ISymbol? siteSymbol) =>
+            !accessibilityFilter.HasValue
+            || (siteSymbol != null && siteSymbol.DeclaredAccessibility == accessibilityFilter.Value);
 
         foreach (var referencedSymbol in referencedSymbols)
         {
+            // Every definition location of this entry declares the same symbol, so its accessibility
+            // site is computed once.
+            var definitionSiteSymbol = DeclaringSiteSymbol(referencedSymbol.Definition);
+
             // Add the definition itself (skipped entirely when includeDeclaration is false)
             var definitionLocations = includeDeclaration
                 ? referencedSymbol.Definition.Locations.Where(l => l.IsInSource)
@@ -140,8 +163,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
             {
                 var lineSpan = defLocation.GetLineSpan();
 
-                // Optional referenceFile / projectPath / namespaceFilter filters run before maxResults
-                // so TotalCount / Truncated reflect the filtered set.
+                // Optional referenceFile / projectPath / namespaceFilter / accessibilityFilter filters
+                // run before maxResults so TotalCount / Truncated reflect the filtered set.
                 if (!IsInReferenceFile(lineSpan.Path)) continue;
                 if (projectScope != null && !IsInProjectScope(Context.Solution.GetDocumentId(defLocation.SourceTree))) continue;
                 if (namespaceScope != null
@@ -149,6 +172,7 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                         defLocation.SourceTree, Context.Solution.GetDocument(defLocation.SourceTree), defLocation.SourceSpan.Start,
                         cancellationToken))
                     continue;
+                if (!MatchesAccessibility(definitionSiteSymbol)) continue;
 
                 totalCount++;
                 if (locations.Count < maxResults)
@@ -184,6 +208,11 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                         refLocation.Location.SourceTree, refLocation.Document, refLocation.Location.SourceSpan.Start,
                         cancellationToken))
                     continue;
+                if (accessibilityFilter.HasValue
+                    && !MatchesAccessibility(DeclaringSiteSymbol(await siteResolver.GetEnclosingSymbolAsync(
+                        refLocation.Location.SourceTree, refLocation.Document, refLocation.Location.SourceSpan.Start,
+                        cancellationToken))))
+                    continue;
 
                 totalCount++;
 
@@ -215,4 +244,29 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
 
         return QueryResult<FindReferencesResult>.Succeeded(operationId, result);
     }
+
+    /// <summary>
+    /// The declared member, type, or namespace whose accessibility <c>accessibilityFilter</c> judges for
+    /// a site, starting from <paramref name="symbol"/> (the symbol enclosing a usage, or the declared
+    /// symbol of a definition location) and walking out through symbols that have no declared
+    /// accessibility of their own: lambdas / anonymous methods and local functions (which report
+    /// <c>private</c>) and locals, parameters, type parameters, range variables, and labels (which
+    /// report <c>NotApplicable</c>). So a reference inside a lambda in a <c>public</c> method is a
+    /// <c>public</c> site, and the declaration of a local is judged by the member declaring it.
+    /// Namespaces are returned as-is (<c>NotApplicable</c>, never matching a filter).
+    /// </summary>
+    private static ISymbol? DeclaringSiteSymbol(ISymbol? symbol)
+    {
+        var current = symbol;
+        while (current != null && !IsDeclaringSite(current))
+            current = current.ContainingSymbol;
+        return current;
+    }
+
+    private static bool IsDeclaringSite(ISymbol symbol) => symbol switch
+    {
+        IMethodSymbol method => method.MethodKind is not (MethodKind.AnonymousFunction or MethodKind.LocalFunction),
+        IPropertySymbol or IFieldSymbol or IEventSymbol or INamedTypeSymbol or INamespaceSymbol => true,
+        _ => false
+    };
 }
