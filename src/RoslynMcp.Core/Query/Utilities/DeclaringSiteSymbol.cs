@@ -6,7 +6,8 @@ namespace RoslynMcp.Core.Query.Utilities;
 /// Resolves the declared member, type, or namespace whose accessibility an <c>accessibilityFilter</c>
 /// judges for a site. Shared by <c>find_references</c> and <c>get_diagnostics</c> so both walk out
 /// through the same symbols that have no declared accessibility of their own (lambdas / anonymous
-/// methods, local functions, locals, parameters, type parameters, range variables, and labels).
+/// methods, local functions, locals, parameters, type parameters, range variables, labels, and
+/// synthesized methods on a delegate type).
 /// </summary>
 internal static class DeclaringSiteSymbol
 {
@@ -15,11 +16,14 @@ internal static class DeclaringSiteSymbol
     /// a site, starting from <paramref name="symbol"/> (the symbol enclosing a usage / diagnostic, or
     /// the declared symbol of a definition location) and walking out through symbols that have no
     /// declared accessibility of their own: lambdas / anonymous methods and local functions (which
-    /// report <c>private</c>) and locals, parameters, type parameters, range variables, and labels
-    /// (which report <c>NotApplicable</c>). So a reference or diagnostic inside a lambda in a
-    /// <c>public</c> method is a <c>public</c> site, and the declaration of a local is judged by the
-    /// member declaring it. Namespaces are returned as-is; Roslyn reports them as <c>Public</c>, so
-    /// the caller rejects them explicitly (a namespace-level site never matches a filter).
+    /// report <c>private</c>); locals, parameters, type parameters, range variables, and labels
+    /// (which report <c>NotApplicable</c>); and synthesized methods on a delegate type (Invoke /
+    /// BeginInvoke / EndInvoke / the implicit constructor, which report <c>public</c>). So a
+    /// reference or diagnostic inside a lambda in a <c>public</c> method is a <c>public</c> site, a
+    /// diagnostic on a <c>private delegate</c> parameter is judged by the delegate (not its public
+    /// Invoke), and the declaration of a local is judged by the member declaring it. Namespaces are
+    /// returned as-is; Roslyn reports them as <c>Public</c>, so the caller rejects them explicitly
+    /// (a namespace-level site never matches a filter).
     /// </summary>
     public static ISymbol? Resolve(ISymbol? symbol)
     {
@@ -31,7 +35,10 @@ internal static class DeclaringSiteSymbol
 
     private static bool IsDeclaringSite(ISymbol symbol) => symbol switch
     {
-        IMethodSymbol method => method.MethodKind is not (MethodKind.AnonymousFunction or MethodKind.LocalFunction),
+        // Look through lambdas / local functions and through every method on a delegate type
+        // (Invoke / BeginInvoke / EndInvoke / .ctor are synthesized public; the site is the delegate).
+        IMethodSymbol method => method.MethodKind is not (MethodKind.AnonymousFunction or MethodKind.LocalFunction)
+            && method.ContainingType?.TypeKind is not TypeKind.Delegate,
         IPropertySymbol or IFieldSymbol or IEventSymbol or INamedTypeSymbol or INamespaceSymbol => true,
         _ => false
     };

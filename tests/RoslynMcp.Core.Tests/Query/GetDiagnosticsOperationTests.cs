@@ -1738,6 +1738,80 @@ public class GetDiagnosticsOperationTests
             VariableNames(priv.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
     }
 
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_ZeroWidthMissingSemicolonUsesFieldAccessibility()
+    {
+        // CS1002 is zero-width at the end of `private int field` (declarator Span excludes End).
+        // FieldDeclaration.Span still covers the site (missing semicolon token extends End past the
+        // diagnostic), and GetDeclaredSymbol bridges to the private field — pin that so a future
+        // span-tightening change cannot attribute CS1002 to the public containing type.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class C
+            {
+                private int field
+                public void M() { }
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS1002" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "public"
+        });
+        var priv = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(omitted.Data!.TotalCount >= 1);
+        Assert.True(pub.Success);
+        Assert.DoesNotContain(pub.Data!.Diagnostics, d => d.Id == "CS1002");
+        Assert.True(priv.Success);
+        Assert.Contains(priv.Data!.Diagnostics, d => d.Id == "CS1002");
+        Assert.Equal(omitted.Data.TotalCount, priv.Data!.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_DelegateParameterUsesDelegateAccessibility()
+    {
+        // CS0246 on a delegate parameter declares the parameter whose containing symbol is the
+        // synthesized public Invoke method; DeclaringSiteSymbol must look through to the private
+        // delegate type (not stop at Invoke).
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class C
+            {
+                private delegate void PrivateDel(MissingPrivate value);
+                public delegate void PublicDel(MissingPublic value);
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS0246" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "public"
+        });
+        var priv = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(omitted.Success);
+        Assert.Equal(2, omitted.Data!.TotalCount);
+        Assert.True(pub.Success);
+        Assert.Equal(new[] { "MissingPublic" }, VariableNames(pub.Data!));
+        Assert.True(priv.Success);
+        Assert.Equal(new[] { "MissingPrivate" }, VariableNames(priv.Data!));
+    }
+
     #endregion
 
 
