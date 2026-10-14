@@ -2315,6 +2315,75 @@ public class GetDiagnosticsOperationTests
         }
     }
 
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_DeepNestedUnterminatedInvocationsScaleLinearly()
+    {
+        // Many nested unterminated invocation statements `F(F(...F(0;` inside one method: each missing
+        // `)` reports a collocated CS1026 at the `;`, and every missing token's ancestor chain (argument
+        // lists and invocations) leads to the same method. The carrier index memoizes enclosing declarations per
+        // node, so resolving each missing `)` does not re-walk the shared chain (regression for the
+        // quadratic GetEnclosingDeclaredSymbol walk). Each method's diagnostics keep its accessibility.
+        const int privateDepth = 64;
+        const int publicDepth = 48;
+        var source =
+            "public class C\n{\n" +
+            "    private static int F(int x) => x;\n" +
+            "    private void Hidden()\n    {\n        " +
+            string.Concat(Enumerable.Repeat("F(", privateDepth)) + "0;\n    }\n" +
+            "    public void Visible()\n    {\n        " +
+            string.Concat(Enumerable.Repeat("F(", publicDepth)) + "0;\n    }\n" +
+            "}\n";
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS1026" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        Assert.True(omitted.Success);
+        Assert.Equal(privateDepth + publicDepth, omitted.Data!.TotalCount);
+
+        foreach (var (filter, expected) in new[]
+                 {
+                     ("private", privateDepth),
+                     ("public", publicDepth),
+                     ("internal", 0),
+                     ("protected", 0)
+                 })
+        {
+            var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+            {
+                DiagnosticIds = ids,
+                AccessibilityFilter = filter
+            });
+            Assert.True(filtered.Success);
+            Assert.Equal(expected, filtered.Data!.TotalCount);
+            Assert.All(filtered.Data.Diagnostics, d => Assert.Equal("CS1026", d.Id));
+        }
+
+        // Every collocated occurrence in each method resolves to that method.
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath)!;
+        var tree = (await document.GetSyntaxTreeAsync())!;
+        var groups = (await tree.GetRootAsync()).GetDiagnostics()
+            .Where(d => d.Id == "CS1026")
+            .GroupBy(d => d.Location.SourceSpan)
+            .ToArray();
+        Assert.Equal(2, groups.Length);
+        var resolver = new SiteEnclosingSymbolResolver(workspace.Context);
+        foreach (var (group, expectedName, expectedCount) in new[]
+                 {
+                     (groups[0], "Hidden", privateDepth),
+                     (groups[1], "Visible", publicDepth)
+                 })
+        {
+            Assert.Equal(expectedCount, group.Count());
+            for (var occurrence = 0; occurrence < expectedCount; occurrence++)
+            {
+                var carrier = await resolver.GetDeclaredOrEnclosingSymbolAsync(
+                    tree, document, group.Key, "CS1026", occurrence, CancellationToken.None);
+                Assert.Equal(expectedName, Assert.IsAssignableFrom<IMethodSymbol>(carrier).Name);
+            }
+        }
+    }
+
     #endregion
 
 

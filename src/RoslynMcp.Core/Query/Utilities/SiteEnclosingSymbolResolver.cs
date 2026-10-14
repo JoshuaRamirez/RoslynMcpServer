@@ -166,7 +166,10 @@ internal sealed class SiteEnclosingSymbolResolver
     /// missing token or on a leaf node with no diagnostic-bearing children — so collocated diagnostics
     /// (nested unterminated types' zero-width CS1513 at end of file) stay distinct. Tokens and leaf
     /// diagnostic nodes use a local <c>GetDiagnostics</c>; intermediate nodes only push their
-    /// diagnostic-bearing children, avoiding O(N²) subtree re-enumeration for deep nesting.
+    /// diagnostic-bearing children, avoiding O(N²) subtree re-enumeration for deep nesting. Enclosing
+    /// declarations of missing carriers are memoized per node for the whole build (see
+    /// <see cref="GetEnclosingDeclaredSymbol"/>), so many missing tokens under shared ancestors (N
+    /// unterminated nested invocations <c>F(F(...</c> in one method) do not re-walk the same chain.
     /// </summary>
     private static Dictionary<(string Id, TextSpan Span), List<ISymbol?>> GetSyntaxDiagnosticCarriers(
         SemanticModel semanticModel, SyntaxNode root, CancellationToken cancellationToken)
@@ -184,6 +187,7 @@ internal sealed class SiteEnclosingSymbolResolver
         // O(nodes + diagnostics) instead of re-walking each ancestor's subtree.
         var pending = new Stack<SyntaxNodeOrToken>();
         pending.Push(root);
+        var enclosingDeclaredSymbols = new Dictionary<SyntaxNode, ISymbol?>();
         var children = new List<SyntaxNodeOrToken>();
         while (pending.Count > 0)
         {
@@ -218,6 +222,7 @@ internal sealed class SiteEnclosingSymbolResolver
                             ? GetEnclosingDeclaredSymbol(
                                 semanticModel,
                                 nodeOrToken.IsNode ? nodeOrToken.AsNode() : nodeOrToken.Parent,
+                                enclosingDeclaredSymbols,
                                 cancellationToken)
                             : null;
                         carrierResolved = true;
@@ -242,18 +247,41 @@ internal sealed class SiteEnclosingSymbolResolver
 
     /// <summary>
     /// The innermost declared (non-synthesized) symbol of <paramref name="node"/> or its ancestors.
+    /// <paramref name="memo"/> maps each node already walked to that answer for the node: the walk
+    /// stops at the first memoized ancestor and records its result for every node it passed, so each
+    /// node is examined at most once per memo and resolving many carriers under a shared ancestor
+    /// chain stays linear in the number of nodes.
     /// </summary>
     private static ISymbol? GetEnclosingDeclaredSymbol(
-        SemanticModel semanticModel, SyntaxNode? node, CancellationToken cancellationToken)
+        SemanticModel semanticModel, SyntaxNode? node, Dictionary<SyntaxNode, ISymbol?> memo,
+        CancellationToken cancellationToken)
     {
+        List<SyntaxNode>? walked = null;
+        ISymbol? result = null;
         for (; node != null; node = node.Parent)
         {
+            if (memo.TryGetValue(node, out var cached))
+            {
+                result = cached;
+                break;
+            }
+
+            (walked ??= new List<SyntaxNode>()).Add(node);
             var declared = GetDeclaredSymbol(semanticModel, node, cancellationToken);
             if (declared != null && !IsSynthesizedExpressionMember(declared))
-                return declared;
+            {
+                result = declared;
+                break;
+            }
         }
 
-        return null;
+        if (walked != null)
+        {
+            foreach (var visited in walked)
+                memo[visited] = result;
+        }
+
+        return result;
     }
 
     /// <summary>
