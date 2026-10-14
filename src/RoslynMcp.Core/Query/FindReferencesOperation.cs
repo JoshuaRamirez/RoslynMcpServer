@@ -145,9 +145,13 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         // reference). Null when no filter applies.
         var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter, siteResolver);
 
+        // Namespaces have no accessibility modifier but Roslyn reports INamespaceSymbol as Public (same
+        // guard as search_symbols), so a namespace-level site (e.g. a using alias, or a namespace's own
+        // declaration) never matches a named filter.
         bool MatchesAccessibility(ISymbol? siteSymbol) =>
             !accessibilityFilter.HasValue
-            || (siteSymbol != null && siteSymbol.DeclaredAccessibility == accessibilityFilter.Value);
+            || (siteSymbol is not null and not INamespaceSymbol
+                && siteSymbol.DeclaredAccessibility == accessibilityFilter.Value);
 
         foreach (var referencedSymbol in referencedSymbols)
         {
@@ -253,7 +257,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
     /// <c>private</c>) and locals, parameters, type parameters, range variables, and labels (which
     /// report <c>NotApplicable</c>). So a reference inside a lambda in a <c>public</c> method is a
     /// <c>public</c> site, and the declaration of a local is judged by the member declaring it.
-    /// Namespaces are returned as-is (<c>NotApplicable</c>, never matching a filter).
+    /// Namespaces are returned as-is; Roslyn reports them as <c>Public</c>, so the caller rejects them
+    /// explicitly (a namespace-level site never matches a filter).
     /// </summary>
     private static ISymbol? DeclaringSiteSymbol(ISymbol? symbol)
     {

@@ -1769,6 +1769,76 @@ public class FindReferencesOperationTests
         Assert.Equal(0, publicSites.Data.TotalCount);
     }
 
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilter_NamespaceLevelSitesNeverMatch()
+    {
+        // Roslyn reports INamespaceSymbol.DeclaredAccessibility as Public, so the using alias sites
+        // (enclosed by the global namespace and by namespace App.Consumers) must still be excluded.
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                namespace App;
+                public class Target { }
+                """,
+            ["Consumer.cs"] = """
+                using GlobalAlias = App.Target;
+                namespace App.Consumers
+                {
+                    using InnerAlias = App.Target;
+                    public class Consumer
+                    {
+                        public App.Target Make() => null!;
+                    }
+                }
+                """
+        });
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var unfiltered = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false
+        });
+        var publicSites = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false,
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(unfiltered.Success);
+        Assert.Equal(new[] { "Consumer.cs:1", "Consumer.cs:4", "Consumer.cs:7" }, Sites(unfiltered.Data!.References));
+
+        Assert.True(publicSites.Success);
+        Assert.Equal(new[] { "Consumer.cs:7" }, Sites(publicSites.Data!.References));
+        Assert.Equal(1, publicSites.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilterNamespaceTarget_DefinitionNeverMatches()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace App.Things
+            {
+                public class Thing { }
+            }
+            """);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 1,
+            Column = 16,
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(result.Success);
+        Assert.DoesNotContain(result.Data!.References, r => r.IsDefinition);
+    }
+
     private static List<string> Sites(IEnumerable<ReferenceLocationInfo> references) =>
         references
             .Select(r => (File: Path.GetFileName(r.File), r.Line))
