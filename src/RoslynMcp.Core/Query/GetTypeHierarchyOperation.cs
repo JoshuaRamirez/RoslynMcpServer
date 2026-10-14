@@ -15,7 +15,8 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Gets the type hierarchy (base types, derived types, interfaces) for a type symbol. Derived types
 /// are searched across the solution (or reported only within one project when
-/// <see cref="GetTypeHierarchyParams.ProjectPath"/> is set).
+/// <see cref="GetTypeHierarchyParams.ProjectPath"/> is set, and only within one namespace subtree when
+/// <see cref="GetTypeHierarchyParams.NamespaceFilter"/> is set).
 /// </summary>
 public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierarchyParams, GetTypeHierarchyResult>
 {
@@ -160,8 +161,20 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
 
             var filtered = derivedFileKey != null || projectScope != null;
 
+            // Optional namespaceFilter (same normalization / matching as search_symbols /
+            // find_implementations namespaceFilter): a derived type matches when its containing
+            // namespace equals the filter or is nested inside it. Null when omitted, blank, or a bare
+            // global:: (no namespace filtering).
+            var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
+
             foreach (var d in derived)
             {
+                // Applied before maxResults (and before the location filters below) so TotalCount /
+                // Truncated reflect the namespace-filtered set. BaseTypes and Interfaces are never
+                // filtered.
+                if (namespaceFilter != null && !NamespaceFilter.IsInNamespace(d, namespaceFilter))
+                    continue;
+
                 if (!filtered)
                 {
                     derivedTypes.Add(CreateEntry(d));

@@ -58,7 +58,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             ? StringComparison.Ordinal
             : StringComparison.OrdinalIgnoreCase;
         var exactMatch = @params.ExactMatch == true;
-        var namespaceFilter = NormalizeNamespaceFilter(@params.NamespaceFilter);
+        var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
         var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
 
         var entries = new List<SymbolSearchEntry>();
@@ -104,7 +104,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                     continue;
 
                 // Apply namespace filter (before maxResults so TotalCount / Truncated reflect it)
-                if (namespaceFilter != null && !IsInNamespace(symbol, namespaceFilter))
+                if (namespaceFilter != null && !NamespaceFilter.IsInNamespace(symbol, namespaceFilter))
                     continue;
 
                 // Apply accessibility filter (declared accessibility, so implicit defaults count; exact
@@ -170,41 +170,6 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
         };
 
         return QueryResult<SearchSymbolsResult>.Succeeded(operationId, result);
-    }
-
-    private const string GlobalPrefix = "global::";
-
-    /// <summary>
-    /// Trims the namespace filter and strips an optional leading <c>global::</c>.
-    /// Returns <c>null</c> (no namespace filtering) when the filter is omitted, blank, or a bare
-    /// <c>global::</c>, since every namespace is nested in the root namespace.
-    /// </summary>
-    private static string? NormalizeNamespaceFilter(string? namespaceFilter)
-    {
-        if (string.IsNullOrWhiteSpace(namespaceFilter)) return null;
-
-        var trimmed = namespaceFilter.Trim();
-        if (trimmed.StartsWith(GlobalPrefix, StringComparison.Ordinal))
-            trimmed = trimmed[GlobalPrefix.Length..].Trim();
-
-        return trimmed.Length == 0 ? null : trimmed;
-    }
-
-    /// <summary>
-    /// Whether the symbol's containing namespace equals <paramref name="namespaceFilter"/> or is
-    /// nested inside it (ordinal). Symbols in the global namespace never match.
-    /// </summary>
-    private static bool IsInNamespace(ISymbol symbol, string namespaceFilter)
-    {
-        var containingNamespace = symbol.ContainingNamespace;
-        if (containingNamespace == null || containingNamespace.IsGlobalNamespace) return false;
-
-        var name = containingNamespace.ToDisplayString();
-        return name.Length == namespaceFilter.Length
-            ? string.Equals(name, namespaceFilter, StringComparison.Ordinal)
-            : name.Length > namespaceFilter.Length
-              && name[namespaceFilter.Length] == '.'
-              && name.StartsWith(namespaceFilter, StringComparison.Ordinal);
     }
 
     private static SymbolFilter GetSymbolFilter(Contracts.Enums.SymbolKind kind)

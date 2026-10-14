@@ -13,7 +13,8 @@ namespace RoslynMcp.Core.Query;
 
 /// <summary>
 /// Finds all callers of a symbol using Roslyn's SymbolFinder.FindCallersAsync(), across the solution
-/// (or within one project when <see cref="FindCallersParams.ProjectPath"/> is set).
+/// (or within one project when <see cref="FindCallersParams.ProjectPath"/> is set), optionally
+/// narrowed to call sites in one namespace (<see cref="FindCallersParams.NamespaceFilter"/>).
 /// </summary>
 public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams, FindCallersResult>
 {
@@ -96,6 +97,12 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
             ? null
             : new Dictionary<string, string>(StringComparer.Ordinal);
 
+        // Optional namespaceFilter (same normalization / matching as search_symbols /
+        // find_implementations / find_references): keep only call sites whose enclosing symbol
+        // (member, type, or namespace declaration) lives in the filter namespace or one nested
+        // inside it. The target symbol's own namespace is irrelevant. Null when no filter applies.
+        var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter);
+
         foreach (var caller in callerResults)
         {
             foreach (var location in caller.Locations)
@@ -104,8 +111,8 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
 
                 var lineSpan = location.GetLineSpan();
 
-                // Optional callerFile filter runs before maxResults so TotalCount / Truncated
-                // reflect the filtered set.
+                // Optional callerFile / projectPath / namespaceFilter filters run before maxResults
+                // so TotalCount / Truncated reflect the filtered set.
                 if (callerFileKey != null)
                 {
                     var locationPath = lineSpan.Path;
@@ -121,9 +128,9 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                         continue;
                 }
 
-                // Optional projectPath filter (also before maxResults): keep only call sites whose
-                // document belongs to a matched project, so a file linked into several projects is
-                // reported only for the scoped project's document.
+                // Optional projectPath filter: keep only call sites whose document belongs to a
+                // matched project, so a file linked into several projects is reported only for the
+                // scoped project's document.
                 if (projectScope != null)
                 {
                     var documentId = Context.Solution.GetDocumentId(location.SourceTree);
@@ -131,11 +138,19 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                         continue;
                 }
 
+                if (namespaceScope != null
+                    && !await namespaceScope.ContainsAsync(
+                        location.SourceTree,
+                        Context.Solution.GetDocument(location.SourceTree),
+                        location.SourceSpan.Start,
+                        cancellationToken))
+                    continue;
+
                 totalCount++;
 
                 if (callers.Count < maxResults)
                 {
-                    var snippet = await GetSnippetAsync(location, cancellationToken);
+                    var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(location, cancellationToken);
 
                     callers.Add(new CallerInfo
                     {
@@ -160,17 +175,5 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         };
 
         return QueryResult<FindCallersResult>.Succeeded(operationId, result);
-    }
-
-    private static async Task<string?> GetSnippetAsync(Location location, CancellationToken cancellationToken)
-    {
-        if (!location.IsInSource || location.SourceTree == null) return null;
-
-        var text = await location.SourceTree.GetTextAsync(cancellationToken);
-        var lineSpan = location.GetLineSpan();
-        var lineIndex = lineSpan.StartLinePosition.Line;
-
-        if (lineIndex < 0 || lineIndex >= text.Lines.Count) return null;
-        return text.Lines[lineIndex].ToString().Trim();
     }
 }

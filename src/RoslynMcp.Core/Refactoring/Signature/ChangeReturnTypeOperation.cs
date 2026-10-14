@@ -574,17 +574,10 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
 
     internal static void ValidateNoOverloadCollision(IMethodSymbol method, ITypeSymbol newReturnType)
     {
-        if (method.ContainingType == null)
-            return;
-
-        foreach (var candidate in method.ContainingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+        foreach (var candidate in SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(
+                     method,
+                     method.Parameters.Length))
         {
-            if (SymbolEqualityComparer.Default.Equals(candidate, method))
-                continue;
-            if (candidate.Parameters.Length != method.Parameters.Length)
-                continue;
-            if (candidate.TypeParameters.Length != method.TypeParameters.Length)
-                continue;
             if (!TypeEquivalenceHelpers.ParameterListsMatch(method.Parameters, candidate.Parameters))
                 continue;
             if (!TypeEquivalenceHelpers.TypesEquivalent(candidate.ReturnType, newReturnType))

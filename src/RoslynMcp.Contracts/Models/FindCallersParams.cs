@@ -51,4 +51,21 @@ public sealed class FindCallersParams
     /// still locates the target symbol and may live in another project.
     /// </summary>
     public string? ProjectPath { get; init; }
+
+    /// <summary>
+    /// Optional namespace to restrict reported call sites to. When set, only call sites whose
+    /// call site lives in a namespace that equals this value or is nested inside it are returned —
+    /// the containing namespace of the code at that location (the enclosing member, type, or
+    /// namespace declaration), not the target symbol's namespace (e.g. <c>App.Services</c> matches
+    /// sites in <c>App.Services</c> and <c>App.Services.Orders</c>, not <c>App.ServicesExtra</c>); same
+    /// matching as <c>search_symbols</c> / <c>find_implementations</c> / <c>find_references</c>
+    /// <c>namespaceFilter</c>. Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace
+    /// is trimmed and a leading <c>global::</c> is accepted. Combined with <see cref="CallerFile"/>
+    /// and <see cref="ProjectPath"/>, and applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered set. Sites in the global
+    /// namespace never match a named filter. Omit, blank, or a bare <c>global::</c> (the root
+    /// namespace) reports call sites in all namespaces. <see cref="SourceFile"/> still locates the
+    /// target symbol and may be in another namespace.
+    /// </summary>
+    public string? NamespaceFilter { get; init; }
 }

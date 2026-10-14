@@ -32,7 +32,7 @@ public sealed class FindReferencesTool : IToolHandler
     public string Name => "find_references";
 
     /// <inheritdoc />
-    public string Description => "Find all references to a C# symbol across the solution. Returns file locations, context snippets, and whether each reference is a definition or usage. Optional includeDeclaration (default true) set to false returns usages only, excluding the symbol's own definition locations before maxResults is applied. sourceFile locates the target symbol; optional referenceFile restricts reported locations to those in that file (definition locations included only when they are in that file; applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported locations to documents in that project, applied before maxResults.";
+    public string Description => "Find all references to a C# symbol across the solution. Returns file locations, context snippets, and whether each reference is a definition or usage. Optional includeDeclaration (default true) set to false returns usages only, excluding the symbol's own definition locations before maxResults is applied. sourceFile locates the target symbol; optional referenceFile restricts reported locations to those in that file (definition locations included only when they are in that file; applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported locations to documents in that project, applied before maxResults. Optional namespaceFilter restricts reported locations to reference sites (the code enclosing each location, not the target symbol) whose containing namespace equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as search_symbols namespaceFilter), combined with the other filters and applied before maxResults.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -88,6 +88,11 @@ public sealed class FindReferencesTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to a .csproj in the loaded solution to restrict reported reference locations to those whose document belongs to that project, including definition locations when includeDeclaration is on (optional; omit for the whole solution). Every target framework of a multi-targeted project is included; combined with referenceFile and applied before maxResults so totalCount/truncated reflect the project-scoped set; sourceFile may be in another project; a relative or non-.csproj path is rejected and a path matching no project in the workspace returns a source-not-in-workspace error"
+            },
+            namespaceFilter = new
+            {
+                type = "string",
+                description = "Namespace to restrict reported reference locations to (optional; omit for all namespaces). Keeps locations whose reference site (the member, type, or namespace declaration enclosing the location; not the target symbol's namespace), including definition locations when includeDeclaration is on, lives in a namespace that equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace sites (top-level statements, usings outside any namespace) never match a named filter. Same matching as search_symbols namespaceFilter; combined with referenceFile/projectPath/includeDeclaration and applied before maxResults so totalCount/truncated reflect the filtered set"
             }
         },
         additionalProperties = false
@@ -117,7 +122,8 @@ public sealed class FindReferencesTool : IToolHandler
                 MaxResults = args.MaxResults,
                 IncludeDeclaration = args.IncludeDeclaration,
                 ReferenceFile = args.ReferenceFile,
-                ProjectPath = args.ProjectPath
+                ProjectPath = args.ProjectPath,
+                NamespaceFilter = args.NamespaceFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -152,5 +158,6 @@ public sealed class FindReferencesTool : IToolHandler
         public bool? IncludeDeclaration { get; init; }
         public string? ReferenceFile { get; init; }
         public string? ProjectPath { get; init; }
+        public string? NamespaceFilter { get; init; }
     }
 }

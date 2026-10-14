@@ -42,4 +42,22 @@ public sealed class GetDiagnosticsParams
     /// and before <see cref="MaxResults"/>.
     /// </summary>
     public string? ProjectPath { get; init; }
+
+    /// <summary>
+    /// Optional namespace to restrict diagnostics to. When set, only diagnostics whose
+    /// <b>diagnostic site</b> lives in a namespace that equals this value or is nested inside it are
+    /// returned — the containing namespace of the code at the diagnostic location (the member, type,
+    /// or namespace declaration enclosing it, via <c>SemanticModel.GetEnclosingSymbol</c>), e.g.
+    /// <c>App.Services</c> matches sites in <c>App.Services</c> and <c>App.Services.Orders</c>, not
+    /// <c>App.ServicesExtra</c>; same matching as <c>find_references</c> / <c>find_callers</c>
+    /// <c>namespaceFilter</c>. Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace is
+    /// trimmed and a leading <c>global::</c> is accepted. Sites in the global namespace and
+    /// diagnostics with no in-source location never match a named filter. Combined with
+    /// <see cref="SourceFile"/>, <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>,
+    /// <see cref="DiagnosticIds"/>, and <see cref="ExcludeDiagnosticIds"/>, and applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered
+    /// set. Omit, blank, or a bare <c>global::</c> (the root namespace) returns diagnostics in all
+    /// namespaces.
+    /// </summary>
+    public string? NamespaceFilter { get; init; }
 }

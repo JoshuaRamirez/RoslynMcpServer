@@ -91,6 +91,8 @@ public class GetSymbolInfoToolTests
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
         Assert.True(properties.TryGetProperty("kindFilter", out _));
+        Assert.True(properties.TryGetProperty("accessibilityFilter", out _));
+        Assert.True(properties.TryGetProperty("nameFilter", out _));
     }
 
     [Fact]
@@ -130,6 +132,48 @@ public class GetSymbolInfoToolTests
         var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
         Assert.DoesNotContain("kindFilter", required);
         Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_AccessibilityFilter_IsOptionalString()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var accessibilityFilter = doc.RootElement.GetProperty("properties").GetProperty("accessibilityFilter");
+
+        Assert.Equal("string", accessibilityFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("accessibilityFilter", required);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsAccessibilityFilter()
+    {
+        Assert.Contains("accessibilityFilter", _tool.Description, StringComparison.Ordinal);
+        Assert.Contains("applied before maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_NameFilter_IsOptionalString()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var nameFilter = doc.RootElement.GetProperty("properties").GetProperty("nameFilter");
+
+        Assert.Equal("string", nameFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("nameFilter", required);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsNameFilter()
+    {
+        Assert.Contains("nameFilter", _tool.Description, StringComparison.Ordinal);
+        Assert.Contains("applied before maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -65,4 +65,39 @@ public sealed class FindImplementationsParams
     /// reflect it. No effect for member targets or non-interface types. When omitted, <c>true</c>.
     /// </summary>
     public bool? Transitive { get; init; }
+
+    /// <summary>
+    /// Optional namespace to restrict reported implementations to. When set, only implementations whose
+    /// containing namespace (the namespace enclosing the implementing type, or the member's containing
+    /// type for member targets) equals this value or is nested inside it are returned (e.g.
+    /// <c>App.Services</c> matches <c>App.Services</c> and <c>App.Services.Orders</c>, not
+    /// <c>App.ServicesExtra</c>); same matching as <c>search_symbols</c> <c>namespaceFilter</c>.
+    /// Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
+    /// <c>global::</c> is accepted. Combined with <see cref="ImplementationFile"/>,
+    /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, and <see cref="AccessibilityFilter"/>, and
+    /// applied before <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
+    /// namespace-filtered set. Implementations in the global namespace never match a named filter. Omit, blank, or a bare
+    /// <c>global::</c> (the root namespace) reports implementations in all namespaces.
+    /// <see cref="SourceFile"/> still locates the target symbol and may be in another namespace.
+    /// </summary>
+    public string? NamespaceFilter { get; init; }
+
+    /// <summary>
+    /// Optional declared accessibility to restrict reported implementations to: same values and parsing
+    /// as <c>search_symbols</c> / <c>get_document_outline</c> / <c>get_symbol_info</c>
+    /// <c>accessibilityFilter</c> (<c>public</c>, <c>internal</c>, <c>protected</c>, <c>private</c>,
+    /// <c>protected internal</c>, or <c>private protected</c>; case-insensitive; surrounding whitespace
+    /// trimmed and inner whitespace runs collapsed; <c>internal protected</c> / <c>protected private</c>
+    /// also accepted). When set, only implementations whose <c>ISymbol.DeclaredAccessibility</c> equals
+    /// it exactly are returned (semantic, so implicit defaults count: a top-level type with no modifier
+    /// is <c>internal</c>, a nested type with no modifier is <c>private</c>); the match is exact
+    /// (<c>protected internal</c> is not matched by <c>protected</c> or <c>internal</c>). For member
+    /// targets, the implementing member's declared accessibility is used (explicit interface
+    /// implementations are <c>private</c>). Combined with <see cref="ImplementationFile"/>,
+    /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, and <see cref="NamespaceFilter"/>, and
+    /// applied before <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
+    /// accessibility-filtered set. Omit or leave blank for no accessibility filter. An unrecognized
+    /// value fails with <c>InvalidVisibility</c>.
+    /// </summary>
+    public string? AccessibilityFilter { get; init; }
 }

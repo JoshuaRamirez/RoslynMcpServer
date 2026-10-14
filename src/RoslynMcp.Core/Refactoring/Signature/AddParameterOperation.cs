@@ -408,70 +408,21 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
     /// True when inserting <paramref name="parameterType"/> at
     /// <paramref name="insertIndex"/> would collide with another method of
     /// the same name in the containing type (same arity + bound types)
-    /// (ChangeSignature / Codex).
+    /// (ChangeSignature / Codex). Thin wrapper over
+    /// <see cref="SiblingOverloadCollisionHelpers.WouldCollideWithSiblingAfterInsert"/>.
     /// </summary>
     internal static bool WouldCollideWithSibling(
         IMethodSymbol method,
         MethodDeclarationSyntax methodDecl,
         SemanticModel semanticModel,
         string parameterType,
-        int insertIndex)
-    {
-        var containingType = method.ContainingType;
-        if (containingType == null)
-            return false;
-
-        var newTypeInfo = semanticModel.GetSpeculativeTypeInfo(
-            methodDecl.SpanStart,
-            SyntaxFactory.ParseTypeName(parameterType),
-            SpeculativeBindingOption.BindAsTypeOrNamespace);
-        if (newTypeInfo.Type == null || newTypeInfo.Type is IErrorTypeSymbol)
-            return false;
-
-        var prospectiveLength = method.Parameters.Length + 1;
-
-        foreach (var sibling in containingType.GetMembers(method.Name).OfType<IMethodSymbol>())
-        {
-            if (SymbolEqualityComparer.Default.Equals(sibling, method))
-                continue;
-            if (sibling.Parameters.Length != prospectiveLength)
-                continue;
-            if (sibling.TypeParameters.Length != method.TypeParameters.Length)
-                continue;
-
-            var collision = true;
-            for (var i = 0; i < prospectiveLength; i++)
-            {
-                ITypeSymbol expectedType;
-                if (i == insertIndex)
-                {
-                    expectedType = newTypeInfo.Type;
-                }
-                else
-                {
-                    var originalIndex = i < insertIndex ? i : i - 1;
-                    expectedType = method.Parameters[originalIndex].Type;
-                }
-
-                if (sibling.Parameters[i].RefKind != RefKind.None)
-                {
-                    collision = false;
-                    break;
-                }
-
-                if (!TypeEquivalenceHelpers.TypesEquivalent(sibling.Parameters[i].Type, expectedType))
-                {
-                    collision = false;
-                    break;
-                }
-            }
-
-            if (collision)
-                return true;
-        }
-
-        return false;
-    }
+        int insertIndex) =>
+        SiblingOverloadCollisionHelpers.WouldCollideWithSiblingAfterInsert(
+            method,
+            methodDecl,
+            semanticModel,
+            parameterType,
+            insertIndex);
 
     private async Task<Solution?> TryAddOneAsync(
         Document document,

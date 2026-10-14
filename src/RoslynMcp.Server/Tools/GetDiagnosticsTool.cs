@@ -32,7 +32,7 @@ public sealed class GetDiagnosticsTool : IToolHandler
     public string Name => "get_diagnostics";
 
     /// <inheritdoc />
-    public string Description => "Get compiler diagnostics (errors, warnings) for the solution or a specific file. Useful for checking compilation status before or after refactoring. Optional diagnosticIds restricts results to the given IDs (e.g. CS0168; case-insensitive; omit = all IDs). Optional excludeDiagnosticIds drops the given IDs (e.g. CS1591; case-insensitive; wins over diagnosticIds on overlap; omit = exclude none). Optional projectPath restricts results to one project of the solution (absolute .csproj path; omit = whole solution). Optional maxResults caps the returned list (omit = no cap).";
+    public string Description => "Get compiler diagnostics (errors, warnings) for the solution or a specific file. Useful for checking compilation status before or after refactoring. Optional diagnosticIds restricts results to the given IDs (e.g. CS0168; case-insensitive; omit = all IDs). Optional excludeDiagnosticIds drops the given IDs (e.g. CS1591; case-insensitive; wins over diagnosticIds on overlap; omit = exclude none). Optional projectPath restricts results to one project of the solution (absolute .csproj path; omit = whole solution). Optional namespaceFilter restricts results to diagnostics whose diagnostic site — the member / type / namespace declaration enclosing the diagnostic location — lives in a namespace that equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as find_references / find_callers namespaceFilter; global-namespace sites and diagnostics with no source location never match), combined with the other filters and applied before maxResults. Optional maxResults caps the returned list (omit = no cap).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -79,6 +79,11 @@ public sealed class GetDiagnosticsTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to a .csproj in the loaded solution to restrict diagnostics to (optional; omit = whole solution). Only that project is compiled and scanned (all target frameworks of a multi-targeted project). Combined with sourceFile and the ID / severity filters, applied before maxResults. A path matching no project → SourceNotInWorkspace."
+            },
+            namespaceFilter = new
+            {
+                type = "string",
+                description = "Namespace to restrict diagnostics to (optional; omit for all namespaces). Keeps diagnostics whose diagnostic site — the member, type, or namespace declaration enclosing the diagnostic location — lives in a namespace that equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace sites and diagnostics with no source location never match a named filter. Same matching as find_references / find_callers / search_symbols namespaceFilter; combined with sourceFile/projectPath/severityFilter/diagnosticIds/excludeDiagnosticIds and applied before maxResults so totalCount/truncated reflect the filtered set"
             }
         },
         additionalProperties = false
@@ -106,7 +111,8 @@ public sealed class GetDiagnosticsTool : IToolHandler
                 MaxResults = args.MaxResults,
                 DiagnosticIds = args.DiagnosticIds,
                 ExcludeDiagnosticIds = args.ExcludeDiagnosticIds,
-                ProjectPath = args.ProjectPath
+                ProjectPath = args.ProjectPath,
+                NamespaceFilter = args.NamespaceFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -139,5 +145,6 @@ public sealed class GetDiagnosticsTool : IToolHandler
         public List<string>? DiagnosticIds { get; init; }
         public List<string>? ExcludeDiagnosticIds { get; init; }
         public string? ProjectPath { get; init; }
+        public string? NamespaceFilter { get; init; }
     }
 }

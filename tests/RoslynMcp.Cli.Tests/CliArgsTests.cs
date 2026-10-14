@@ -188,4 +188,67 @@ public class CliArgsTests
         Assert.Equal("/src/Widget.cs", result.Options["source-file"]);
         Assert.Equal("protected internal", result.Options["accessibility-filter"]);
     }
+
+    [Fact]
+    public void GetSymbolInfo_NameFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-symbol-info", "--source-file", "/src/Widget.cs", "--symbol-name", "Widget", "--name-filter", "Handle"]);
+        Assert.Equal("get-symbol-info", result.ToolName);
+        Assert.Equal("/src/Widget.cs", result.Options["source-file"]);
+        Assert.Equal("Handle", result.Options["name-filter"]);
+    }
+
+    [Fact]
+    public void FindImplementations_NamespaceFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-implementations", "--source-file", "/src/IRunner.cs", "--symbol-name", "IRunner", "--namespace-filter", "App.Services"]);
+        Assert.Equal("find-implementations", result.ToolName);
+        Assert.Equal("/src/IRunner.cs", result.Options["source-file"]);
+        Assert.Equal("App.Services", result.Options["namespace-filter"]);
+    }
+
+    [Fact]
+    public void FindImplementations_AccessibilityFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-implementations", "--source-file", "/src/IRunner.cs", "--symbol-name", "IRunner", "--accessibility-filter", "protected internal"]);
+        Assert.Equal("find-implementations", result.ToolName);
+        Assert.Equal("/src/IRunner.cs", result.Options["source-file"]);
+        Assert.Equal("protected internal", result.Options["accessibility-filter"]);
+    }
+
+    [Fact]
+    public void FindReferences_NamespaceFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-references", "--source-file", "/src/Target.cs", "--symbol-name", "Run", "--namespace-filter", "App.Services"]);
+        Assert.Equal("find-references", result.ToolName);
+        Assert.Equal("/src/Target.cs", result.Options["source-file"]);
+        Assert.Equal("App.Services", result.Options["namespace-filter"]);
+    }
+
+    [Fact]
+    public void FindCallers_NamespaceFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-callers", "--source-file", "/src/Target.cs", "--symbol-name", "Run", "--namespace-filter", "App.Services"]);
+        Assert.Equal("find-callers", result.ToolName);
+        Assert.Equal("/src/Target.cs", result.Options["source-file"]);
+        Assert.Equal("App.Services", result.Options["namespace-filter"]);
+    }
+
+    [Fact]
+    public void GetTypeHierarchy_NamespaceFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-type-hierarchy", "--source-file", "/src/Shape.cs", "--symbol-name", "Shape", "--namespace-filter", "App.Services"]);
+        Assert.Equal("get-type-hierarchy", result.ToolName);
+        Assert.Equal("/src/Shape.cs", result.Options["source-file"]);
+        Assert.Equal("App.Services", result.Options["namespace-filter"]);
+    }
+
+    [Fact]
+    public void GetDiagnostics_NamespaceFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Error", "--namespace-filter", "App.Services"]);
+        Assert.Equal("get-diagnostics", result.ToolName);
+        Assert.Equal("Error", result.Options["severity-filter"]);
+        Assert.Equal("App.Services", result.Options["namespace-filter"]);
+    }
 }

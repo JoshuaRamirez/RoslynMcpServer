@@ -14,7 +14,11 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <c>projectPath</c> (restricts reported implementations to one project; peer of
 /// <c>get_diagnostics</c> / <c>search_symbols</c> / <c>find_references</c> / <c>find_callers</c>
 /// <c>projectPath</c>), and optional <c>transitive</c> (direct interface implementers only when
-/// false; peer of <c>get_type_hierarchy</c> <c>transitive</c>).
+/// false; peer of <c>get_type_hierarchy</c> <c>transitive</c>), and optional <c>namespaceFilter</c>
+/// (restricts reported implementations to one namespace subtree; peer of <c>search_symbols</c>
+/// <c>namespaceFilter</c>), and optional <c>accessibilityFilter</c> (restricts reported
+/// implementations by declared accessibility; peer of <c>search_symbols</c>
+/// <c>accessibilityFilter</c>).
 /// </summary>
 public class FindImplementationsOperationTests
 {
@@ -1055,6 +1059,626 @@ public class FindImplementationsOperationTests
         Assert.Contains(only.Name, new[] { "P1", "P2", "P3", "P6" });
         Assert.Equal(4, result.Data.TotalCount);
         Assert.True(result.Data.Truncated);
+    }
+
+    #endregion
+
+    #region namespaceFilter
+
+    // Contracts.cs declares App.Contracts.IRunner (Run). IRunner is implemented by S1 / S2
+    // (App.Services), O1 and SubS1 (App.Services.Orders; SubS1 only inherits the implementation from
+    // S1, so it declares no Run of its own), X1 (App.ServicesExtra: a string prefix of App.Services but
+    // not nested in it), L1 (app.services: differs only by case) and G1 (global namespace).
+    private static readonly Dictionary<string, string> NamespaceSources = new()
+    {
+        ["Contracts.cs"] = """
+            namespace App.Contracts
+            {
+                public interface IRunner { void Run(); }
+            }
+            """,
+        ["Services.cs"] = """
+            using App.Contracts;
+            namespace App.Services
+            {
+                public class S1 : IRunner { public virtual void Run() { } }
+                public class S2 : IRunner { public void Run() { } }
+            }
+            """,
+        ["Orders.cs"] = """
+            using App.Contracts;
+            namespace App.Services.Orders
+            {
+                public class O1 : IRunner { public void Run() { } }
+                public class SubS1 : App.Services.S1 { }
+            }
+            """,
+        ["Extra.cs"] = """
+            namespace App.ServicesExtra
+            {
+                public class X1 : App.Contracts.IRunner { public void Run() { } }
+            }
+            """,
+        ["Lower.cs"] = """
+            namespace app.services
+            {
+                public class L1 : App.Contracts.IRunner { public void Run() { } }
+            }
+            """,
+        ["Global.cs"] = """
+            public class G1 : App.Contracts.IRunner { public void Run() { } }
+            """
+    };
+
+    private static readonly string[] AllNamespaceImplementations = ["G1", "L1", "O1", "S1", "S2", "SubS1", "X1"];
+
+    private static readonly string[] ServicesNamespaceImplementations = ["O1", "S1", "S2", "SubS1"];
+
+    [Fact]
+    public void NamespaceFilter_DefaultsToNull()
+    {
+        var @params = new FindImplementationsParams { SourceFile = "/tmp/x.cs", SymbolName = "IFoo" };
+        Assert.Null(@params.NamespaceFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("global::")]
+    [InlineData("  global::  ")]
+    public async Task FindImplementations_OmittedBlankOrRootNamespaceFilter_ReturnsEveryImplementation(string? namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(AllNamespaceImplementations, SortedNames(result.Data!.Implementations));
+        Assert.Equal(7, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Services")]
+    [InlineData("  App.Services  ")]
+    [InlineData("global::App.Services")]
+    [InlineData(" global:: App.Services ")]
+    public async Task FindImplementations_NamespaceFilter_ReturnsImplementationsInNamespaceAndNested(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("IRunner", result.Data!.SymbolName);
+        // X1 (App.ServicesExtra) shares the string prefix but is not nested; L1 differs by case; G1 is
+        // in the global namespace.
+        Assert.Equal(ServicesNamespaceImplementations, SortedNames(result.Data.Implementations));
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Services.Orders", new[] { "O1", "SubS1" })]
+    [InlineData("App", new[] { "O1", "S1", "S2", "SubS1", "X1" })]
+    [InlineData("App.ServicesExtra", new[] { "X1" })]
+    [InlineData("app.services", new[] { "L1" })]
+    public async Task FindImplementations_NamespaceFilter_MatchesExactOrNestedNamespaceOrdinally(
+        string namespaceFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedNames(result.Data!.Implementations));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Serv")]
+    [InlineData("Services")]
+    [InlineData("App.Contracts")]
+    [InlineData("Nope")]
+    public async Task FindImplementations_NamespaceFilterNoMatch_ReturnsEmptySuccess(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Implementations);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NamespaceFilter_MemberTarget_UsesContainingTypeNamespace()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var all = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Run"
+        });
+        var filtered = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(all.Success);
+        // S1 / S2 / O1 / X1 / L1 / G1 each declare Run; SubS1 inherits S1.Run.
+        Assert.Equal(6, all.Data!.TotalCount);
+
+        Assert.True(filtered.Success);
+        Assert.Equal(3, filtered.Data!.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+        Assert.All(filtered.Data.Implementations, i => Assert.Equal("Run", i.Name));
+        Assert.Equal(
+            new[] { "App.Services.Orders.O1.Run()", "App.Services.S1.Run()", "App.Services.S2.Run()" },
+            filtered.Data.Implementations.Select(i => i.FullyQualifiedName).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NamespaceFilterCombinedWithTransitiveFalse_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            NamespaceFilter = "App.Services",
+            Transitive = false
+        });
+
+        Assert.True(result.Success);
+        // SubS1 only inherits the implementation from S1, so the direct set drops it.
+        Assert.Equal(new[] { "O1", "S1", "S2" }, SortedNames(result.Data!.Implementations));
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NamespaceFilterCombinedWithImplementationFile_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var inOrders = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            NamespaceFilter = "App.Services",
+            ImplementationFile = workspace.PathOf("Orders.cs")
+        });
+        var inExtra = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            NamespaceFilter = "App.Services",
+            ImplementationFile = workspace.PathOf("Extra.cs")
+        });
+
+        Assert.True(inOrders.Success);
+        Assert.Equal(new[] { "O1", "SubS1" }, SortedNames(inOrders.Data!.Implementations));
+        Assert.All(inOrders.Data.Implementations, i => Assert.True(SamePath(i.File, workspace.PathOf("Orders.cs"))));
+        Assert.Equal(2, inOrders.Data.TotalCount);
+        Assert.False(inOrders.Data.Truncated);
+
+        Assert.True(inExtra.Success);
+        Assert.Empty(inExtra.Data!.Implementations);
+        Assert.Equal(0, inExtra.Data.TotalCount);
+        Assert.False(inExtra.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NamespaceFilterCombinedWithProjectPath_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            NamespaceFilter = "App.Services.Orders",
+            ProjectPath = workspace.ProjectPath
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "O1", "SubS1" }, SortedNames(result.Data!.Implementations));
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NamespaceFilterThenMaxResults_TruncatesFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            NamespaceFilter = "App.Services",
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Implementations.Count);
+        Assert.All(result.Data.Implementations, i => Assert.Contains(i.Name, ServicesNamespaceImplementations));
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+
+    #endregion
+
+    #region accessibilityFilter
+
+    // AccessibilitySources: IRunner + implementers covering every DeclaredAccessibility (and
+    // implicit defaults). Nested types live on Host so protected / private / compounds are legal.
+    // BaseDirect + DerivedOnly exercise transitive; ExplicitImpl is an explicit interface member
+    // (DeclaredAccessibility.Private) for member-target coverage.
+    private static readonly Dictionary<string, string> AccessibilitySources = new()
+    {
+        ["Contracts.cs"] = """
+            namespace App.Contracts
+            {
+                public interface IRunner { void Run(); }
+            }
+            """,
+        ["Public.cs"] = """
+            namespace App
+            {
+                public class PubImpl : App.Contracts.IRunner { public void Run() { } }
+            }
+            """,
+        ["Internal.cs"] = """
+            namespace App
+            {
+                internal class IntImpl : App.Contracts.IRunner { public void Run() { } }
+                class DefaultTop : App.Contracts.IRunner { public void Run() { } }
+            }
+            """,
+        ["Nested.cs"] = """
+            namespace App
+            {
+                public class Host
+                {
+                    public class NestedPub : App.Contracts.IRunner { public void Run() { } }
+                    internal class NestedInt : App.Contracts.IRunner { public void Run() { } }
+                    protected class NestedProt : App.Contracts.IRunner { public void Run() { } }
+                    private class NestedPriv : App.Contracts.IRunner { public void Run() { } }
+                    protected internal class NestedProtInt : App.Contracts.IRunner { public void Run() { } }
+                    private protected class NestedPrivProt : App.Contracts.IRunner { public void Run() { } }
+                    class NestedDefault : App.Contracts.IRunner { public void Run() { } }
+                }
+            }
+            """,
+        ["Inherited.cs"] = """
+            namespace App
+            {
+                public class BaseDirect : App.Contracts.IRunner { public void Run() { } }
+                public class DerivedOnly : BaseDirect { }
+            }
+            """,
+        ["Explicit.cs"] = """
+            namespace App
+            {
+                public class ExplicitImpl : App.Contracts.IRunner
+                {
+                    void App.Contracts.IRunner.Run() { }
+                }
+            }
+            """
+    };
+
+    private static readonly string[] AllAccessibilityImplementations =
+    [
+        "BaseDirect", "DefaultTop", "DerivedOnly", "ExplicitImpl", "IntImpl", "NestedDefault",
+        "NestedInt", "NestedPriv", "NestedPrivProt", "NestedProt", "NestedProtInt", "NestedPub",
+        "PubImpl"
+    ];
+
+    [Fact]
+    public void AccessibilityFilter_DefaultsToNull()
+    {
+        var @params = new FindImplementationsParams { SourceFile = "/tmp/x.cs", SymbolName = "IFoo" };
+        Assert.Null(@params.AccessibilityFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task FindImplementations_OmittedOrBlankAccessibilityFilter_ReturnsEveryAccessibility(
+        string? accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(AllAccessibilityImplementations, SortedNames(result.Data!.Implementations));
+        Assert.Equal(AllAccessibilityImplementations.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("public", new[] { "BaseDirect", "DerivedOnly", "ExplicitImpl", "NestedPub", "PubImpl" })]
+    [InlineData("internal", new[] { "DefaultTop", "IntImpl", "NestedInt" })]
+    [InlineData("protected", new[] { "NestedProt" })]
+    [InlineData("private", new[] { "NestedDefault", "NestedPriv" })]
+    [InlineData("protected internal", new[] { "NestedProtInt" })]
+    [InlineData("private protected", new[] { "NestedPrivProt" })]
+    public async Task FindImplementations_AccessibilityFilter_SelectsExactlyEachDeclaredAccessibility(
+        string accessibilityFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(result.Success, accessibilityFilter);
+        Assert.Equal(expected, SortedNames(result.Data!.Implementations));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("PUBLIC", "public")]
+    [InlineData("  Private  ", "private")]
+    [InlineData("Protected   Internal", "protected internal")]
+    [InlineData("internal protected", "protected internal")]
+    [InlineData("protected private", "private protected")]
+    public async Task FindImplementations_AccessibilityFilter_IsCaseInsensitiveAndAcceptsEitherModifierOrder(
+        string accessibilityFilter, string canonical)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            AccessibilityFilter = accessibilityFilter
+        });
+        var expected = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            AccessibilityFilter = canonical
+        });
+
+        Assert.True(filtered.Success);
+        Assert.True(expected.Success);
+        Assert.Equal(SortedNames(expected.Data!.Implementations), SortedNames(filtered.Data!.Implementations));
+    }
+
+    [SkippableTheory]
+    [InlineData("friend")]
+    [InlineData("ProtectedOrInternal")]
+    [InlineData("public, internal")]
+    public async Task FindImplementations_UnknownAccessibilityFilter_ThrowsInvalidVisibility(
+        string accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new FindImplementationsParams
+            {
+                SourceFile = workspace.PathOf("Contracts.cs"),
+                SymbolName = "IRunner",
+                AccessibilityFilter = accessibilityFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.StartsWith($"Invalid accessibilityFilter '{accessibilityFilter}'. Valid values: ", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_AccessibilityFilter_MemberTarget_UsesMemberDeclaredAccessibility()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var all = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Run"
+        });
+        var publics = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public"
+        });
+        var privates = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(all.Success);
+        // Every type that declares Run (not DerivedOnly, which inherits BaseDirect.Run).
+        Assert.Equal(12, all.Data!.TotalCount);
+
+        Assert.True(publics.Success);
+        // Public interface method implementations (not ExplicitImpl's private explicit member).
+        Assert.Equal(11, publics.Data!.TotalCount);
+        Assert.DoesNotContain(publics.Data.Implementations, i => i.FullyQualifiedName.Contains("ExplicitImpl"));
+        Assert.All(publics.Data.Implementations, i => Assert.Equal("Run", i.Name));
+
+        Assert.True(privates.Success);
+        Assert.Equal(1, privates.Data!.TotalCount);
+        Assert.Contains("ExplicitImpl", privates.Data.Implementations[0].FullyQualifiedName);
+        Assert.False(privates.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_AccessibilityFilterCombinedWithTransitiveFalse_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            AccessibilityFilter = "public",
+            Transitive = false
+        });
+
+        Assert.True(result.Success);
+        // DerivedOnly only inherits the implementation from BaseDirect, so the direct public set
+        // drops it.
+        Assert.Equal(new[] { "BaseDirect", "ExplicitImpl", "NestedPub", "PubImpl" }, SortedNames(result.Data!.Implementations));
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_AccessibilityFilterCombinedWithImplementationFile_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var inPublic = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            AccessibilityFilter = "public",
+            ImplementationFile = workspace.PathOf("Public.cs")
+        });
+        var inNested = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            AccessibilityFilter = "public",
+            ImplementationFile = workspace.PathOf("Nested.cs")
+        });
+
+        Assert.True(inPublic.Success);
+        Assert.Equal(new[] { "PubImpl" }, SortedNames(inPublic.Data!.Implementations));
+        Assert.Equal(1, inPublic.Data.TotalCount);
+
+        Assert.True(inNested.Success);
+        Assert.Equal(new[] { "NestedPub" }, SortedNames(inNested.Data!.Implementations));
+        Assert.Equal(1, inNested.Data.TotalCount);
+        Assert.False(inNested.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_AccessibilityFilterCombinedWithNamespaceFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            AccessibilityFilter = "public",
+            NamespaceFilter = "App"
+        });
+
+        Assert.True(result.Success);
+        // Contracts.IRunner's implementers under App (not App.Contracts). ExplicitImpl is public type.
+        Assert.Equal(new[] { "BaseDirect", "DerivedOnly", "ExplicitImpl", "NestedPub", "PubImpl" }, SortedNames(result.Data!.Implementations));
+        Assert.Equal(5, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_AccessibilityFilterThenMaxResults_TruncatesFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRunner",
+            AccessibilityFilter = "public",
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Implementations.Count);
+        Assert.Equal(5, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+        Assert.All(result.Data.Implementations, i =>
+            Assert.Contains(i.Name, new[] { "BaseDirect", "DerivedOnly", "ExplicitImpl", "NestedPub", "PubImpl" }));
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_AccessibilityFilterWithNoMatch_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["IRunner.cs"] = "public interface IRunner { void Run(); }",
+            ["OnlyPublic.cs"] = "public class OnlyPub : IRunner { public void Run() { } }"
+        });
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            SymbolName = "IRunner",
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Implementations);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
     }
 
     #endregion

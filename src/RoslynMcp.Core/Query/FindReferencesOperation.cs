@@ -13,7 +13,8 @@ namespace RoslynMcp.Core.Query;
 
 /// <summary>
 /// Finds all references to a symbol across the solution (or within one project when
-/// <see cref="FindReferencesParams.ProjectPath"/> is set).
+/// <see cref="FindReferencesParams.ProjectPath"/> is set), optionally narrowed to reference sites in one
+/// namespace (<see cref="FindReferencesParams.NamespaceFilter"/>).
 /// Delegates to Roslyn's SymbolFinder.FindReferencesAsync.
 /// </summary>
 public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesParams, FindReferencesResult>
@@ -122,6 +123,13 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         bool IsInProjectScope(DocumentId? documentId) =>
             projectScope == null || (documentId != null && projectScope.Contains(documentId.ProjectId));
 
+        // Optional namespaceFilter (same normalization / matching as search_symbols and
+        // find_implementations): keep only locations whose reference site, i.e. the symbol enclosing
+        // the location (member, type, or namespace declaration), lives in the filter namespace or one
+        // nested inside it. The target symbol's own namespace is irrelevant (it is the same for every
+        // reference). Null when no filter applies.
+        var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter);
+
         foreach (var referencedSymbol in referencedSymbols)
         {
             // Add the definition itself (skipped entirely when includeDeclaration is false)
@@ -132,15 +140,20 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
             {
                 var lineSpan = defLocation.GetLineSpan();
 
-                // Optional referenceFile / projectPath filters run before maxResults so
-                // TotalCount / Truncated reflect the filtered set.
+                // Optional referenceFile / projectPath / namespaceFilter filters run before maxResults
+                // so TotalCount / Truncated reflect the filtered set.
                 if (!IsInReferenceFile(lineSpan.Path)) continue;
                 if (projectScope != null && !IsInProjectScope(Context.Solution.GetDocumentId(defLocation.SourceTree))) continue;
+                if (namespaceScope != null
+                    && !await namespaceScope.ContainsAsync(
+                        defLocation.SourceTree, Context.Solution.GetDocument(defLocation.SourceTree), defLocation.SourceSpan.Start,
+                        cancellationToken))
+                    continue;
 
                 totalCount++;
                 if (locations.Count < maxResults)
                 {
-                    var snippet = await GetContextSnippetAsync(defLocation, cancellationToken);
+                    var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(defLocation, cancellationToken);
 
                     locations.Add(new ReferenceLocationInfo
                     {
@@ -166,12 +179,17 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 // reference's own document.
                 if (!IsInReferenceFile(file)) continue;
                 if (!IsInProjectScope(refLocation.Document.Id)) continue;
+                if (namespaceScope != null
+                    && !await namespaceScope.ContainsAsync(
+                        refLocation.Location.SourceTree, refLocation.Document, refLocation.Location.SourceSpan.Start,
+                        cancellationToken))
+                    continue;
 
                 totalCount++;
 
                 if (locations.Count < maxResults)
                 {
-                    var snippet = await GetContextSnippetAsync(refLocation.Location, cancellationToken);
+                    var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(refLocation.Location, cancellationToken);
 
                     locations.Add(new ReferenceLocationInfo
                     {
@@ -196,21 +214,5 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         };
 
         return QueryResult<FindReferencesResult>.Succeeded(operationId, result);
-    }
-
-    private static async Task<string?> GetContextSnippetAsync(Location location, CancellationToken cancellationToken)
-    {
-        if (!location.IsInSource) return null;
-
-        var tree = location.SourceTree;
-        if (tree == null) return null;
-
-        var text = await tree.GetTextAsync(cancellationToken);
-        var lineSpan = location.GetLineSpan();
-        var lineIndex = lineSpan.StartLinePosition.Line;
-
-        if (lineIndex < 0 || lineIndex >= text.Lines.Count) return null;
-
-        return text.Lines[lineIndex].ToString().Trim();
     }
 }

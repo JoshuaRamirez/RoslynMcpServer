@@ -28,8 +28,9 @@ public sealed class GetSymbolInfoParams
     /// <summary>
     /// Maximum number of members to return for a type symbol. Omit for no cap (return all members).
     /// Only caps <c>Members</c>; Interfaces, Parameters, Modifiers and other fields are not capped,
-    /// and it has no effect on non-type symbols. Applied after <see cref="KindFilter"/> so
-    /// <c>TotalCount</c> / <c>Truncated</c> reflect the kind-filtered set.
+    /// and it has no effect on non-type symbols. Applied after <see cref="KindFilter"/>,
+    /// <see cref="AccessibilityFilter"/>, and <see cref="NameFilter"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the filtered set.
     /// </summary>
     public int? MaxResults { get; init; }
 
@@ -37,9 +38,33 @@ public sealed class GetSymbolInfoParams
     /// Optional member kind to restrict the <c>Members</c> list of a named type to: a single
     /// <c>SymbolKind</c> name shared with <c>search_symbols</c> / <c>get_document_outline</c>
     /// <c>kindFilter</c> (Class, Struct, Interface, Enum, Record, Delegate, Method, Property, Field,
-    /// Event, Constant, Local, Parameter, Namespace; case-insensitive). Applied before
+    /// Event, Constant, Local, Parameter, Namespace; case-insensitive). Combined with
+    /// <see cref="AccessibilityFilter"/> and <see cref="NameFilter"/> and applied before
     /// <see cref="MaxResults"/>. Omit, empty, or whitespace = all members. Interfaces, Parameters,
     /// and other fields are not filtered; no effect on non-type symbols.
     /// </summary>
     public string? KindFilter { get; init; }
+
+    /// <summary>
+    /// Optional declared accessibility to restrict the <c>Members</c> list of a named type to:
+    /// <c>public</c>, <c>internal</c>, <c>protected</c>, <c>private</c>, <c>protected internal</c>, or
+    /// <c>private protected</c> (case-insensitive; same values, parsing, and <c>InvalidVisibility</c>
+    /// error as <c>search_symbols</c> / <c>get_document_outline</c> <c>accessibilityFilter</c>). A member
+    /// is kept when its declared accessibility equals the filter exactly, so implicit defaults count
+    /// (a class member with no modifier is <c>private</c>, an interface or enum member is <c>public</c>).
+    /// Combined with <see cref="KindFilter"/> and <see cref="NameFilter"/> (a member must satisfy all
+    /// that are set) and applied before <see cref="MaxResults"/>. Omit, empty, or whitespace = all
+    /// members. Interfaces, Parameters, and other fields are not filtered; no effect on non-type symbols.
+    /// </summary>
+    public string? AccessibilityFilter { get; init; }
+
+    /// <summary>
+    /// Optional name substring to restrict the <c>Members</c> list of a named type to: keep members
+    /// whose simple name contains this value (ordinal, case-insensitive; same matching as
+    /// <c>get_document_outline</c> <c>nameFilter</c>). Surrounding whitespace is trimmed. Combined with
+    /// <see cref="KindFilter"/> and <see cref="AccessibilityFilter"/> (a member must satisfy all that
+    /// are set) and applied before <see cref="MaxResults"/>. Omit, empty, or whitespace = all members.
+    /// Interfaces, Parameters, and other fields are not filtered; no effect on non-type symbols.
+    /// </summary>
+    public string? NameFilter { get; init; }
 }

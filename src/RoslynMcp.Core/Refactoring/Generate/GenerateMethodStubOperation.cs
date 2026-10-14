@@ -1025,22 +1025,14 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         ResolveMethodToReplace(typeSymbol, methodName, parameters, typeParameterCount, replaceExisting: false);
     }
 
-    internal static bool ParameterTypeMatches(string requestedType, ITypeSymbol existingType)
-    {
-        requestedType = requestedType.Trim();
-        var candidates = new HashSet<string>(StringComparer.Ordinal)
-        {
-            existingType.ToDisplayString(),
-            existingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
-                .Replace("global::", "", StringComparison.Ordinal),
-            existingType.Name
-        };
-
-        if (TryGetSpecialTypeAlias(existingType.SpecialType, out var alias))
-            candidates.Add(alias);
-
-        return candidates.Contains(requestedType);
-    }
+    /// <summary>
+    /// True when <paramref name="requestedType"/> matches
+    /// <paramref name="existingType"/> via display string / FQN / name / special-type
+    /// keyword alias. Delegates to
+    /// <see cref="SpecialTypeAliasHelpers.MatchesRequestedType"/>.
+    /// </summary>
+    internal static bool ParameterTypeMatches(string requestedType, ITypeSymbol existingType) =>
+        SpecialTypeAliasHelpers.MatchesRequestedType(requestedType, existingType);
 
     internal static string InferReturnType(
         InvocationExpressionSyntax invocation,
@@ -1819,33 +1811,6 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         var parsed = SyntaxFactory.ParseTypeName(typeName.Trim());
         return parsed is not IdentifierNameSyntax { IsMissing: true }
                && !parsed.ContainsDiagnostics;
-    }
-
-    private static bool TryGetSpecialTypeAlias(SpecialType specialType, out string alias)
-    {
-        alias = specialType switch
-        {
-            SpecialType.System_Boolean => "bool",
-            SpecialType.System_Byte => "byte",
-            SpecialType.System_SByte => "sbyte",
-            SpecialType.System_Int16 => "short",
-            SpecialType.System_UInt16 => "ushort",
-            SpecialType.System_Int32 => "int",
-            SpecialType.System_UInt32 => "uint",
-            SpecialType.System_Int64 => "long",
-            SpecialType.System_UInt64 => "ulong",
-            SpecialType.System_Single => "float",
-            SpecialType.System_Double => "double",
-            SpecialType.System_Decimal => "decimal",
-            SpecialType.System_Char => "char",
-            SpecialType.System_IntPtr => "nint",
-            SpecialType.System_UIntPtr => "nuint",
-            SpecialType.System_String => "string",
-            SpecialType.System_Object => "object",
-            SpecialType.System_Void => "void",
-            _ => ""
-        };
-        return alias.Length > 0;
     }
 
     private static bool IsUsableType(ITypeSymbol? type) =>
