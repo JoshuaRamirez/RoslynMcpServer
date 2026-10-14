@@ -156,16 +156,17 @@ internal sealed class SiteEnclosingSymbolResolver
     }
 
     /// <summary>
-    /// Carrier index for every syntax diagnostic of <paramref name="root"/>'s tree, built in one walk:
-    /// for each diagnostic id and span, one entry per diagnostic occurrence in the tree's diagnostic
-    /// order (the pre-order <see cref="SyntaxTree.GetDiagnostics(CancellationToken)"/> walk, where a
-    /// node's own diagnostics precede its children's), holding the symbol of the declaration enclosing
-    /// the missing node or token that owns that occurrence, or null when its owner is real syntax. A
-    /// node or token owns the diagnostics in its subtree that none of its children carries, so
-    /// collocated diagnostics (the two zero-width CS1513 of nested unterminated types at end of file)
-    /// stay distinct, each with its own carrier. Only nodes and tokens containing diagnostics are
-    /// visited, so a file with many syntax errors is indexed once rather than searched from the root
-    /// for every diagnostic.
+    /// Carrier index for every syntax diagnostic of <paramref name="root"/>'s tree, built in one linear
+    /// walk over diagnostic-bearing nodes and tokens: for each diagnostic id and span, one entry per
+    /// occurrence in the tree's diagnostic order (the pre-order
+    /// <see cref="SyntaxTree.GetDiagnostics(CancellationToken)"/> walk, where a node's own diagnostics
+    /// precede its children's), holding the symbol of the declaration enclosing the missing node or
+    /// token that owns that occurrence, or null when its owner is real syntax. Ownership is the same as
+    /// multiset subtraction of children's diagnostics from a node's — parser diagnostics live on the
+    /// missing token or on a leaf node with no diagnostic-bearing children — so collocated diagnostics
+    /// (nested unterminated types' zero-width CS1513 at end of file) stay distinct. Tokens and leaf
+    /// diagnostic nodes use a local <c>GetDiagnostics</c>; intermediate nodes only push their
+    /// diagnostic-bearing children, avoiding O(N²) subtree re-enumeration for deep nesting.
     /// </summary>
     private static Dictionary<(string Id, TextSpan Span), List<ISymbol?>> GetSyntaxDiagnosticCarriers(
         SemanticModel semanticModel, SyntaxNode root, CancellationToken cancellationToken)
@@ -176,62 +177,60 @@ internal sealed class SiteEnclosingSymbolResolver
             return carriers;
 
         // Explicit stack (pre-order, children pushed in reverse) so deeply nested malformed syntax does
-        // not recurse.
+        // not recurse. Only enumerate diagnostics that this node/token owns locally: tokens always,
+        // nodes only when no child carries diagnostics (leaf carriers such as a missing expression).
+        // Nodes with diagnostic-bearing children own nothing themselves — their children's diagnostics
+        // bubble up through SyntaxTree.GetDiagnostics(node) — so skipping that call keeps the walk
+        // O(nodes + diagnostics) instead of re-walking each ancestor's subtree.
         var pending = new Stack<SyntaxNodeOrToken>();
         pending.Push(root);
-        var childKeys = new Dictionary<(string Id, TextSpan Span), int>();
         var children = new List<SyntaxNodeOrToken>();
         while (pending.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var nodeOrToken = pending.Pop();
 
-            childKeys.Clear();
             children.Clear();
             if (nodeOrToken.IsNode)
             {
                 foreach (var child in nodeOrToken.ChildNodesAndTokens())
                 {
-                    if (!child.ContainsDiagnostics)
-                        continue;
-
-                    children.Add(child);
-                    foreach (var diagnostic in tree.GetDiagnostics(child))
-                    {
-                        var key = (diagnostic.Id, diagnostic.Location.SourceSpan);
-                        childKeys[key] = childKeys.GetValueOrDefault(key) + 1;
-                    }
+                    if (child.ContainsDiagnostics)
+                        children.Add(child);
                 }
             }
 
-            ISymbol? carrierSymbol = null;
-            var carrierResolved = false;
-            foreach (var diagnostic in tree.GetDiagnostics(nodeOrToken))
+            // Local diagnostics only: tokens, or nodes with no diagnostic-bearing children.
+            var localDiagnostics = nodeOrToken.IsToken || children.Count == 0
+                ? tree.GetDiagnostics(nodeOrToken)
+                : null;
+
+            if (localDiagnostics != null)
             {
-                var key = (diagnostic.Id, diagnostic.Location.SourceSpan);
-                if (childKeys.TryGetValue(key, out var carriedByChildren) && carriedByChildren > 0)
+                ISymbol? carrierSymbol = null;
+                var carrierResolved = false;
+                foreach (var diagnostic in localDiagnostics)
                 {
-                    childKeys[key] = carriedByChildren - 1;
-                    continue;
-                }
+                    var key = (diagnostic.Id, diagnostic.Location.SourceSpan);
+                    if (!carrierResolved)
+                    {
+                        carrierSymbol = nodeOrToken.IsMissing
+                            ? GetEnclosingDeclaredSymbol(
+                                semanticModel,
+                                nodeOrToken.IsNode ? nodeOrToken.AsNode() : nodeOrToken.Parent,
+                                cancellationToken)
+                            : null;
+                        carrierResolved = true;
+                    }
 
-                if (!carrierResolved)
-                {
-                    carrierSymbol = nodeOrToken.IsMissing
-                        ? GetEnclosingDeclaredSymbol(
-                            semanticModel, nodeOrToken.IsNode ? nodeOrToken.AsNode() : nodeOrToken.Parent,
-                            cancellationToken)
-                        : null;
-                    carrierResolved = true;
-                }
+                    if (!carriers.TryGetValue(key, out var symbols))
+                    {
+                        symbols = new List<ISymbol?>();
+                        carriers[key] = symbols;
+                    }
 
-                if (!carriers.TryGetValue(key, out var symbols))
-                {
-                    symbols = new List<ISymbol?>();
-                    carriers[key] = symbols;
+                    symbols.Add(carrierSymbol);
                 }
-
-                symbols.Add(carrierSymbol);
             }
 
             for (var i = children.Count - 1; i >= 0; i--)

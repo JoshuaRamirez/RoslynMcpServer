@@ -2241,6 +2241,80 @@ public class GetDiagnosticsOperationTests
         Assert.Equal(pairs + 1, priv.Data.TotalCount);
     }
 
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_DeepNestedMissingCloseBracesScaleLinearly()
+    {
+        // ~40 nested unterminated types at EOF: each level contributes one collocated CS1513. The
+        // carrier index must attribute each occurrence to its own type without O(N²) subtree
+        // re-enumeration while building the index (regression for the linear GetSyntaxDiagnosticCarriers
+        // walk). Accessibility filters still isolate public / private / internal carriers.
+        const int depth = 40;
+        var builder = new System.Text.StringBuilder();
+        for (var i = 0; i < depth; i++)
+        {
+            var accessibility = (i % 3) switch
+            {
+                0 => "public",
+                1 => "private",
+                _ => "internal"
+            };
+            builder.Append(accessibility).Append(" class C").Append(i).Append(" { ");
+        }
+
+        await using var workspace = await TempWorkspace.CreateAsync(builder.ToString());
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS1513" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        Assert.True(omitted.Success);
+        Assert.Equal(depth, omitted.Data!.TotalCount);
+
+        var expectedPublic = (depth + 2) / 3;   // i % 3 == 0
+        var expectedPrivate = (depth + 1) / 3;  // i % 3 == 1
+        var expectedInternal = depth / 3;       // i % 3 == 2
+
+        foreach (var (filter, expected) in new[]
+                 {
+                     ("public", expectedPublic),
+                     ("private", expectedPrivate),
+                     ("internal", expectedInternal)
+                 })
+        {
+            var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+            {
+                DiagnosticIds = ids,
+                AccessibilityFilter = filter
+            });
+            Assert.True(filtered.Success);
+            Assert.Equal(expected, filtered.Data!.TotalCount);
+            Assert.All(filtered.Data.Diagnostics, d => Assert.Equal("CS1513", d.Id));
+        }
+
+        var prot = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "protected"
+        });
+        Assert.True(prot.Success);
+        Assert.Equal(0, prot.Data!.TotalCount);
+
+        // Occurrence order: innermost missing `}` first (C{depth-1} … C0), matching tree diagnostic order.
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath)!;
+        var tree = (await document.GetSyntaxTreeAsync())!;
+        var cs1513 = (await tree.GetRootAsync()).GetDiagnostics().Where(d => d.Id == "CS1513").ToArray();
+        Assert.Equal(depth, cs1513.Length);
+        var span = cs1513[0].Location.SourceSpan;
+        Assert.All(cs1513, d => Assert.Equal(span, d.Location.SourceSpan));
+        var resolver = new SiteEnclosingSymbolResolver(workspace.Context);
+        for (var occurrence = 0; occurrence < depth; occurrence++)
+        {
+            var carrier = await resolver.GetDeclaredOrEnclosingSymbolAsync(
+                tree, document, span, "CS1513", occurrence, CancellationToken.None);
+            var expectedName = "C" + (depth - 1 - occurrence);
+            Assert.Equal(expectedName, Assert.IsAssignableFrom<INamedTypeSymbol>(carrier).Name);
+        }
+    }
+
     #endregion
 
 
