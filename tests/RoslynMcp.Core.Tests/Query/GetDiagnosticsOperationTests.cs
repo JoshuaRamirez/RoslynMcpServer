@@ -1573,6 +1573,124 @@ public class GetDiagnosticsOperationTests
         Assert.DoesNotContain("inPublic", VariableNames(priv.Data!));
     }
 
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_FieldTypeAndModifierDiagnosticsUseFieldAccessibility()
+    {
+        // CS0246 (unknown field type) / CS0106 (invalid modifier) attach to the field declaration's
+        // type / modifier, whose ancestors are VariableDeclarationSyntax / FieldDeclarationSyntax but not
+        // the declarator. GetDeclaredSymbol yields no field for those container nodes, so without
+        // resolving through a declarator the site would fall out to the public containing type.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class C
+            {
+                private MissingPrivate privateField;
+                public MissingPublic publicField;
+                private event MissingHandler privateEvent;
+                private virtual int virtualField;
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS0246", "CS0106" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "public"
+        });
+        var priv = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(pub.Success);
+        Assert.True(priv.Success);
+        Assert.Equal(4, omitted.Data!.TotalCount);
+        Assert.Equal(new[] { "MissingPublic" }, VariableNames(pub.Data!));
+        Assert.Equal(
+            new[] { "MissingHandler", "MissingPrivate", "virtual" },
+            VariableNames(priv.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_DirectiveTriviaBeforeDeclarationDoesNotInheritIt()
+    {
+        // FindToken attributes a position in leading trivia to the following token, so a #warning
+        // directive immediately before `public class` must not resolve to that class: namespace-level
+        // (and compilation-unit-level) sites never match a named filter.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            #warning TopLevel
+            public class C { public void M() { int inPublic; } }
+
+            namespace App
+            {
+                #warning InNamespace
+                public class D { }
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS1030", "CS0168" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = ids
+        });
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = ids,
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(omitted.Success);
+        Assert.Equal(2, omitted.Data!.Diagnostics.Count(d => d.Id == "CS1030"));
+        Assert.True(pub.Success);
+        Assert.DoesNotContain(pub.Data!.Diagnostics, d => d.Id == "CS1030");
+        Assert.Equal(new[] { "inPublic" }, VariableNames(pub.Data!));
+        Assert.Equal(1, pub.Data!.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_DocumentationCommentDiagnosticsUseDocumentedMember()
+    {
+        // Documentation comment trivia belongs to the declaration it documents, so CS1574 on a doc
+        // comment cref is judged by that member's accessibility (not the enclosing public type).
+        await using var workspace = await TempWorkspace.CreateAsync(
+            """
+            /// <summary>C</summary>
+            public class C
+            {
+                /// <see cref="NopePublic"/>
+                public void Pub() { }
+
+                /// <see cref="NopePrivate"/>
+                private void Priv() { }
+            }
+            """,
+            extraProperties: "<GenerateDocumentationFile>true</GenerateDocumentationFile>");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS1574" };
+
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "public"
+        });
+        var priv = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(pub.Success);
+        Assert.True(priv.Success);
+        Assert.Equal(new[] { "NopePublic" }, VariableNames(pub.Data!));
+        Assert.Equal(new[] { "NopePrivate" }, VariableNames(priv.Data!));
+    }
+
     #endregion
 
 
@@ -1588,7 +1706,8 @@ public class GetDiagnosticsOperationTests
             string source,
             string fileName = "Foo.cs",
             string? outputType = null,
-            IReadOnlyDictionary<string, string>? extraFiles = null)
+            IReadOnlyDictionary<string, string>? extraFiles = null,
+            string extraProperties = "")
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1603,6 +1722,7 @@ public class GetDiagnosticsOperationTests
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
                     {outputTypeElement}
+                    {extraProperties}
                   </PropertyGroup>
                 </Project>
                 """);

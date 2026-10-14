@@ -1,4 +1,6 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Query.Utilities;
@@ -36,12 +38,15 @@ internal sealed class SiteEnclosingSymbolResolver
     /// <summary>
     /// Symbol for a diagnostic site at <paramref name="position"/>: the nearest declared symbol
     /// whose syntax contains that position (so a declaration-attached diagnostic such as CS0169 on a
-    /// field identifier resolves to that field rather than the enclosing type — a field without an
-    /// initializer does not establish a member semantic scope for
+    /// field identifier, or CS0246 on a field's type, resolves to that field rather than the enclosing
+    /// type — a field without an initializer does not establish a member semantic scope for
     /// <see cref="SemanticModel.GetEnclosingSymbol"/>), falling back to
     /// <see cref="SemanticModel.GetEnclosingSymbol"/> when no declaration covers the position
-    /// (expression / statement body sites). Null when there is no tree, no semantic model, or neither
-    /// path yields a symbol.
+    /// (expression / statement body sites). A declaration covers a position only within its
+    /// <see cref="SyntaxNode.Span"/>, so trivia before a declaration (e.g. a <c>#warning</c> directive
+    /// immediately before <c>public class C</c>) does not inherit that declaration; documentation
+    /// comment trivia is the exception and belongs to the declaration it documents. Null when there is
+    /// no tree, no semantic model, or neither path yields a symbol.
     /// </summary>
     public async Task<ISymbol?> GetDeclaredOrEnclosingSymbolAsync(
         SyntaxTree? tree, Document? document, int position, CancellationToken cancellationToken)
@@ -51,16 +56,44 @@ internal sealed class SiteEnclosingSymbolResolver
             return null;
 
         var root = await tree.GetRootAsync(cancellationToken);
+        // FindToken attributes a position in trivia to the token owning that trivia; only a documentation
+        // comment is part of the declaration that follows it.
+        var inDocumentationComment = IsDocumentationComment(root.FindTrivia(position));
         var token = root.FindToken(position);
         for (SyntaxNode? node = token.Parent; node != null; node = node.Parent)
         {
-            var declared = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+            var covers = inDocumentationComment
+                ? node.FullSpan.Contains(position)
+                : node.Span.Contains(position);
+            if (!covers)
+                continue;
+
+            var declared = GetDeclaredSymbol(semanticModel, node, cancellationToken);
             if (declared != null)
                 return declared;
         }
 
         return semanticModel.GetEnclosingSymbol(position, cancellationToken);
     }
+
+    /// <summary>
+    /// Declared symbol for <paramref name="node"/>. A field / event-field declaration declares its
+    /// symbols on its variable declarators, so a site on the declaration's type, modifiers, or
+    /// attributes resolves through its first declarator (every declarator shares the declaration's
+    /// accessibility) instead of walking out to the containing type.
+    /// </summary>
+    private static ISymbol? GetDeclaredSymbol(
+        SemanticModel semanticModel, SyntaxNode node, CancellationToken cancellationToken)
+    {
+        if (node is BaseFieldDeclarationSyntax { Declaration.Variables: [var declarator, ..] })
+            return semanticModel.GetDeclaredSymbol(declarator, cancellationToken);
+
+        return semanticModel.GetDeclaredSymbol(node, cancellationToken);
+    }
+
+    private static bool IsDocumentationComment(SyntaxTrivia trivia) =>
+        trivia.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia)
+        || trivia.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia);
 
     private async Task<SemanticModel?> GetCachedSemanticModelAsync(
         SyntaxTree? tree, Document? document, CancellationToken cancellationToken)
