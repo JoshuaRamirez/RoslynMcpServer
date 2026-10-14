@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Query.Utilities;
@@ -17,6 +18,7 @@ internal sealed class SiteEnclosingSymbolResolver
 {
     private readonly WorkspaceContext _context;
     private readonly Dictionary<SyntaxTree, SemanticModel?> _semanticModelCache = new();
+    private readonly Dictionary<SyntaxTree, HashSet<(string Id, TextSpan Span)>> _syntaxDiagnosticCache = new();
 
     public SiteEnclosingSymbolResolver(WorkspaceContext context)
     {
@@ -36,28 +38,36 @@ internal sealed class SiteEnclosingSymbolResolver
     }
 
     /// <summary>
-    /// Symbol for a diagnostic site at <paramref name="position"/>: the nearest declared symbol
-    /// whose syntax contains that position (so a declaration-attached diagnostic such as CS0169 on a
-    /// field identifier, or CS0246 on a field's type, resolves to that field rather than the enclosing
+    /// Symbol for a diagnostic site at <paramref name="span"/> (the diagnostic's source span; its start
+    /// is the site position): the nearest declared symbol whose syntax contains that position (so a
+    /// declaration-attached diagnostic such as CS0169 on a field identifier, or CS0246 on a field's
+    /// type, resolves to that field rather than the enclosing
     /// type — a field without an initializer does not establish a member semantic scope for
     /// <see cref="SemanticModel.GetEnclosingSymbol"/>), falling back to
     /// <see cref="SemanticModel.GetEnclosingSymbol"/> when no declaration covers the position
     /// (expression / statement body sites). A declaration covers a position only within its
     /// <see cref="SyntaxNode.Span"/>, so trivia before a declaration (e.g. a <c>#warning</c> directive
     /// immediately before <c>public class C</c>) does not inherit that declaration; documentation
-    /// comment trivia is the exception and belongs to the declaration it documents. A zero-width
-    /// diagnostic at the end of an unterminated declaration that no declaration span covers (e.g. CS1002
-    /// for <c>private int field</c> at the end of a file with no trailing newline, where <c>FindToken</c>
-    /// lands on the end-of-file token) resolves through that preceding declaration (see
-    /// <see cref="GetUnterminatedDeclarationSymbol"/>). Symbols declared by
-    /// an expression (anonymous types and their properties, tuple types and their elements) are looked
+    /// comment trivia is the exception and belongs to the declaration it documents. A parser
+    /// diagnostic reported by missing syntax (when <paramref name="diagnosticId"/> names a syntax
+    /// diagnostic at <paramref name="span"/>) resolves through the declaration containing that missing
+    /// syntax first (see <see cref="GetMissingSyntaxCarrierSymbol"/>): CS1002 for
+    /// <c>public class C { private int field}</c> is reported on the type's <c>}</c> but belongs to the
+    /// private field, while any other diagnostic on that <c>}</c> still resolves to the type. A
+    /// zero-width diagnostic at the end of an unterminated declaration that no declaration span covers
+    /// (e.g. CS1002 for <c>private int field</c> at the end of a file with no trailing newline, where
+    /// <c>FindToken</c> lands on the end-of-file token) also resolves through that preceding declaration
+    /// when the missing-syntax rule does not apply (see <see cref="GetUnterminatedDeclarationSymbol"/>).
+    /// Symbols declared by an expression (anonymous types and their properties, tuple types and their elements) are looked
     /// through to the enclosing source member, so <c>new { P = Missing }</c> in a <c>private</c>
     /// method is a <c>private</c> site. Null when there is no tree, no semantic model, or neither path
     /// yields a symbol.
     /// </summary>
     public async Task<ISymbol?> GetDeclaredOrEnclosingSymbolAsync(
-        SyntaxTree? tree, Document? document, int position, CancellationToken cancellationToken)
+        SyntaxTree? tree, Document? document, TextSpan span, string? diagnosticId,
+        CancellationToken cancellationToken)
     {
+        var position = span.Start;
         var semanticModel = await GetCachedSemanticModelAsync(tree, document, cancellationToken);
         if (semanticModel == null || tree == null)
             return null;
@@ -67,6 +77,17 @@ internal sealed class SiteEnclosingSymbolResolver
         // comment is part of the declaration that follows it.
         var inDocumentationComment = IsDocumentationComment(root.FindTrivia(position));
         var token = root.FindToken(position);
+
+        // A parser diagnostic reported by missing syntax (e.g. CS1002 for the missing `;` of
+        // `private int field}`, which Roslyn locates on the following `}`) belongs to the declaration
+        // containing that missing syntax, not to whatever declaration covers the reported location.
+        if (diagnosticId != null && !inDocumentationComment)
+        {
+            var carrier = GetMissingSyntaxCarrierSymbol(semanticModel, root, span, diagnosticId, cancellationToken);
+            if (carrier != null)
+                return carrier;
+        }
+
         for (SyntaxNode? node = token.Parent; node != null; node = node.Parent)
         {
             var covers = inDocumentationComment
@@ -88,6 +109,60 @@ internal sealed class SiteEnclosingSymbolResolver
         }
 
         return semanticModel.GetEnclosingSymbol(position, cancellationToken);
+    }
+
+    /// <summary>
+    /// Symbol of the declaration containing the missing (parser-inserted) syntax that reports the
+    /// syntax diagnostic <paramref name="diagnosticId"/> at <paramref name="span"/>. Roslyn reports a
+    /// missing-token error at an adjusted location (on the following token, or at the end of the
+    /// preceding one), so the reported span can fall outside the declaration the missing token belongs
+    /// to: CS1002 for <c>public class C { private int field}</c> spans the type's <c>}</c>. Descends from
+    /// the root through the children whose diagnostics include this one to the innermost carrier; only
+    /// a missing token or an all-missing node (e.g. the missing expression behind CS1525 for
+    /// <c>private int field = }</c>) counts, so a diagnostic on real syntax (including a directive or
+    /// other trivia) keeps the positional resolution. Null when the diagnostic is not such a syntax
+    /// diagnostic or no declaration encloses its carrier.
+    /// </summary>
+    private ISymbol? GetMissingSyntaxCarrierSymbol(
+        SemanticModel semanticModel, SyntaxNode root, TextSpan span, string diagnosticId,
+        CancellationToken cancellationToken)
+    {
+        var tree = root.SyntaxTree;
+        if (!_syntaxDiagnosticCache.TryGetValue(tree, out var syntaxDiagnostics))
+        {
+            syntaxDiagnostics = tree.GetDiagnostics(cancellationToken)
+                .Select(d => (d.Id, d.Location.SourceSpan))
+                .ToHashSet();
+            _syntaxDiagnosticCache[tree] = syntaxDiagnostics;
+        }
+
+        if (!syntaxDiagnostics.Contains((diagnosticId, span)))
+            return null;
+
+        bool Carries(SyntaxNodeOrToken nodeOrToken) =>
+            nodeOrToken.ContainsDiagnostics
+            && tree.GetDiagnostics(nodeOrToken).Any(d => d.Id == diagnosticId && d.Location.SourceSpan == span);
+
+        SyntaxNodeOrToken carrier = root;
+        while (carrier.IsNode)
+        {
+            var child = carrier.ChildNodesAndTokens().FirstOrDefault(Carries);
+            if (child.RawKind == 0)
+                break;
+            carrier = child;
+        }
+
+        if (!carrier.IsMissing)
+            return null;
+
+        for (var node = carrier.IsNode ? carrier.AsNode() : carrier.Parent; node != null; node = node.Parent)
+        {
+            var declared = GetDeclaredSymbol(semanticModel, node, cancellationToken);
+            if (declared != null && !IsSynthesizedExpressionMember(declared))
+                return declared;
+        }
+
+        return null;
     }
 
     /// <summary>

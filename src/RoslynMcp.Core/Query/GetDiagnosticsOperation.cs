@@ -149,7 +149,8 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                     var site = await siteResolver!.GetDeclaredOrEnclosingSymbolAsync(
                         tree,
                         tree == null ? null : Context.Solution.GetDocument(tree),
-                        diag.Location.SourceSpan.Start,
+                        diag.Location.SourceSpan,
+                        diag.Id,
                         cancellationToken);
                     if (!MatchesAccessibility(DeclaringSiteSymbol.Resolve(site)))
                         continue;
