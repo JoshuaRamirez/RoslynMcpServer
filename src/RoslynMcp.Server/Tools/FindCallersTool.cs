@@ -32,7 +32,7 @@ public sealed class FindCallersTool : IToolHandler
     public string Name => "find_callers";
 
     /// <inheritdoc />
-    public string Description => "Find all callers of a C# method or symbol across the solution. Returns the calling symbol name, file location, and a code snippet for each call site. sourceFile locates the target symbol; optional callerFile restricts reported call sites to callers located in that file (applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported call sites to documents in that project, applied before maxResults. Optional namespaceFilter restricts reported call sites to those whose containing namespace (the code enclosing each call site, not the target symbol) equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as search_symbols / find_implementations / find_references namespaceFilter), combined with the other filters and applied before maxResults.";
+    public string Description => "Find all callers of a C# method or symbol across the solution. Returns the calling symbol name, file location, and a code snippet for each call site. sourceFile locates the target symbol; optional callerFile restricts reported call sites to callers located in that file (applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported call sites to documents in that project, applied before maxResults. Optional namespaceFilter restricts reported call sites to those whose containing namespace (the code enclosing each call site, not the target symbol) equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as search_symbols / find_implementations / find_references namespaceFilter), combined with the other filters and applied before maxResults. Optional accessibilityFilter (public, internal, protected, private, protected internal, or private protected; case-insensitive; same values as search_symbols / get_document_outline / get_symbol_info / find_implementations / get_type_hierarchy accessibilityFilter) keeps only call sites whose calling symbol's DeclaredAccessibility equals it exactly (implicit defaults count: a class member with no modifier is private), combined with the other filters and applied before maxResults.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -87,7 +87,12 @@ public sealed class FindCallersTool : IToolHandler
             namespaceFilter = new
             {
                 type = "string",
-                description = "Namespace to restrict reported call sites to (optional; omit for all namespaces). Keeps call sites whose call site (the member, type, or namespace declaration enclosing the location; not the target symbol's namespace) lives in a namespace that equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace sites never match a named filter. Same matching as search_symbols / find_implementations / find_references namespaceFilter; combined with callerFile/projectPath and applied before maxResults so totalCount/truncated reflect the filtered set"
+                description = "Namespace to restrict reported call sites to (optional; omit for all namespaces). Keeps call sites whose call site (the member, type, or namespace declaration enclosing the location; not the target symbol's namespace) lives in a namespace that equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace sites never match a named filter. Same matching as search_symbols / find_implementations / find_references namespaceFilter; combined with callerFile/projectPath/accessibilityFilter and applied before maxResults so totalCount/truncated reflect the filtered set"
+            },
+            accessibilityFilter = new
+            {
+                type = "string",
+                description = "Declared accessibility to restrict reported call sites to (optional; omit for all accessibilities): public, internal, protected, private, protected internal, or private protected (case-insensitive; surrounding whitespace trimmed and inner whitespace runs collapsed; internal protected / protected private also accepted). Keeps call sites whose calling symbol's DeclaredAccessibility equals it exactly (implicit defaults count: a class member with no modifier is private; protected internal is not matched by protected or internal). Same values and InvalidVisibility error as search_symbols / get_document_outline / get_symbol_info / find_implementations / get_type_hierarchy accessibilityFilter; combined with callerFile/projectPath/namespaceFilter and applied before maxResults so totalCount/truncated reflect the filtered set"
             }
         },
         additionalProperties = false
@@ -117,7 +122,8 @@ public sealed class FindCallersTool : IToolHandler
                 MaxResults = args.MaxResults,
                 CallerFile = args.CallerFile,
                 ProjectPath = args.ProjectPath,
-                NamespaceFilter = args.NamespaceFilter
+                NamespaceFilter = args.NamespaceFilter,
+                AccessibilityFilter = args.AccessibilityFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -152,5 +158,6 @@ public sealed class FindCallersTool : IToolHandler
         public string? CallerFile { get; init; }
         public string? ProjectPath { get; init; }
         public string? NamespaceFilter { get; init; }
+        public string? AccessibilityFilter { get; init; }
     }
 }

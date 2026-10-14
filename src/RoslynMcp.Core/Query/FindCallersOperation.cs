@@ -14,7 +14,9 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Finds all callers of a symbol using Roslyn's SymbolFinder.FindCallersAsync(), across the solution
 /// (or within one project when <see cref="FindCallersParams.ProjectPath"/> is set), optionally
-/// narrowed to call sites in one namespace (<see cref="FindCallersParams.NamespaceFilter"/>).
+/// narrowed to call sites in one namespace (<see cref="FindCallersParams.NamespaceFilter"/>), and
+/// optionally to calling symbols with a given declared accessibility
+/// (<see cref="FindCallersParams.AccessibilityFilter"/>).
 /// </summary>
 public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams, FindCallersResult>
 {
@@ -59,6 +61,8 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         }
 
         ProjectPathFilter.Validate(@params.ProjectPath);
+
+        AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
     }
 
     /// <inheritdoc />
@@ -103,8 +107,22 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         // inside it. The target symbol's own namespace is irrelevant. Null when no filter applies.
         var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter);
 
+        // Optional accessibilityFilter (same values / parsing as search_symbols /
+        // find_implementations / get_type_hierarchy accessibilityFilter): keep only call sites
+        // whose calling symbol's DeclaredAccessibility equals the filter exactly. Null when
+        // omitted / blank (no accessibility filtering). Invalid values already rejected in
+        // ValidateParams.
+        var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+
         foreach (var caller in callerResults)
         {
+            // Accessibility filter runs on the calling symbol before location filters / maxResults
+            // so TotalCount / Truncated reflect the filtered set. Exact DeclaredAccessibility
+            // match (implicit defaults count; protected internal ≠ protected / internal).
+            if (accessibilityFilter.HasValue
+                && caller.CallingSymbol.DeclaredAccessibility != accessibilityFilter.Value)
+                continue;
+
             foreach (var location in caller.Locations)
             {
                 if (!location.IsInSource) continue;
@@ -112,7 +130,8 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                 var lineSpan = location.GetLineSpan();
 
                 // Optional callerFile / projectPath / namespaceFilter filters run before maxResults
-                // so TotalCount / Truncated reflect the filtered set.
+                // (accessibilityFilter already applied on the calling symbol above) so TotalCount /
+                // Truncated reflect the filtered set.
                 if (callerFileKey != null)
                 {
                     var locationPath = lineSpan.Path;

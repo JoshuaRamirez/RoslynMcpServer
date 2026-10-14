@@ -14,7 +14,9 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <c>projectPath</c> (restricts reported call sites to one project; peer of <c>get_diagnostics</c> /
 /// <c>search_symbols</c> / <c>find_references</c> <c>projectPath</c>), and optional
 /// <c>namespaceFilter</c> (restricts reported call sites by call-site containing namespace; peer of
-/// <c>find_references</c> / <c>find_implementations</c> / <c>search_symbols</c> <c>namespaceFilter</c>).
+/// <c>find_references</c> / <c>find_implementations</c> / <c>search_symbols</c> <c>namespaceFilter</c>),
+/// and optional <c>accessibilityFilter</c> (restricts by calling symbol DeclaredAccessibility; peer of
+/// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>search_symbols</c> <c>accessibilityFilter</c>).
 /// </summary>
 public class FindCallersOperationTests
 {
@@ -1008,6 +1010,263 @@ public class FindCallersOperationTests
         Assert.Equal(0, mismatch.Data.TotalCount);
         Assert.False(mismatch.Data.Truncated);
     }
+
+    #endregion
+
+    #region AccessibilityFilter
+
+    private static readonly Dictionary<string, string> AccessibilitySources = new()
+    {
+        ["Target.cs"] = """
+            namespace App;
+            public class Target
+            {
+                public void Run() { }
+            }
+            """,
+        ["Host.cs"] = """
+            namespace App;
+            public class Host
+            {
+                public void Pub(Target t) { t.Run(); }
+                internal void Int(Target t) { t.Run(); }
+                protected void Prot(Target t) { t.Run(); }
+                private void Priv(Target t) { t.Run(); }
+                protected internal void ProtInt(Target t) { t.Run(); }
+                private protected void PrivProt(Target t) { t.Run(); }
+                void DefaultPriv(Target t) { t.Run(); }
+            }
+            """,
+        ["Services.cs"] = """
+            namespace App.Services;
+            public class ServiceCaller
+            {
+                public void Place(App.Target t) { t.Run(); }
+                private void Hidden(App.Target t) { t.Run(); }
+            }
+            """,
+        ["OtherFile.cs"] = """
+            namespace App;
+            public class OtherHost
+            {
+                public void Elsewhere(Target t) { t.Run(); }
+                internal void ElsewhereInt(Target t) { t.Run(); }
+            }
+            """
+    };
+
+    private static readonly string[] AllAccessibilityCallerNames =
+    [
+        "DefaultPriv", "Elsewhere", "ElsewhereInt", "Hidden", "Int", "Place", "Priv", "PrivProt",
+        "Prot", "ProtInt", "Pub"
+    ];
+
+    [Fact]
+    public void AccessibilityFilter_DefaultsToNull()
+    {
+        var @params = new FindCallersParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.AccessibilityFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task FindCallers_OmittedOrBlankAccessibilityFilter_ReturnsEveryAccessibility(
+        string? accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(AllAccessibilityCallerNames, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(AllAccessibilityCallerNames.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("public", new[] { "Elsewhere", "Place", "Pub" })]
+    [InlineData("internal", new[] { "ElsewhereInt", "Int" })]
+    [InlineData("protected", new[] { "Prot" })]
+    [InlineData("private", new[] { "DefaultPriv", "Hidden", "Priv" })]
+    [InlineData("protected internal", new[] { "ProtInt" })]
+    [InlineData("private protected", new[] { "PrivProt" })]
+    public async Task FindCallers_AccessibilityFilter_SelectsExactlyEachDeclaredAccessibility(
+        string accessibilityFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(result.Success, accessibilityFilter);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("PUBLIC", "public")]
+    [InlineData("  Private  ", "private")]
+    [InlineData("Protected   Internal", "protected internal")]
+    [InlineData("internal protected", "protected internal")]
+    [InlineData("protected private", "private protected")]
+    public async Task FindCallers_AccessibilityFilter_IsCaseInsensitiveAndAcceptsEitherModifierOrder(
+        string accessibilityFilter, string canonical)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = accessibilityFilter
+        });
+        var expected = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = canonical
+        });
+
+        Assert.True(filtered.Success);
+        Assert.True(expected.Success);
+        Assert.Equal(SortedCallerNames(expected.Data!.Callers), SortedCallerNames(filtered.Data!.Callers));
+    }
+
+    [SkippableTheory]
+    [InlineData("friend")]
+    [InlineData("ProtectedOrInternal")]
+    [InlineData("public, internal")]
+    public async Task FindCallers_UnknownAccessibilityFilter_ThrowsInvalidVisibility(
+        string accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new FindCallersParams
+            {
+                SourceFile = workspace.PathOf("Target.cs"),
+                SymbolName = "Run",
+                AccessibilityFilter = accessibilityFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.StartsWith($"Invalid accessibilityFilter '{accessibilityFilter}'. Valid values: ", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_AccessibilityFilterCombinedWithCallerFile_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var inHost = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public",
+            CallerFile = workspace.PathOf("Host.cs")
+        });
+        var inOther = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public",
+            CallerFile = workspace.PathOf("OtherFile.cs")
+        });
+
+        Assert.True(inHost.Success);
+        Assert.Equal(new[] { "Pub" }, SortedCallerNames(inHost.Data!.Callers));
+        Assert.Equal(1, inHost.Data.TotalCount);
+
+        Assert.True(inOther.Success);
+        Assert.Equal(new[] { "Elsewhere" }, SortedCallerNames(inOther.Data!.Callers));
+        Assert.Equal(1, inOther.Data.TotalCount);
+        Assert.False(inOther.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_AccessibilityFilterCombinedWithNamespaceFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public",
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Place" }, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_AccessibilityFilterThenMaxResults_TruncatesFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public",
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Callers.Count);
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+        Assert.All(result.Data.Callers, c =>
+            Assert.Contains(c.CallerName, new[] { "Elsewhere", "Place", "Pub" }));
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_AccessibilityFilterWithNoMatch_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = "public class Target { public void Run() { } }",
+            ["OnlyPublic.cs"] = "public class OnlyPub { public void Go(Target t) { t.Run(); } }"
+        });
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Callers);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    private static List<string> SortedCallerNames(IEnumerable<CallerInfo> callers) =>
+        callers.Select(c => c.CallerName).OrderBy(n => n, StringComparer.Ordinal).ToList();
 
     #endregion
 
