@@ -233,4 +233,13 @@ public class CliArgsTests
         Assert.Equal("/src/Shape.cs", result.Options["source-file"]);
         Assert.Equal("App.Services", result.Options["namespace-filter"]);
     }
+
+    [Fact]
+    public void GetDiagnostics_NamespaceFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Error", "--namespace-filter", "App.Services"]);
+        Assert.Equal("get-diagnostics", result.ToolName);
+        Assert.Equal("Error", result.Options["severity-filter"]);
+        Assert.Equal("App.Services", result.Options["namespace-filter"]);
+    }
 }

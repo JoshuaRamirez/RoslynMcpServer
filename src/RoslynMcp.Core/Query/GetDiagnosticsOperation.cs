@@ -12,7 +12,8 @@ namespace RoslynMcp.Core.Query;
 
 /// <summary>
 /// Retrieves compiler diagnostics for the solution or a specific file.
-/// Delegates to Roslyn's Compilation.GetDiagnostics().
+/// Delegates to Roslyn's Compilation.GetDiagnostics(), optionally narrowed to diagnostic sites in one
+/// namespace (<see cref="GetDiagnosticsParams.NamespaceFilter"/>).
 /// </summary>
 public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsParams, GetDiagnosticsResult>
 {
@@ -62,6 +63,11 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         var excludeIdFilter = BuildIdFilter(@params.ExcludeDiagnosticIds);
         var diagnostics = new List<DiagnosticInfo>();
 
+        // Optional namespaceFilter (same normalization / matching as find_references / find_callers):
+        // keep only diagnostics whose enclosing symbol (member, type, or namespace declaration) lives
+        // in the filter namespace or one nested inside it. Null when omitted / blank / bare global::.
+        var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter);
+
         foreach (var project in ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath))
         {
             var compilation = await project.GetCompilationAsync(cancellationToken);
@@ -89,6 +95,23 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                 else if (!string.IsNullOrWhiteSpace(@params.SourceFile) && !diag.Location.IsInSource)
                 {
                     continue;
+                }
+
+                // Namespace filter runs after the cheaper filters and before maxResults so
+                // TotalCount / Truncated reflect the filtered set. Diagnostics with no in-source
+                // location have no site and never match a named filter.
+                if (namespaceScope != null)
+                {
+                    if (!diag.Location.IsInSource)
+                        continue;
+
+                    var tree = diag.Location.SourceTree;
+                    if (!await namespaceScope.ContainsAsync(
+                            tree,
+                            tree == null ? null : Context.Solution.GetDocument(tree),
+                            diag.Location.SourceSpan.Start,
+                            cancellationToken))
+                        continue;
                 }
 
                 string? file = null;

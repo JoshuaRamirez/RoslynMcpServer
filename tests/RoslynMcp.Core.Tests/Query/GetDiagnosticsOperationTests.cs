@@ -8,7 +8,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
-/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>, <c>diagnosticIds</c>, <c>excludeDiagnosticIds</c>, and <c>projectPath</c>
+/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>, <c>diagnosticIds</c>, <c>excludeDiagnosticIds</c>, <c>projectPath</c>, and <c>namespaceFilter</c>
 /// (peer of <see cref="FindReferencesOperation"/> / <see cref="SearchSymbolsOperation"/>).
 /// </summary>
 public class GetDiagnosticsOperationTests
@@ -747,6 +747,411 @@ public class GetDiagnosticsOperationTests
 
     #endregion
 
+    #region namespaceFilter
+
+    // One CS0168 ("declared but never used") per namespace; the variable name identifies the site.
+    private const string NamespacedSource = """
+        namespace App.Services
+        {
+            public class S { public void M() { int inServices; } }
+        }
+
+        namespace App.Services.Orders
+        {
+            public class O { public void M() { int inOrders; } }
+        }
+
+        namespace App.ServicesExtra
+        {
+            public class E { public void M() { int inExtra; } }
+        }
+
+        namespace Other
+        {
+            public class X { public void M() { int inOther; } }
+        }
+
+        public class G { public void M() { int inGlobal; } }
+        """;
+
+    private static readonly string[] Cs0168 = { "CS0168" };
+
+    private static IEnumerable<string> VariableNames(GetDiagnosticsResult result) =>
+        result.Diagnostics.Select(d =>
+        {
+            var start = d.Message.IndexOf('\'');
+            var end = d.Message.IndexOf('\'', start + 1);
+            return d.Message[(start + 1)..end];
+        });
+
+    [Fact]
+    public void NamespaceFilter_DefaultsToNull()
+    {
+        var @params = new GetDiagnosticsParams();
+        Assert.Null(@params.NamespaceFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("global::")]
+    [InlineData("  global::  ")]
+    public async Task GetDiagnostics_NamespaceFilterBlankOrBareGlobal_MatchesOmitted(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespacedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = Cs0168 });
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(filtered.Success);
+        Assert.Equal(5, omitted.Data!.TotalCount);
+        Assert.Equal(omitted.Data.TotalCount, filtered.Data!.TotalCount);
+        // Method-body diagnostics are bound concurrently, so compare as sets.
+        Assert.Equal(
+            omitted.Data.Diagnostics.Select(d => d.Id + d.Message + d.Line).OrderBy(x => x, StringComparer.Ordinal),
+            filtered.Data.Diagnostics.Select(d => d.Id + d.Message + d.Line).OrderBy(x => x, StringComparer.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilter_KeepsEqualAndNestedSites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespacedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "inOrders", "inServices" }, VariableNames(result.Data!).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(2, result.Data!.TotalCount);
+        Assert.False(result.Data.Truncated);
+        Assert.All(result.Data.Diagnostics, d => Assert.Equal(workspace.SourcePath, d.File));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilterNested_ExcludesParentNamespace()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespacedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App.Services.Orders"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "inOrders" }, VariableNames(result.Data!));
+        Assert.Equal(1, result.Data!.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilterOtherNamespace_DropsPrefixLookalikeAndGlobal()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespacedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var other = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "Other"
+        });
+        Assert.True(other.Success);
+        Assert.Equal(new[] { "inOther" }, VariableNames(other.Data!));
+
+        // App matches App.Services, App.Services.Orders, and App.ServicesExtra but never the global G.
+        var app = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App"
+        });
+        Assert.True(app.Success);
+        Assert.Equal(
+            new[] { "inExtra", "inOrders", "inServices" },
+            VariableNames(app.Data!).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.DoesNotContain("inGlobal", VariableNames(app.Data!));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilterTrimmedWithGlobalPrefix_MatchesPlainFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespacedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var plain = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App.Services"
+        });
+        var prefixed = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "  global::App.Services  "
+        });
+
+        Assert.True(plain.Success);
+        Assert.True(prefixed.Success);
+        Assert.Equal(2, prefixed.Data!.TotalCount);
+        Assert.Equal(
+            plain.Data!.Diagnostics.Select(d => d.Message + d.Line).OrderBy(x => x, StringComparer.Ordinal),
+            prefixed.Data.Diagnostics.Select(d => d.Message + d.Line).OrderBy(x => x, StringComparer.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilterIsOrdinal_DifferentCaseReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespacedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "app.services"
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Diagnostics);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilterNoMatch_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespacedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            NamespaceFilter = "Nowhere.At.All",
+            MaxResults = 1
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Diagnostics);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilter_FileScopedNamespace()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace App.Services.Orders;
+
+            public class O { public void M() { int inFileScoped; } }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var kept = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App.Services"
+        });
+        Assert.True(kept.Success);
+        Assert.Equal(new[] { "inFileScoped" }, VariableNames(kept.Data!));
+
+        var dropped = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App.ServicesExtra"
+        });
+        Assert.True(dropped.Success);
+        Assert.Empty(dropped.Data!.Diagnostics);
+        Assert.Equal(0, dropped.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilter_NamespaceLevelSiteUsesThatNamespace()
+    {
+        // A using directive inside a namespace declaration encloses to the namespace itself
+        // (same rule as find_references); the one outside any namespace is a global-namespace site.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            using System.Text;
+
+            namespace App.Services
+            {
+                using System.Collections.Generic;
+
+                public class S { }
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        // sourceFile scopes away the SDK-generated AssemblyInfo usings (also CS8019).
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = new[] { "CS8019" },
+            SourceFile = workspace.SourcePath
+        });
+        Assert.True(omitted.Success);
+        Assert.Equal(2, omitted.Data!.TotalCount);
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = new[] { "CS8019" },
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(filtered.Success);
+        var only = Assert.Single(filtered.Data!.Diagnostics);
+        Assert.Equal(5, only.Line);
+        Assert.Equal(1, filtered.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilter_DropsDiagnosticsWithoutSourceLocation()
+    {
+        // An Exe with no Main reports CS5001 with Location.None; it has no site, so it never
+        // matches a named filter (but is still returned when the filter is omitted).
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "namespace App { public class C { public void M() { int inApp; } } }\n",
+            outputType: "Exe");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { SeverityFilter = "Warning" });
+        Assert.True(omitted.Success);
+        Assert.Contains(omitted.Data!.Diagnostics, d => d.Id == "CS5001" && d.File == null);
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            NamespaceFilter = "App"
+        });
+
+        Assert.True(filtered.Success);
+        Assert.NotEmpty(filtered.Data!.Diagnostics);
+        Assert.All(filtered.Data.Diagnostics, d => Assert.NotNull(d.File));
+        Assert.DoesNotContain(filtered.Data.Diagnostics, d => d.Id == "CS5001");
+        Assert.Contains(filtered.Data.Diagnostics, d => d.Id == "CS0168");
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilterWithMaxResults_CapsAfterNamespaceFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespacedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App"
+        });
+        Assert.True(filtered.Success);
+        Assert.Equal(3, filtered.Data!.TotalCount);
+
+        var capped = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App",
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(3, capped.Data!.TotalCount);
+        Assert.Equal(2, capped.Data.Diagnostics.Count);
+        Assert.True(capped.Data.Truncated);
+        // Every returned diagnostic comes from the namespace-filtered set (method-body diagnostics are
+        // bound concurrently, so which two survive the cap is not asserted).
+        Assert.All(VariableNames(capped.Data), n => Assert.Contains(n, VariableNames(filtered.Data)));
+        Assert.Equal(2, VariableNames(capped.Data).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilterWithSourceFile_MustSatisfyBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            NamespacedSource,
+            extraFiles: new Dictionary<string, string>
+            {
+                ["Bar.cs"] = "namespace App.Services { public class B { public void M() { int inBar; } } }\n"
+            });
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var both = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App.Services"
+        });
+        Assert.True(both.Success);
+        Assert.Equal(
+            new[] { "inBar", "inOrders", "inServices" },
+            VariableNames(both.Data!).OrderBy(n => n, StringComparer.Ordinal));
+
+        var barPath = Path.Combine(workspace.DirectoryPath, "Bar.cs");
+        var scoped = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App.Services",
+            SourceFile = barPath
+        });
+        Assert.True(scoped.Success);
+        Assert.Equal(new[] { "inBar" }, VariableNames(scoped.Data!));
+        Assert.Equal(1, scoped.Data!.TotalCount);
+
+        var none = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "Other",
+            SourceFile = barPath
+        });
+        Assert.True(none.Success);
+        Assert.Empty(none.Data!.Diagnostics);
+        Assert.Equal(0, none.Data.TotalCount);
+        Assert.False(none.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NamespaceFilterWithProjectPath_MustSatisfyBoth()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync(
+            libSource: "namespace Lib { public class Animal { public void M() { int inLib; } } }\n",
+            appSource: "namespace App { public class Dog : Lib.Animal { public void N() { int inApp; } } }\n");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var app = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App"
+        });
+        Assert.True(app.Success);
+        Assert.Equal(new[] { "inApp" }, VariableNames(app.Data!));
+        Assert.All(app.Data!.Diagnostics, d => Assert.Equal(workspace.AppSourcePath, d.File));
+
+        var mismatched = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "App",
+            ProjectPath = workspace.LibProjectPath
+        });
+        Assert.True(mismatched.Success);
+        Assert.Empty(mismatched.Data!.Diagnostics);
+        Assert.Equal(0, mismatched.Data.TotalCount);
+
+        var lib = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            NamespaceFilter = "Lib",
+            ProjectPath = workspace.LibProjectPath
+        });
+        Assert.True(lib.Success);
+        Assert.Equal(new[] { "inLib" }, VariableNames(lib.Data!));
+    }
+
+    #endregion
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }
@@ -755,7 +1160,11 @@ public class GetDiagnosticsOperationTests
 
         public string ProjectPath => Path.Combine(DirectoryPath, "TestApp.csproj");
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Foo.cs")
+        public static async Task<TempWorkspace> CreateAsync(
+            string source,
+            string fileName = "Foo.cs",
+            string? outputType = null,
+            IReadOnlyDictionary<string, string>? extraFiles = null)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -763,17 +1172,25 @@ public class GetDiagnosticsOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            await File.WriteAllTextAsync(projectPath, """
+            var outputTypeElement = outputType == null ? "" : $"<OutputType>{outputType}</OutputType>";
+            await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    {outputTypeElement}
                   </PropertyGroup>
                 </Project>
                 """);
 
             var path = Path.Combine(directory, fileName);
             await File.WriteAllTextAsync(path, source);
+
+            if (extraFiles != null)
+            {
+                foreach (var (extraName, extraSource) in extraFiles)
+                    await File.WriteAllTextAsync(Path.Combine(directory, extraName), extraSource);
+            }
 
             try
             {
