@@ -17,7 +17,9 @@ namespace RoslynMcp.Core.Query;
 /// solution (or within one project when <see cref="FindImplementationsParams.ProjectPath"/> is set;
 /// only direct implementers of an interface when <see cref="FindImplementationsParams.Transitive"/>
 /// is false; only implementations in one namespace subtree when
-/// <see cref="FindImplementationsParams.NamespaceFilter"/> is set). Delegates to Roslyn's SymbolFinder.FindImplementationsAsync.
+/// <see cref="FindImplementationsParams.NamespaceFilter"/> is set; only implementations with a given
+/// declared accessibility when <see cref="FindImplementationsParams.AccessibilityFilter"/> is set).
+/// Delegates to Roslyn's SymbolFinder.FindImplementationsAsync.
 /// </summary>
 public sealed class FindImplementationsOperation : QueryOperationBase<FindImplementationsParams, FindImplementationsResult>
 {
@@ -62,6 +64,8 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
         }
 
         ProjectPathFilter.Validate(@params.ProjectPath);
+
+        AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
     }
 
     /// <inheritdoc />
@@ -140,11 +144,22 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
         // blank, or a bare global:: (no namespace filtering).
         var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
 
+        // Optional accessibilityFilter (same values / parsing as search_symbols accessibilityFilter):
+        // keep only implementations whose DeclaredAccessibility equals the filter exactly. Null when
+        // omitted / blank (no accessibility filtering). Invalid values already rejected in ValidateParams.
+        var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+
         foreach (var impl in implSymbols)
         {
             // Applied before maxResults (and before the location filters below) so TotalCount /
             // Truncated reflect the namespace-filtered set.
             if (namespaceFilter != null && !NamespaceFilter.IsInNamespace(impl, namespaceFilter))
+                continue;
+
+            // Accessibility filter runs with the other symbol filters before maxResults so
+            // TotalCount / Truncated reflect the filtered set. Exact DeclaredAccessibility match
+            // (implicit defaults count; protected internal ≠ protected / internal).
+            if (accessibilityFilter.HasValue && impl.DeclaredAccessibility != accessibilityFilter.Value)
                 continue;
 
             Location? location;
