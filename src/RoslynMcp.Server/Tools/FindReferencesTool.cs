@@ -32,7 +32,7 @@ public sealed class FindReferencesTool : IToolHandler
     public string Name => "find_references";
 
     /// <inheritdoc />
-    public string Description => "Find all references to a C# symbol across the solution. Returns file locations, context snippets, and whether each reference is a definition or usage. Optional includeDeclaration (default true) set to false returns usages only, excluding the symbol's own definition locations before maxResults is applied. sourceFile locates the target symbol; optional referenceFile restricts reported locations to those in that file (definition locations included only when they are in that file; applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported locations to documents in that project, applied before maxResults. Optional namespaceFilter restricts reported locations to reference sites (the code enclosing each location, not the target symbol) whose containing namespace equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as search_symbols namespaceFilter), combined with the other filters and applied before maxResults.";
+    public string Description => "Find all references to a C# symbol across the solution. Returns file locations, context snippets, and whether each reference is a definition or usage. Optional includeDeclaration (default true) set to false returns usages only, excluding the symbol's own definition locations before maxResults is applied. sourceFile locates the target symbol; optional referenceFile restricts reported locations to those in that file (definition locations included only when they are in that file; applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported locations to documents in that project, applied before maxResults. Optional namespaceFilter restricts reported locations to reference sites (the code enclosing each location, not the target symbol) whose containing namespace equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as search_symbols namespaceFilter), combined with the other filters and applied before maxResults. Optional accessibilityFilter (public, internal, protected, private, protected internal, or private protected; case-insensitive; same values as search_symbols / get_document_outline / get_symbol_info / find_implementations / get_type_hierarchy / find_callers accessibilityFilter) keeps only locations whose reference site's enclosing symbol (the member or type enclosing each usage, not the target symbol; definition locations are judged by the declared symbol itself) has a DeclaredAccessibility equal to it exactly (implicit defaults count: a class member with no modifier is private), combined with the other filters and applied before maxResults.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -92,7 +92,12 @@ public sealed class FindReferencesTool : IToolHandler
             namespaceFilter = new
             {
                 type = "string",
-                description = "Namespace to restrict reported reference locations to (optional; omit for all namespaces). Keeps locations whose reference site (the member, type, or namespace declaration enclosing the location; not the target symbol's namespace), including definition locations when includeDeclaration is on, lives in a namespace that equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace sites (top-level statements, usings outside any namespace) never match a named filter. Same matching as search_symbols namespaceFilter; combined with referenceFile/projectPath/includeDeclaration and applied before maxResults so totalCount/truncated reflect the filtered set"
+                description = "Namespace to restrict reported reference locations to (optional; omit for all namespaces). Keeps locations whose reference site (the member, type, or namespace declaration enclosing the location; not the target symbol's namespace), including definition locations when includeDeclaration is on, lives in a namespace that equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace sites (top-level statements, usings outside any namespace) never match a named filter. Same matching as search_symbols namespaceFilter; combined with referenceFile/projectPath/includeDeclaration/accessibilityFilter and applied before maxResults so totalCount/truncated reflect the filtered set"
+            },
+            accessibilityFilter = new
+            {
+                type = "string",
+                description = "Declared accessibility to restrict reported reference locations to (optional; omit for all accessibilities): public, internal, protected, private, protected internal, or private protected (case-insensitive; surrounding whitespace trimmed and inner whitespace runs collapsed; internal protected / protected private also accepted). Keeps usage locations whose reference site's enclosing symbol (the member, type, or namespace declaration enclosing the location, the same site notion as namespaceFilter; not the target symbol; lambdas and local functions are looked through to their declaring member; namespace-level sites never match) has a DeclaredAccessibility equal to it exactly (implicit defaults count: a class member with no modifier is private; protected internal is not matched by protected or internal). Definition locations, when includeDeclaration is on, are judged by the declared symbol itself (an internal method on a public type is internal), or for a local / parameter / local function by the member declaring it. Same values and InvalidVisibility error as search_symbols / get_document_outline / get_symbol_info / find_implementations / get_type_hierarchy / find_callers accessibilityFilter; combined with referenceFile/projectPath/namespaceFilter/includeDeclaration and applied before maxResults so totalCount/truncated reflect the filtered set"
             }
         },
         additionalProperties = false
@@ -123,7 +128,8 @@ public sealed class FindReferencesTool : IToolHandler
                 IncludeDeclaration = args.IncludeDeclaration,
                 ReferenceFile = args.ReferenceFile,
                 ProjectPath = args.ProjectPath,
-                NamespaceFilter = args.NamespaceFilter
+                NamespaceFilter = args.NamespaceFilter,
+                AccessibilityFilter = args.AccessibilityFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -159,5 +165,6 @@ public sealed class FindReferencesTool : IToolHandler
         public string? ReferenceFile { get; init; }
         public string? ProjectPath { get; init; }
         public string? NamespaceFilter { get; init; }
+        public string? AccessibilityFilter { get; init; }
     }
 }
