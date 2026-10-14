@@ -13,7 +13,8 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Retrieves compiler diagnostics for the solution or a specific file.
 /// Delegates to Roslyn's Compilation.GetDiagnostics(), optionally narrowed to diagnostic sites in one
-/// namespace (<see cref="GetDiagnosticsParams.NamespaceFilter"/>).
+/// namespace (<see cref="GetDiagnosticsParams.NamespaceFilter"/>) and/or of one declared accessibility
+/// (<see cref="GetDiagnosticsParams.AccessibilityFilter"/>).
 /// </summary>
 public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsParams, GetDiagnosticsResult>
 {
@@ -50,6 +51,8 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "excludeDiagnosticIds entries must be non-empty.");
 
         ProjectPathFilter.Validate(@params.ProjectPath);
+
+        AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
     }
 
     /// <inheritdoc />
@@ -63,10 +66,31 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         var excludeIdFilter = BuildIdFilter(@params.ExcludeDiagnosticIds);
         var diagnostics = new List<DiagnosticInfo>();
 
+        // Optional accessibilityFilter (same values / parsing as search_symbols / find_references
+        // accessibilityFilter): keep only diagnostics whose site symbol has a DeclaredAccessibility
+        // equal to the filter exactly. The site is the member / type / namespace enclosing the location
+        // (same enclosing-symbol notion namespaceFilter uses), looking through lambdas / local functions
+        // / locals / params to the declaring member (see DeclaringSiteSymbol). Null when omitted /
+        // blank (no accessibility filtering). Invalid values already rejected in ValidateParams.
+        var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+
+        // Both site filters share one resolver so each file is bound at most once when both are set.
+        SiteEnclosingSymbolResolver? siteResolver = null;
+        if (accessibilityFilter.HasValue || !string.IsNullOrWhiteSpace(@params.NamespaceFilter))
+            siteResolver = new SiteEnclosingSymbolResolver(Context);
+
         // Optional namespaceFilter (same normalization / matching as find_references / find_callers):
         // keep only diagnostics whose enclosing symbol (member, type, or namespace declaration) lives
         // in the filter namespace or one nested inside it. Null when omitted / blank / bare global::.
-        var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter);
+        var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter, siteResolver);
+
+        // Namespaces have no accessibility modifier but Roslyn reports INamespaceSymbol as Public (same
+        // guard as find_references / search_symbols), so a namespace-level site (e.g. an unused using
+        // inside a namespace declaration) never matches a named filter.
+        bool MatchesAccessibility(ISymbol? siteSymbol) =>
+            !accessibilityFilter.HasValue
+            || (siteSymbol is not null and not INamespaceSymbol
+                && siteSymbol.DeclaredAccessibility == accessibilityFilter.Value);
 
         foreach (var project in ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath))
         {
@@ -97,8 +121,8 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                     continue;
                 }
 
-                // Namespace filter runs after the cheaper filters and before maxResults so
-                // TotalCount / Truncated reflect the filtered set. Diagnostics with no in-source
+                // Namespace / accessibility filters run after the cheaper filters and before maxResults
+                // so TotalCount / Truncated reflect the filtered set. Diagnostics with no in-source
                 // location have no site and never match a named filter.
                 if (namespaceScope != null)
                 {
@@ -111,6 +135,21 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                             tree == null ? null : Context.Solution.GetDocument(tree),
                             diag.Location.SourceSpan.Start,
                             cancellationToken))
+                        continue;
+                }
+
+                if (accessibilityFilter.HasValue)
+                {
+                    if (!diag.Location.IsInSource)
+                        continue;
+
+                    var tree = diag.Location.SourceTree;
+                    var enclosing = await siteResolver!.GetEnclosingSymbolAsync(
+                        tree,
+                        tree == null ? null : Context.Solution.GetDocument(tree),
+                        diag.Location.SourceSpan.Start,
+                        cancellationToken);
+                    if (!MatchesAccessibility(DeclaringSiteSymbol.Resolve(enclosing)))
                         continue;
                 }
 

@@ -2335,6 +2335,27 @@ public class HelpGeneratorTests
         Assert.Contains("--namespace-filter", help[optionalIdx..]);
     }
 
+
+    [Fact]
+    public void GenerateToolHelp_GetDiagnostics_ShowsAccessibilityFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("accessibilityFilter", tool.Description, StringComparison.Ordinal);
+        Assert.Contains("DeclaredAccessibility", tool.Description, StringComparison.Ordinal);
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        if (requiredIdx >= 0)
+            Assert.DoesNotContain("--accessibility-filter", help[requiredIdx..optionalIdx]);
+
+        Assert.Contains("--accessibility-filter", help[optionalIdx..]);
+    }
+
+
     [Fact]
     public void GenerateToolHelp_GetSymbolInfo_ShowsMaxResults()
     {

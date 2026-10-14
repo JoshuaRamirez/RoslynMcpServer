@@ -54,10 +54,35 @@ public sealed class GetDiagnosticsParams
     /// trimmed and a leading <c>global::</c> is accepted. Sites in the global namespace and
     /// diagnostics with no in-source location never match a named filter. Combined with
     /// <see cref="SourceFile"/>, <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>,
-    /// <see cref="DiagnosticIds"/>, and <see cref="ExcludeDiagnosticIds"/>, and applied before
+    /// <see cref="DiagnosticIds"/>, <see cref="ExcludeDiagnosticIds"/>, and
+    /// <see cref="AccessibilityFilter"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered
     /// set. Omit, blank, or a bare <c>global::</c> (the root namespace) returns diagnostics in all
     /// namespaces.
     /// </summary>
     public string? NamespaceFilter { get; init; }
+
+    /// <summary>
+    /// Optional declared accessibility to restrict diagnostics to: same values and parsing as
+    /// <c>search_symbols</c> / <c>find_references</c> / <c>find_callers</c> / <c>get_document_outline</c>
+    /// / <c>get_symbol_info</c> / <c>find_implementations</c> / <c>get_type_hierarchy</c>
+    /// <c>accessibilityFilter</c> (<c>public</c>, <c>internal</c>, <c>protected</c>, <c>private</c>,
+    /// <c>protected internal</c>, or <c>private protected</c>; case-insensitive; surrounding whitespace
+    /// trimmed and inner whitespace runs collapsed; <c>internal protected</c> / <c>protected private</c>
+    /// also accepted). When set, only diagnostics whose <b>diagnostic site</b> — the member / type /
+    /// namespace declaration enclosing the diagnostic location (via <c>SemanticModel.GetEnclosingSymbol</c>
+    /// at the location start, then the same declaring-site walk as <c>find_references</c>: look through
+    /// lambdas / local functions / locals / params to the declaring member) — has an
+    /// <c>ISymbol.DeclaredAccessibility</c> equal to it exactly are returned (semantic, so implicit
+    /// defaults count: a class member with no modifier is <c>private</c>); the match is exact
+    /// (<c>protected internal</c> is not matched by <c>protected</c> or <c>internal</c>). Namespace-level
+    /// sites never match (Roslyn reports <c>INamespaceSymbol</c> as <c>Public</c>; rejected explicitly).
+    /// Diagnostics with no in-source location never match. Combined with <see cref="SourceFile"/>,
+    /// <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>,
+    /// <see cref="ExcludeDiagnosticIds"/>, and <see cref="NamespaceFilter"/>, and applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the accessibility-filtered
+    /// set. Omit or leave blank for no accessibility filter. An unrecognized value fails with
+    /// <c>InvalidVisibility</c>.
+    /// </summary>
+    public string? AccessibilityFilter { get; init; }
 }

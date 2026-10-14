@@ -8,7 +8,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
-/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>, <c>diagnosticIds</c>, <c>excludeDiagnosticIds</c>, <c>projectPath</c>, and <c>namespaceFilter</c>
+/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>, <c>diagnosticIds</c>, <c>excludeDiagnosticIds</c>, <c>projectPath</c>, <c>namespaceFilter</c>, and <c>accessibilityFilter</c>
 /// (peer of <see cref="FindReferencesOperation"/> / <see cref="SearchSymbolsOperation"/>).
 /// </summary>
 public class GetDiagnosticsOperationTests
@@ -1151,6 +1151,389 @@ public class GetDiagnosticsOperationTests
     }
 
     #endregion
+
+    #region accessibilityFilter
+
+    // One CS0168 ("declared but never used") per accessibility site; the variable name identifies the site.
+    // Lambdas / local functions are looked through to the declaring member (Lam → public, Loc → internal).
+    private const string AccessibilitySource = """
+        namespace App;
+        public class Host
+        {
+            public void Pub() { int inPublic; }
+            internal void Int() { int inInternal; }
+            protected void Prot() { int inProtected; }
+            private void Priv() { int inPrivate; }
+            protected internal void ProtInt() { int inProtInt; }
+            private protected void PrivProt() { int inPrivProt; }
+            void DefaultPriv() { int inDefaultPrivate; }
+            public void Lam() { System.Action a = () => { int inLambda; }; a(); }
+            internal void Loc() { void Inner() { int inLocalFunc; } Inner(); }
+        }
+        """;
+
+    [Fact]
+    public void AccessibilityFilter_DefaultsToNull()
+    {
+        var @params = new GetDiagnosticsParams();
+        Assert.Null(@params.AccessibilityFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task GetDiagnostics_BlankAccessibilityFilter_MatchesOmitted(string accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = Cs0168 });
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(filtered.Success);
+        Assert.Equal(9, omitted.Data!.TotalCount);
+        Assert.Equal(omitted.Data.TotalCount, filtered.Data!.TotalCount);
+        Assert.Equal(
+            omitted.Data.Diagnostics.Select(d => d.Id + d.Message + d.Line).OrderBy(x => x, StringComparer.Ordinal),
+            filtered.Data.Diagnostics.Select(d => d.Id + d.Message + d.Line).OrderBy(x => x, StringComparer.Ordinal));
+    }
+
+    [SkippableTheory]
+    [InlineData("public", new[] { "inLambda", "inPublic" })]
+    [InlineData("internal", new[] { "inInternal", "inLocalFunc" })]
+    [InlineData("protected", new[] { "inProtected" })]
+    [InlineData("private", new[] { "inDefaultPrivate", "inPrivate" })]
+    [InlineData("protected internal", new[] { "inProtInt" })]
+    [InlineData("private protected", new[] { "inPrivProt" })]
+    public async Task GetDiagnostics_AccessibilityFilter_SelectsSitesByEnclosingSymbolDeclaredAccessibility(
+        string accessibilityFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(result.Success, accessibilityFilter);
+        Assert.Equal(expected, VariableNames(result.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+        Assert.Equal(expected.Length, result.Data!.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_ImplicitPrivateDefault()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("inDefaultPrivate", VariableNames(result.Data!));
+        Assert.DoesNotContain("inPublic", VariableNames(result.Data!));
+    }
+
+    [SkippableTheory]
+    [InlineData("PUBLIC", "public")]
+    [InlineData("  Private  ", "private")]
+    [InlineData("Protected   Internal", "protected internal")]
+    [InlineData("internal protected", "protected internal")]
+    [InlineData("protected private", "private protected")]
+    public async Task GetDiagnostics_AccessibilityFilter_IsCaseInsensitiveAndAcceptsEitherModifierOrder(
+        string accessibilityFilter, string canonical)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = accessibilityFilter
+        });
+        var expected = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = canonical
+        });
+
+        Assert.True(filtered.Success);
+        Assert.True(expected.Success);
+        Assert.NotEmpty(expected.Data!.Diagnostics);
+        Assert.Equal(
+            VariableNames(expected.Data).OrderBy(n => n, StringComparer.Ordinal),
+            VariableNames(filtered.Data!).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    [SkippableTheory]
+    [InlineData("friend")]
+    [InlineData("ProtectedOrInternal")]
+    [InlineData("public, internal")]
+    public async Task GetDiagnostics_UnknownAccessibilityFilter_ThrowsInvalidVisibility(string accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetDiagnosticsParams
+            {
+                DiagnosticIds = Cs0168,
+                AccessibilityFilter = accessibilityFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.StartsWith($"Invalid accessibilityFilter '{accessibilityFilter}'. Valid values: ", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_ProtectedInternalNotMatchedByProtectedOrInternal()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var protInt = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "protected internal"
+        });
+        var prot = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "protected"
+        });
+        var intern = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.True(protInt.Success);
+        Assert.Equal(new[] { "inProtInt" }, VariableNames(protInt.Data!));
+        Assert.DoesNotContain("inProtInt", VariableNames(prot.Data!));
+        Assert.DoesNotContain("inProtInt", VariableNames(intern.Data!));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_LambdaAndLocalFunctionJudgedByDeclaringMember()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "public"
+        });
+        var intern = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.True(pub.Success);
+        Assert.Contains("inLambda", VariableNames(pub.Data!));
+        Assert.DoesNotContain("inLocalFunc", VariableNames(pub.Data!));
+
+        Assert.True(intern.Success);
+        Assert.Contains("inLocalFunc", VariableNames(intern.Data!));
+        Assert.DoesNotContain("inLambda", VariableNames(intern.Data!));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_NamespaceLevelSitesNeverMatch()
+    {
+        // Roslyn reports INamespaceSymbol.DeclaredAccessibility as Public, so an unused using inside
+        // a namespace declaration must still be excluded when filtering for public.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            using System.Text;
+
+            namespace App.Services
+            {
+                using System.Collections.Generic;
+
+                public class S { public void M() { int inPublic; } }
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = new[] { "CS8019", "CS0168" },
+            SourceFile = workspace.SourcePath
+        });
+        Assert.True(omitted.Success);
+        Assert.Equal(3, omitted.Data!.TotalCount);
+
+        var publicSites = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = new[] { "CS8019", "CS0168" },
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(publicSites.Success);
+        Assert.Equal(new[] { "inPublic" }, VariableNames(publicSites.Data!));
+        Assert.DoesNotContain(publicSites.Data!.Diagnostics, d => d.Id == "CS8019");
+        Assert.Equal(1, publicSites.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_DropsDiagnosticsWithoutSourceLocation()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "namespace App { public class C { public void M() { int inPublic; } } }\n",
+            outputType: "Exe");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { SeverityFilter = "Warning" });
+        Assert.True(omitted.Success);
+        Assert.Contains(omitted.Data!.Diagnostics, d => d.Id == "CS5001" && d.File == null);
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(filtered.Success);
+        Assert.NotEmpty(filtered.Data!.Diagnostics);
+        Assert.All(filtered.Data.Diagnostics, d => Assert.NotNull(d.File));
+        Assert.DoesNotContain(filtered.Data.Diagnostics, d => d.Id == "CS5001");
+        Assert.Contains(filtered.Data.Diagnostics, d => d.Id == "CS0168");
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilterWithMaxResults_CapsAfterAccessibilityFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "public"
+        });
+        Assert.True(filtered.Success);
+        Assert.Equal(2, filtered.Data!.TotalCount);
+
+        var capped = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "public",
+            MaxResults = 1
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.TotalCount);
+        Assert.Single(capped.Data.Diagnostics);
+        Assert.True(capped.Data.Truncated);
+        Assert.All(VariableNames(capped.Data), n => Assert.Contains(n, VariableNames(filtered.Data)));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilterNoMatch_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class OnlyPub { public void Go() { int inPublic; } }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "private",
+            MaxResults = 1
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Diagnostics);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilterWithNamespaceFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace App.Services
+            {
+                public class S
+                {
+                    public void Pub() { int inServicesPublic; }
+                    private void Priv() { int inServicesPrivate; }
+                }
+            }
+
+            namespace Other
+            {
+                public class O
+                {
+                    public void Pub() { int inOtherPublic; }
+                }
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "public",
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "inServicesPublic" }, VariableNames(result.Data!));
+        Assert.Equal(1, result.Data!.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilterWithSourceFile_MustSatisfyBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            AccessibilitySource,
+            extraFiles: new Dictionary<string, string>
+            {
+                ["Bar.cs"] = "namespace App; public class Bar { public void M() { int inBarPublic; } private void H() { int inBarPrivate; } }\n"
+            });
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var barPath = Path.Combine(workspace.DirectoryPath, "Bar.cs");
+        var scoped = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "public",
+            SourceFile = barPath
+        });
+        Assert.True(scoped.Success);
+        Assert.Equal(new[] { "inBarPublic" }, VariableNames(scoped.Data!));
+        Assert.Equal(1, scoped.Data!.TotalCount);
+
+        var none = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = Cs0168,
+            AccessibilityFilter = "private",
+            SourceFile = barPath
+        });
+        Assert.True(none.Success);
+        Assert.Equal(new[] { "inBarPrivate" }, VariableNames(none.Data!));
+    }
+
+    #endregion
+
 
     private sealed class TempWorkspace : IAsyncDisposable
     {

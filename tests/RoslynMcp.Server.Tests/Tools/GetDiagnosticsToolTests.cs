@@ -75,6 +75,7 @@ public class GetDiagnosticsToolTests
         Assert.True(properties.TryGetProperty("excludeDiagnosticIds", out _));
         Assert.True(properties.TryGetProperty("projectPath", out _));
         Assert.True(properties.TryGetProperty("namespaceFilter", out _));
+        Assert.True(properties.TryGetProperty("accessibilityFilter", out _));
     }
 
     [Fact]
@@ -173,6 +174,55 @@ public class GetDiagnosticsToolTests
         var result = await _tool.ExecuteAsync(args);
 
         // Assert
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+
+    [Fact]
+    public void GetDefinition_AccessibilityFilter_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var accessibilityFilter = doc.RootElement.GetProperty("properties").GetProperty("accessibilityFilter");
+
+        Assert.Equal("string", accessibilityFilter.GetProperty("type").GetString());
+        Assert.Contains("DeclaredAccessibility", accessibilityFilter.GetProperty("description").GetString());
+        Assert.Contains("diagnostic site", accessibilityFilter.GetProperty("description").GetString());
+        Assert.Contains("find_references", accessibilityFilter.GetProperty("description").GetString());
+        Assert.Contains("before maxResults", accessibilityFilter.GetProperty("description").GetString());
+        Assert.Contains("InvalidVisibility", accessibilityFilter.GetProperty("description").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("accessibilityFilter", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("accessibilityFilter", _tool.Description);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AccessibilityFilterString_ParsesAndReachesWorkspace()
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""accessibilityFilter"": ""private protected""
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AccessibilityFilterNonString_ReturnsParseError()
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""accessibilityFilter"": 42
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
         Assert.True(result.IsError);
         Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
     }

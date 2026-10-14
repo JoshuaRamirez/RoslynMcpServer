@@ -7,8 +7,8 @@ namespace RoslynMcp.Core.Query.Utilities;
 /// Resolves the symbol enclosing a reference / call / diagnostic site (the member, type, or namespace
 /// declaration enclosing a position, via <see cref="SemanticModel.GetEnclosingSymbol"/>). Shared by the
 /// site filters of <c>find_references</c> / <c>find_callers</c> / <c>get_diagnostics</c>
-/// (<see cref="NamespaceSiteScope"/>) and <c>find_references</c> <c>accessibilityFilter</c> so every
-/// site filter uses the same enclosing-symbol notion. Semantic models are cached per syntax tree so
+/// (<see cref="NamespaceSiteScope"/>) and <c>find_references</c> / <c>get_diagnostics</c>
+/// <c>accessibilityFilter</c> so every site filter uses the same enclosing-symbol notion. Semantic models are cached per syntax tree so
 /// each file is bound at most once per resolver.
 /// </summary>
 internal sealed class SiteEnclosingSymbolResolver
