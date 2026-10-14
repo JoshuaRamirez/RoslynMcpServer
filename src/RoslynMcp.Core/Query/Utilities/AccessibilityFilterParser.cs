@@ -6,8 +6,8 @@ namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
 /// Parses the optional <c>accessibilityFilter</c> string of <c>search_symbols</c>,
-/// <c>get_document_outline</c>, <c>get_symbol_info</c>, <c>find_implementations</c>, and
-/// <c>get_type_hierarchy</c> into a Roslyn
+/// <c>get_document_outline</c>, <c>get_symbol_info</c>, <c>find_implementations</c>,
+/// <c>get_type_hierarchy</c>, and <c>find_callers</c> into a Roslyn
 /// <see cref="Accessibility"/>.
 /// </summary>
 internal static class AccessibilityFilterParser

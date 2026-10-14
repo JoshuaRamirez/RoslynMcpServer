@@ -235,6 +235,15 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void FindCallers_AccessibilityFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-callers", "--source-file", "/src/Target.cs", "--symbol-name", "Run", "--accessibility-filter", "protected internal"]);
+        Assert.Equal("find-callers", result.ToolName);
+        Assert.Equal("/src/Target.cs", result.Options["source-file"]);
+        Assert.Equal("protected internal", result.Options["accessibility-filter"]);
+    }
+
+    [Fact]
     public void GetTypeHierarchy_NamespaceFilterOption_ParsesValue()
     {
         var result = CliArgs.Parse(["My.sln", "get-type-hierarchy", "--source-file", "/src/Shape.cs", "--symbol-name", "Shape", "--namespace-filter", "App.Services"]);
