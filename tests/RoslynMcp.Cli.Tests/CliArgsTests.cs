@@ -244,6 +244,15 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void GetTypeHierarchy_AccessibilityFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-type-hierarchy", "--source-file", "/src/Shape.cs", "--symbol-name", "Shape", "--accessibility-filter", "protected internal"]);
+        Assert.Equal("get-type-hierarchy", result.ToolName);
+        Assert.Equal("/src/Shape.cs", result.Options["source-file"]);
+        Assert.Equal("protected internal", result.Options["accessibility-filter"]);
+    }
+
+    [Fact]
     public void GetDiagnostics_NamespaceFilterOption_ParsesValue()
     {
         var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Error", "--namespace-filter", "App.Services"]);

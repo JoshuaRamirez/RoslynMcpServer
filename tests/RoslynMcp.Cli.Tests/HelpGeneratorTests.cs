@@ -2222,6 +2222,25 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GetTypeHierarchy_ShowsAccessibilityFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-type-hierarchy")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("accessibilityFilter (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("declared accessibility", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        Assert.DoesNotContain("--accessibility-filter", help[requiredIdx..optionalIdx]);
+        Assert.Contains("--accessibility-filter", help[optionalIdx..]);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GetDiagnostics_ShowsExcludeDiagnosticIds()
     {
         var registry = ToolRegistry.BuildDefault();
