@@ -19,6 +19,14 @@ internal sealed class SiteEnclosingSymbolResolver
     private readonly WorkspaceContext _context;
     private readonly Dictionary<SyntaxTree, SemanticModel?> _semanticModelCache = new();
     private readonly Dictionary<SyntaxTree, Dictionary<(string Id, TextSpan Span), List<ISymbol?>>> _syntaxDiagnosticCarrierCache = new();
+    /// <summary>
+    /// Nearest eligible declared symbol for each syntax node already walked during positional
+    /// (non-missing-syntax) site resolution in this tree. Shared across all positional diagnostics
+    /// for the tree so nested semantic sites (e.g. many CS0103 under shared invocation ancestors)
+    /// do not re-walk the same chain. Cover mode (Span vs FullSpan) is applied before consulting
+    /// this memo — see <see cref="GetDeclaredOrEnclosingSymbolAsync(SyntaxTree?, Document?, TextSpan, string?, int, CancellationToken)"/>.
+    /// </summary>
+    private readonly Dictionary<SyntaxTree, Dictionary<SyntaxNode, ISymbol?>> _positionalDeclaredSymbolCache = new();
 
     public SiteEnclosingSymbolResolver(WorkspaceContext context)
     {
@@ -103,6 +111,19 @@ internal sealed class SiteEnclosingSymbolResolver
                 return carrier;
         }
 
+        // Positional walk: find the first ancestor that covers the site (Span normally; FullSpan
+        // only for documentation-comment trivia), then resolve the nearest eligible declared symbol
+        // with a per-tree memo. Span/FullSpan nest along the ancestor chain, so once a covering node
+        // is found the remaining cover checks are redundant and GetEnclosingDeclaredSymbol matches
+        // the historical per-node declare loop while staying linear across many sites that share
+        // ancestors (nested F(Missing0, F(Missing1, ...)) CS0103 with accessibilityFilter).
+        if (!_positionalDeclaredSymbolCache.TryGetValue(tree, out var positionalMemo))
+        {
+            positionalMemo = new Dictionary<SyntaxNode, ISymbol?>();
+            _positionalDeclaredSymbolCache[tree] = positionalMemo;
+        }
+
+        SyntaxNode? coverStart = null;
         for (SyntaxNode? node = token.Parent; node != null; node = node.Parent)
         {
             var covers = inDocumentationComment
@@ -111,8 +132,15 @@ internal sealed class SiteEnclosingSymbolResolver
             if (!covers)
                 continue;
 
-            var declared = GetDeclaredSymbol(semanticModel, node, cancellationToken);
-            if (declared != null && !IsSynthesizedExpressionMember(declared))
+            coverStart = node;
+            break;
+        }
+
+        if (coverStart != null)
+        {
+            var declared = GetEnclosingDeclaredSymbol(
+                semanticModel, coverStart, positionalMemo, cancellationToken);
+            if (declared != null)
                 return declared;
         }
 
@@ -249,8 +277,9 @@ internal sealed class SiteEnclosingSymbolResolver
     /// The innermost declared (non-synthesized) symbol of <paramref name="node"/> or its ancestors.
     /// <paramref name="memo"/> maps each node already walked to that answer for the node: the walk
     /// stops at the first memoized ancestor and records its result for every node it passed, so each
-    /// node is examined at most once per memo and resolving many carriers under a shared ancestor
-    /// chain stays linear in the number of nodes.
+    /// node is examined at most once per memo and resolving many sites under a shared ancestor
+    /// chain stays linear in the number of nodes. Used both when indexing missing-syntax carriers
+    /// and for the positional (Span / FullSpan) walk in <see cref="GetDeclaredOrEnclosingSymbolAsync(SyntaxTree?, Document?, TextSpan, string?, int, CancellationToken)"/>.
     /// </summary>
     private static ISymbol? GetEnclosingDeclaredSymbol(
         SemanticModel semanticModel, SyntaxNode? node, Dictionary<SyntaxNode, ISymbol?> memo,

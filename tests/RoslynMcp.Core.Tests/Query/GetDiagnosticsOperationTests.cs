@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -2382,6 +2383,93 @@ public class GetDiagnosticsOperationTests
                 Assert.Equal(expectedName, Assert.IsAssignableFrom<IMethodSymbol>(carrier).Name);
             }
         }
+    }
+
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_DeepNestedUnresolvedInvocationsScaleLinearly()
+    {
+        // Syntactically valid nested F(Missing0, F(Missing1, ...)) — each MissingN is CS0103.
+        // With accessibilityFilter set, ordinary semantic diagnostics take the positional ancestor
+        // walk (not the missing-syntax carrier index). Memoizing nearest eligible declarations keeps
+        // shared invocation/argument ancestors from being re-bound O(N²) times (regression for the
+        // positional GetDeclaredOrEnclosingSymbolAsync walk). Each method's CS0103 sites keep its
+        // accessibility. Scratch before/after GetDeclaredSymbol steps: n=10/40/160 → 205/2620/39280
+        // (quadratic) without memo vs 52/202/802 (linear) with memo.
+        const int privateDepth = 64;
+        const int publicDepth = 48;
+
+        static string NestUnresolved(int depth)
+        {
+            var inner = "0";
+            for (var i = depth - 1; i >= 0; i--)
+                inner = $"F(Missing{i}, {inner})";
+            return inner;
+        }
+
+        var source =
+            "public class C\n{\n" +
+            "    private static int F(int a, int b) => a;\n" +
+            "    private void Hidden()\n    {\n        " +
+            NestUnresolved(privateDepth) + ";\n    }\n" +
+            "    public void Visible()\n    {\n        " +
+            NestUnresolved(publicDepth) + ";\n    }\n" +
+            "}\n";
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS0103" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        Assert.True(omitted.Success);
+        Assert.Equal(privateDepth + publicDepth, omitted.Data!.TotalCount);
+
+        foreach (var (filter, expected) in new[]
+                 {
+                     ("private", privateDepth),
+                     ("public", publicDepth),
+                     ("internal", 0),
+                     ("protected", 0)
+                 })
+        {
+            var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+            {
+                DiagnosticIds = ids,
+                AccessibilityFilter = filter
+            });
+            Assert.True(filtered.Success);
+            Assert.Equal(expected, filtered.Data!.TotalCount);
+            Assert.All(filtered.Data.Diagnostics, d => Assert.Equal("CS0103", d.Id));
+        }
+
+        // Every unresolved identifier in each method resolves positionally to that method.
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath)!;
+        var tree = (await document.GetSyntaxTreeAsync())!;
+        var resolver = new SiteEnclosingSymbolResolver(workspace.Context);
+        var privateSites = 0;
+        var publicSites = 0;
+        var root = await tree.GetRootAsync();
+        foreach (var id in root.DescendantNodes().OfType<IdentifierNameSyntax>())
+        {
+            if (!id.Identifier.ValueText.StartsWith("Missing", StringComparison.Ordinal))
+                continue;
+            var carrier = await resolver.GetDeclaredOrEnclosingSymbolAsync(
+                tree, document, id.Span, "CS0103", occurrence: 0, CancellationToken.None);
+            switch (Assert.IsAssignableFrom<IMethodSymbol>(carrier).Name)
+            {
+                case "Hidden":
+                    privateSites++;
+                    break;
+                case "Visible":
+                    publicSites++;
+                    break;
+                default:
+                    Assert.Fail($"Unexpected enclosing method {carrier}");
+                    break;
+            }
+        }
+
+        Assert.Equal(privateDepth, privateSites);
+        Assert.Equal(publicDepth, publicSites);
     }
 
     #endregion
