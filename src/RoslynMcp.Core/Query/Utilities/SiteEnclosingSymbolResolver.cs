@@ -45,7 +45,11 @@ internal sealed class SiteEnclosingSymbolResolver
     /// (expression / statement body sites). A declaration covers a position only within its
     /// <see cref="SyntaxNode.Span"/>, so trivia before a declaration (e.g. a <c>#warning</c> directive
     /// immediately before <c>public class C</c>) does not inherit that declaration; documentation
-    /// comment trivia is the exception and belongs to the declaration it documents. Symbols declared by
+    /// comment trivia is the exception and belongs to the declaration it documents. A zero-width
+    /// diagnostic at the end of an unterminated declaration that no declaration span covers (e.g. CS1002
+    /// for <c>private int field</c> at the end of a file with no trailing newline, where <c>FindToken</c>
+    /// lands on the end-of-file token) resolves through that preceding declaration (see
+    /// <see cref="GetUnterminatedDeclarationSymbol"/>). Symbols declared by
     /// an expression (anonymous types and their properties, tuple types and their elements) are looked
     /// through to the enclosing source member, so <c>new { P = Missing }</c> in a <c>private</c>
     /// method is a <c>private</c> site. Null when there is no tree, no semantic model, or neither path
@@ -76,7 +80,48 @@ internal sealed class SiteEnclosingSymbolResolver
                 return declared;
         }
 
+        if (!inDocumentationComment)
+        {
+            var unterminated = GetUnterminatedDeclarationSymbol(semanticModel, token, position, cancellationToken);
+            if (unterminated != null)
+                return unterminated;
+        }
+
         return semanticModel.GetEnclosingSymbol(position, cancellationToken);
+    }
+
+    /// <summary>
+    /// Symbol of the declaration that ends, unterminated, exactly at <paramref name="position"/>: a
+    /// zero-width declaration-boundary diagnostic (e.g. CS1002 for <c>private int field</c> at the end of
+    /// a file with no trailing newline or closing brace) sits at the exclusive
+    /// <see cref="SyntaxNode.Span"/> end of the declaration it belongs to, and <c>FindToken</c> yields
+    /// the following token (the end-of-file token), whose ancestors cover nothing. Walks out from the
+    /// non-zero-width token ending exactly at the position (no trivia in between, so a directive or
+    /// comment before a declaration never reaches back to the previous one) and returns the innermost
+    /// declaration whose span also ends there with a missing (parser-inserted) last token, so a complete
+    /// member before an unterminated type (<c>class A { void M() {} </c> at end of file) does not claim
+    /// the type's missing <c>}</c>. Null when no such declaration exists.
+    /// </summary>
+    private static ISymbol? GetUnterminatedDeclarationSymbol(
+        SemanticModel semanticModel, SyntaxToken token, int position, CancellationToken cancellationToken)
+    {
+        // The token found starts at or after the position (e.g. the zero-width end-of-file token) unless
+        // the position is in the found token's trailing trivia.
+        var preceding = token.SpanStart >= position ? token.GetPreviousToken() : token;
+        if (preceding.RawKind == 0 || preceding.Span.Length == 0 || preceding.Span.End != position)
+            return null;
+
+        for (SyntaxNode? node = preceding.Parent; node != null; node = node.Parent)
+        {
+            if (node.Span.End != position || !node.GetLastToken(includeZeroWidth: true).IsMissing)
+                continue;
+
+            var declared = GetDeclaredSymbol(semanticModel, node, cancellationToken);
+            if (declared != null && !IsSynthesizedExpressionMember(declared))
+                return declared;
+        }
+
+        return null;
     }
 
     /// <summary>

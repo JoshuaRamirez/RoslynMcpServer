@@ -1,6 +1,8 @@
+using Microsoft.CodeAnalysis;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Query;
+using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -1774,6 +1776,90 @@ public class GetDiagnosticsOperationTests
         Assert.True(priv.Success);
         Assert.Contains(priv.Data!.Diagnostics, d => d.Id == "CS1002");
         Assert.Equal(omitted.Data.TotalCount, priv.Data!.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_ZeroWidthMissingSemicolonAtEofUsesFieldAccessibility()
+    {
+        // `private int field` at EOF with no trailing newline and no closing brace: CS1002 is zero-width
+        // at EOF, so FindToken lands on the EOF token (whose ancestors cover nothing) and an
+        // uninitialized field has no member scope for GetEnclosingSymbol. The site must resolve through
+        // the preceding declaration (the private field), not the public containing type.
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "public class C\n{\n    private int field");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS1002" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "public"
+        });
+        var priv = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(omitted.Success);
+        Assert.Equal(1, omitted.Data!.TotalCount);
+        Assert.True(pub.Success);
+        Assert.DoesNotContain(pub.Data!.Diagnostics, d => d.Id == "CS1002");
+        Assert.True(priv.Success);
+        Assert.Single(priv.Data!.Diagnostics, d => d.Id == "CS1002");
+
+        // The site itself resolves to the private field.
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath)!;
+        var tree = (await document.GetSyntaxTreeAsync())!;
+        var cs1002 = Assert.Single((await tree.GetRootAsync()).GetDiagnostics(), d => d.Id == "CS1002");
+        Assert.Equal(0, cs1002.Location.SourceSpan.Length);
+        Assert.Equal(tree.Length, cs1002.Location.SourceSpan.Start);
+        var resolver = new SiteEnclosingSymbolResolver(workspace.Context);
+        var site = await resolver.GetDeclaredOrEnclosingSymbolAsync(
+            tree, document, cs1002.Location.SourceSpan.Start, CancellationToken.None);
+        var field = Assert.IsAssignableFrom<IFieldSymbol>(site);
+        Assert.Equal("field", field.Name);
+        Assert.Equal(Accessibility.Private, field.DeclaredAccessibility);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_MissingCloseBraceAtEofAfterCompleteMemberUsesTypeAccessibility()
+    {
+        // CS1513 for the class's missing `}` is zero-width at EOF right after the private method's own
+        // (present) `}`. Only a declaration ending in a missing token claims an EOF boundary diagnostic,
+        // so the site is the public class, not the complete private method preceding it.
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "public class C\n{\n    private void M() { }");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS1513" };
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = ids });
+        var pub = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "public"
+        });
+        var priv = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(omitted.Success);
+        Assert.Equal(1, omitted.Data!.TotalCount);
+        Assert.True(pub.Success);
+        Assert.Single(pub.Data!.Diagnostics, d => d.Id == "CS1513");
+        Assert.True(priv.Success);
+        Assert.DoesNotContain(priv.Data!.Diagnostics, d => d.Id == "CS1513");
+
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath)!;
+        var tree = (await document.GetSyntaxTreeAsync())!;
+        var resolver = new SiteEnclosingSymbolResolver(workspace.Context);
+        var site = await resolver.GetDeclaredOrEnclosingSymbolAsync(
+            tree, document, tree.Length, CancellationToken.None);
+        var type = Assert.IsAssignableFrom<INamedTypeSymbol>(site);
+        Assert.Equal("C", type.Name);
     }
 
     [SkippableFact]
