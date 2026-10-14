@@ -480,6 +480,44 @@ public class ArgsToJsonConverterTests
     }
 
     [Fact]
+    public void GetTypeHierarchy_AccessibilityFilter_RoundTripsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Shape.cs",
+            ["symbol-name"] = "Shape",
+            ["accessibility-filter"] = "private protected",
+            ["namespace-filter"] = "App.Services",
+            ["max-results"] = "3"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("private protected", doc.RootElement.GetProperty("accessibilityFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetTypeHierarchyParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("private protected", p.AccessibilityFilter);
+        Assert.Equal("App.Services", p.NamespaceFilter);
+        Assert.Equal(3, p.MaxResults);
+    }
+
+    [Fact]
+    public void GetTypeHierarchy_AccessibilityFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Shape.cs",
+            ["symbol-name"] = "Shape"
+        });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetTypeHierarchyParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.AccessibilityFilter);
+    }
+
+    [Fact]
     public void GoToDefinition_DefinitionFileOption_BindsToParams()
     {
         var dict = new Dictionary<string, string>

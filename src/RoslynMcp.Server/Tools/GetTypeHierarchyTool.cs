@@ -32,7 +32,7 @@ public sealed class GetTypeHierarchyTool : IToolHandler
     public string Name => "get_type_hierarchy";
 
     /// <inheritdoc />
-    public string Description => "Get the type hierarchy for a C# type: base types (ancestors), derived types (descendants), and implemented interfaces. Optional maxResults caps the returned DerivedTypes list (omit = no cap). BaseTypes and Interfaces are not capped. sourceFile locates the target type; optional derivedFile restricts reported DerivedTypes to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set; BaseTypes and Interfaces are not filtered); optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported DerivedTypes to those declared in documents of that project, combined with derivedFile and applied before maxResults (omit = whole solution); optional transitive (default true) set to false returns only direct subclasses (types whose immediate base type is the target) instead of every descendant, with derivedFile/projectPath/maxResults applied to that direct set (BaseTypes and Interfaces unaffected); optional namespaceFilter restricts reported DerivedTypes to those whose containing namespace equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as search_symbols / find_implementations namespaceFilter), combined with derivedFile/projectPath/transitive and applied before maxResults (BaseTypes and Interfaces are not filtered).";
+    public string Description => "Get the type hierarchy for a C# type: base types (ancestors), derived types (descendants), and implemented interfaces. Optional maxResults caps the returned DerivedTypes list (omit = no cap). BaseTypes and Interfaces are not capped. sourceFile locates the target type; optional derivedFile restricts reported DerivedTypes to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set; BaseTypes and Interfaces are not filtered); optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported DerivedTypes to those declared in documents of that project, combined with derivedFile and applied before maxResults (omit = whole solution); optional transitive (default true) set to false returns only direct subclasses (types whose immediate base type is the target) instead of every descendant, with derivedFile/projectPath/maxResults applied to that direct set (BaseTypes and Interfaces unaffected); optional namespaceFilter restricts reported DerivedTypes to those whose containing namespace equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as search_symbols / find_implementations namespaceFilter), combined with derivedFile/projectPath/transitive and applied before maxResults (BaseTypes and Interfaces are not filtered); optional accessibilityFilter (public, internal, protected, private, protected internal, or private protected; case-insensitive; same values as search_symbols / get_document_outline / get_symbol_info / find_implementations accessibilityFilter) keeps only DerivedTypes whose DeclaredAccessibility equals it exactly (implicit defaults count: a top-level type with no modifier is internal, a nested type with no modifier is private), combined with the other filters and applied before maxResults (BaseTypes and Interfaces are not filtered).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -97,7 +97,12 @@ public sealed class GetTypeHierarchyTool : IToolHandler
             namespaceFilter = new
             {
                 type = "string",
-                description = "Namespace to restrict reported DerivedTypes to (optional; omit for all namespaces). Keeps derived types whose containing namespace equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace types never match a named filter. Same matching as search_symbols namespaceFilter; combined with derivedFile/projectPath/transitive and applied before maxResults so totalCount/truncated reflect the filtered set; does not filter BaseTypes or Interfaces; sourceFile may be in another namespace"
+                description = "Namespace to restrict reported DerivedTypes to (optional; omit for all namespaces). Keeps derived types whose containing namespace equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace types never match a named filter. Same matching as search_symbols namespaceFilter; combined with derivedFile/projectPath/transitive/accessibilityFilter and applied before maxResults so totalCount/truncated reflect the filtered set; does not filter BaseTypes or Interfaces; sourceFile may be in another namespace"
+            },
+            accessibilityFilter = new
+            {
+                type = "string",
+                description = "Declared accessibility to restrict reported DerivedTypes to (optional; omit for all accessibilities): public, internal, protected, private, protected internal, or private protected (case-insensitive; surrounding whitespace trimmed and inner whitespace runs collapsed; internal protected / protected private also accepted). Keeps derived types whose DeclaredAccessibility equals it exactly (implicit defaults count: a top-level type with no modifier is internal, a nested type with no modifier is private; protected internal is not matched by protected or internal). Same values and InvalidVisibility error as search_symbols / get_document_outline / get_symbol_info / find_implementations accessibilityFilter; combined with derivedFile/projectPath/transitive/namespaceFilter and applied before maxResults so totalCount/truncated reflect the filtered set; does not filter BaseTypes or Interfaces"
             }
         },
         additionalProperties = false
@@ -129,7 +134,8 @@ public sealed class GetTypeHierarchyTool : IToolHandler
                 DerivedFile = args.DerivedFile,
                 ProjectPath = args.ProjectPath,
                 Transitive = args.Transitive,
-                NamespaceFilter = args.NamespaceFilter
+                NamespaceFilter = args.NamespaceFilter,
+                AccessibilityFilter = args.AccessibilityFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -166,5 +172,6 @@ public sealed class GetTypeHierarchyTool : IToolHandler
         public string? ProjectPath { get; init; }
         public bool? Transitive { get; init; }
         public string? NamespaceFilter { get; init; }
+        public string? AccessibilityFilter { get; init; }
     }
 }

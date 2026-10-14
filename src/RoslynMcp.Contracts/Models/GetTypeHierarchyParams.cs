@@ -88,4 +88,23 @@ public sealed class GetTypeHierarchyParams
     /// <see cref="SourceFile"/> still locates the target type and may be in another namespace.
     /// </summary>
     public string? NamespaceFilter { get; init; }
+
+    /// <summary>
+    /// Optional declared accessibility to restrict reported derived types to: <c>public</c>,
+    /// <c>internal</c>, <c>protected</c>, <c>private</c>, <c>protected internal</c>, or
+    /// <c>private protected</c> (case-insensitive; surrounding whitespace trimmed and inner
+    /// whitespace runs collapsed; <c>internal protected</c> / <c>protected private</c> also
+    /// accepted). Same values, parsing, and <c>InvalidVisibility</c> error as
+    /// <c>search_symbols</c> / <c>get_document_outline</c> / <c>get_symbol_info</c> /
+    /// <c>find_implementations</c> <c>accessibilityFilter</c>. When set, only derived types whose
+    /// <c>DeclaredAccessibility</c> equals it exactly are returned in <c>DerivedTypes</c> (implicit
+    /// defaults count: a top-level type with no modifier is <c>internal</c>, a nested type with no
+    /// modifier is <c>private</c>; <c>protected internal</c> is not matched by <c>protected</c> or
+    /// <c>internal</c>). Combined with <see cref="DerivedFile"/>, <see cref="ProjectPath"/>,
+    /// <see cref="Transitive"/>, and <see cref="NamespaceFilter"/>, and applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
+    /// accessibility-filtered set. Does not filter BaseTypes or Interfaces. Omit or blank reports
+    /// derived types of every accessibility.
+    /// </summary>
+    public string? AccessibilityFilter { get; init; }
 }
