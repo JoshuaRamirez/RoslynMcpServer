@@ -32,7 +32,7 @@ public sealed class GetDocumentOutlineTool : IToolHandler
     public string Name => "get_document_outline";
 
     /// <inheritdoc />
-    public string Description => "Get a structured outline of all declarations in a C# file: namespaces, types, methods, properties, fields, and events with their line numbers and accessibility. Optional maxDepth caps the returned outline tree depth (1 = top-level entries only; omit = no depth cap). Optional maxResults caps the returned outline tree via DFS pre-order (omit = no cap), applied after maxDepth. Optional kindFilter (same values as search_symbols kindFilter, case-insensitive) keeps only entries of that kind plus their containing types/namespaces, applied before maxDepth and maxResults. Optional nameFilter keeps only entries whose name contains the value (case-insensitive substring) plus their containing types/namespaces; combined with kindFilter an entry must satisfy both; applied before maxDepth and maxResults. Optional accessibilityFilter (public, internal, protected, private, protected internal, or private protected; case-insensitive) keeps only entries with exactly that declared accessibility, counting implicit defaults (a top-level type with no modifier is internal, a class member with no modifier is private), plus their containing types/namespaces; combined with kindFilter and nameFilter an entry must satisfy all; applied before maxDepth and maxResults.";
+    public string Description => "Get a structured outline of all declarations in a C# file: namespaces, types, methods, properties, fields, and events with their line numbers and accessibility. Optional maxDepth caps the returned outline tree depth (1 = top-level entries only; omit = no depth cap). Optional maxResults caps the returned outline tree via DFS pre-order (omit = no cap), applied after maxDepth. Optional kindFilter (same values as search_symbols kindFilter, case-insensitive) keeps only entries of that kind plus their containing types/namespaces, applied before maxDepth and maxResults. Optional nameFilter keeps only entries whose name contains the value (case-insensitive substring) plus their containing types/namespaces; combined with kindFilter an entry must satisfy both; applied before maxDepth and maxResults. Optional accessibilityFilter (public, internal, protected, private, protected internal, or private protected; case-insensitive) keeps only entries with exactly that declared accessibility, counting implicit defaults (a top-level type with no modifier is internal, a class member with no modifier is private), plus their containing types/namespaces; combined with kindFilter and nameFilter an entry must satisfy all; applied before maxDepth and maxResults. Optional namespaceFilter keeps only entries declared in that namespace or one nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as search_symbols / get_type_hierarchy namespaceFilter; namespace entries match on the namespace itself) plus their containing types/namespaces; combined with kindFilter, nameFilter, and accessibilityFilter an entry must satisfy all; applied before maxDepth and maxResults.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -77,6 +77,11 @@ public sealed class GetDocumentOutlineTool : IToolHandler
             {
                 type = "string",
                 description = "Keep only outline entries with exactly this declared accessibility plus their containing types/namespaces (optional; omit, empty, or whitespace = any accessibility): public, internal, protected, private, protected internal, or private protected (case-insensitive, surrounding whitespace trimmed; internal protected / protected private also accepted). Same values and semantics as search_symbols accessibilityFilter: implicit defaults count (a top-level type with no modifier is internal, a class member with no modifier is private, an interface or enum member is public) and protected internal is not matched by protected or internal; namespaces never match. Combined with kindFilter and nameFilter (an entry must satisfy all); applied before maxDepth and maxResults; any other value returns an invalid-visibility error."
+            },
+            namespaceFilter = new
+            {
+                type = "string",
+                description = "Keep only outline entries declared in this namespace or one nested inside it plus their containing types/namespaces (optional; omit for all namespaces). Type and member entries match when their containing namespace equals it or is nested inside it; namespace entries match when the namespace itself does (e.g. App.Services matches the App.Services and App.Services.Orders entries and their types/members, not App.ServicesExtra); ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace declarations never match a named filter. Same matching as search_symbols namespaceFilter; combined with kindFilter, nameFilter, and accessibilityFilter (an entry must satisfy all); applied before maxDepth and maxResults so totalCount/truncated reflect the filtered tree"
             }
         },
         additionalProperties = false
@@ -104,7 +109,8 @@ public sealed class GetDocumentOutlineTool : IToolHandler
                 MaxDepth = args.MaxDepth,
                 KindFilter = args.KindFilter,
                 NameFilter = args.NameFilter,
-                AccessibilityFilter = args.AccessibilityFilter
+                AccessibilityFilter = args.AccessibilityFilter,
+                NamespaceFilter = args.NamespaceFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -137,5 +143,6 @@ public sealed class GetDocumentOutlineTool : IToolHandler
         public string? KindFilter { get; init; }
         public string? NameFilter { get; init; }
         public string? AccessibilityFilter { get; init; }
+        public string? NamespaceFilter { get; init; }
     }
 }
