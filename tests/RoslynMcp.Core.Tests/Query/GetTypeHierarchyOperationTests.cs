@@ -16,7 +16,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <c>get_diagnostics</c> / <c>search_symbols</c> / <c>find_references</c> / <c>find_callers</c> /
 /// <c>find_implementations</c> <c>projectPath</c>), and optional <c>transitive</c> (<c>false</c> reports
 /// only direct subclasses instead of every descendant), and optional <c>accessibilityFilter</c> (keeps
-/// only DerivedTypes with that exact declared accessibility).
+/// only DerivedTypes with that exact declared accessibility), and optional <c>kindFilter</c> (keeps only
+/// DerivedTypes of that symbol kind).
 /// </summary>
 public class GetTypeHierarchyOperationTests
 {
@@ -1953,6 +1954,325 @@ public class GetTypeHierarchyOperationTests
         Assert.True(internalOnly.Success);
         Assert.Empty(internalOnly.Data!.DerivedTypes);
         Assert.Equal(0, internalOnly.Data.TotalCount);
+    }
+
+    #endregion
+
+    #region kindFilter
+
+    // App.Shape (class; base Root, interface IMarker) has class descendants in Derived.cs (UnitSquare
+    // only through Square); App.Entity (abstract record, interface IMarker) has record descendants in
+    // Records.cs under App.Models (Employee only through Person). C# lets classes derive only from
+    // classes and records only from records, so each target's derived set is all Class or all Record.
+    private static readonly Dictionary<string, string> KindSources = new()
+    {
+        ["Shape.cs"] = """
+            namespace App
+            {
+                public class Root { }
+                public interface IMarker { }
+
+                public class Shape : Root, IMarker { }
+
+                public abstract record Entity : IMarker;
+            }
+            """,
+        ["Derived.cs"] = """
+            namespace App
+            {
+                public class Circle : Shape { }
+                public class Square : Shape { }
+                public class UnitSquare : Square { }
+                internal class Hidden : Shape { }
+            }
+            """,
+        ["Records.cs"] = """
+            namespace App.Models
+            {
+                public record Person(string Name) : Entity;
+                public record Employee(string Name, int Id) : Person(Name);
+                internal sealed record Order : Entity;
+            }
+            """
+    };
+
+    private static readonly string[] AllClassDescendants = { "Circle", "Hidden", "Square", "UnitSquare" };
+
+    private static readonly string[] AllRecordDescendants = { "Employee", "Order", "Person" };
+
+    private static GetTypeHierarchyParams KindParams(TempWorkspace workspace, string symbolName, string? kindFilter) => new()
+    {
+        SourceFile = workspace.SourcePath,
+        SymbolName = symbolName,
+        Direction = "Descendants",
+        KindFilter = kindFilter
+    };
+
+    [Fact]
+    public void KindFilter_DefaultsToNull()
+    {
+        var @params = new GetTypeHierarchyParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.KindFilter);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_KindFilterOmittedOrBlank_ReturnsEveryKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        foreach (var filter in new[] { null, "", "   " })
+        {
+            var shape = await operation.ExecuteAsync(KindParams(workspace, "Shape", filter));
+
+            Assert.True(shape.Success);
+            Assert.Equal(AllClassDescendants, SortedNames(shape.Data!.DerivedTypes));
+            Assert.Equal(4, shape.Data.TotalCount);
+            Assert.False(shape.Data.Truncated);
+
+            var entity = await operation.ExecuteAsync(KindParams(workspace, "Entity", filter));
+
+            Assert.True(entity.Success);
+            Assert.Equal(AllRecordDescendants, SortedNames(entity.Data!.DerivedTypes));
+            Assert.Equal(3, entity.Data.TotalCount);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("Class")]
+    [InlineData("class")]
+    [InlineData("  CLASS  ")]
+    public async Task GetTypeHierarchy_KindFilterClass_KeepsClassDescendantsOnly(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var shape = await operation.ExecuteAsync(KindParams(workspace, "Shape", kindFilter));
+
+        Assert.True(shape.Success);
+        Assert.Equal(AllClassDescendants, SortedNames(shape.Data!.DerivedTypes));
+        Assert.Equal(4, shape.Data.TotalCount);
+        Assert.False(shape.Data.Truncated);
+
+        // Record descendants are Record, not Class, so a Class filter drops every one of them.
+        var entity = await operation.ExecuteAsync(KindParams(workspace, "Entity", kindFilter));
+
+        Assert.True(entity.Success);
+        Assert.Empty(entity.Data!.DerivedTypes);
+        Assert.Equal(0, entity.Data.TotalCount);
+        Assert.False(entity.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Record")]
+    [InlineData(" record ")]
+    public async Task GetTypeHierarchy_KindFilterRecord_KeepsRecordDescendantsOnly(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var entity = await operation.ExecuteAsync(KindParams(workspace, "Entity", kindFilter));
+
+        Assert.True(entity.Success);
+        Assert.Equal(AllRecordDescendants, SortedNames(entity.Data!.DerivedTypes));
+        Assert.Equal(3, entity.Data.TotalCount);
+        Assert.False(entity.Data.Truncated);
+
+        // The reported entry Kind is unchanged (TypeKind name), so record entries still read Class.
+        Assert.All(entity.Data.DerivedTypes, d => Assert.Equal("Class", d.Kind));
+
+        var shape = await operation.ExecuteAsync(KindParams(workspace, "Shape", kindFilter));
+
+        Assert.True(shape.Success);
+        Assert.Empty(shape.Data!.DerivedTypes);
+        Assert.Equal(0, shape.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("Struct")]
+    [InlineData("Interface")]
+    [InlineData("Enum")]
+    [InlineData("Delegate")]
+    [InlineData("Method")]
+    [InlineData("Local")]
+    [InlineData("Parameter")]
+    [InlineData("Namespace")]
+    public async Task GetTypeHierarchy_KindFilterNoDerivedTypeHas_ReturnsEmptySuccess(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(KindParams(workspace, "Shape", kindFilter));
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.DerivedTypes);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Klass", "Descendants")]
+    [InlineData("6", "Both")]
+    [InlineData("Class, Record", "Ancestors")]
+    public async Task GetTypeHierarchy_UnknownKindFilter_ThrowsInvalidSymbolKind(string kindFilter, string direction)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Validated up front, even when direction is Ancestors (no DerivedTypes to filter).
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetTypeHierarchyParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Shape",
+                Direction = direction,
+                KindFilter = kindFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.StartsWith($"Invalid kindFilter '{kindFilter}'. Valid values: ", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_KindFilter_DoesNotFilterBaseTypesOrInterfaces()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Root is a class and IMarker an interface, yet both stay under a Record filter.
+        var both = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            KindFilter = "Record"
+        });
+
+        Assert.True(both.Success);
+        Assert.Empty(both.Data!.DerivedTypes);
+        Assert.Contains(both.Data.BaseTypes, b => b.TypeName == "Root");
+        Assert.Contains(both.Data.Interfaces, i => i.TypeName == "IMarker");
+
+        var ancestors = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Ancestors",
+            KindFilter = "Struct"
+        });
+
+        Assert.True(ancestors.Success);
+        Assert.Empty(ancestors.Data!.DerivedTypes);
+        Assert.Contains(ancestors.Data.BaseTypes, b => b.TypeName == "Root");
+        Assert.Contains(ancestors.Data.Interfaces, i => i.TypeName == "IMarker");
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_KindFilterWithMaxResults_CapsFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Entity",
+            Direction = "Descendants",
+            KindFilter = "Record",
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.DerivedTypes.Count);
+        Assert.All(capped.Data.DerivedTypes, d => Assert.Contains(d.TypeName, AllRecordDescendants));
+        Assert.Equal(3, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var exact = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Entity",
+            Direction = "Descendants",
+            KindFilter = "Record",
+            MaxResults = 3
+        });
+
+        Assert.True(exact.Success);
+        Assert.Equal(3, exact.Data!.DerivedTypes.Count);
+        Assert.Equal(3, exact.Data.TotalCount);
+        Assert.False(exact.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_KindFilterWithTransitiveFalse_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Employee derives through Person, so the direct record set drops it.
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Entity",
+            Direction = "Descendants",
+            Transitive = false,
+            KindFilter = "Record"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Order", "Person" }, SortedNames(result.Data!.DerivedTypes));
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_KindFilterWithOtherFilters_AndsTheScopes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var internalRecords = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Entity",
+            Direction = "Descendants",
+            KindFilter = "Record",
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.True(internalRecords.Success);
+        Assert.Equal(new[] { "Order" }, SortedNames(internalRecords.Data!.DerivedTypes));
+        Assert.Equal(1, internalRecords.Data.TotalCount);
+
+        var namespaced = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Entity",
+            Direction = "Descendants",
+            KindFilter = "Record",
+            NamespaceFilter = "App.Models",
+            DerivedFile = workspace.PathOf("Records.cs"),
+            ProjectPath = workspace.ProjectPath
+        });
+
+        Assert.True(namespaced.Success);
+        Assert.Equal(AllRecordDescendants, SortedNames(namespaced.Data!.DerivedTypes));
+        Assert.All(namespaced.Data.DerivedTypes, d => Assert.True(SamePath(d.File, workspace.PathOf("Records.cs"))));
+        Assert.Equal(3, namespaced.Data.TotalCount);
+
+        // Shape's class descendants live in App (Derived.cs), so App.Models + Class finds none.
+        var none = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            KindFilter = "Class",
+            NamespaceFilter = "App.Models"
+        });
+
+        Assert.True(none.Success);
+        Assert.Empty(none.Data!.DerivedTypes);
+        Assert.Equal(0, none.Data.TotalCount);
+        Assert.False(none.Data.Truncated);
     }
 
     #endregion

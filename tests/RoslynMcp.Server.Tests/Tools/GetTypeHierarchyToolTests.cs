@@ -332,4 +332,61 @@ public class GetTypeHierarchyToolTests
         Assert.True(result.IsError);
         Assert.DoesNotContain("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
     }
+
+    [Fact]
+    public void GetDefinition_KindFilter_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var kindFilter = doc.RootElement.GetProperty("properties").GetProperty("kindFilter");
+
+        Assert.Equal("string", kindFilter.GetProperty("type").GetString());
+        Assert.Contains("InvalidSymbolKind", kindFilter.GetProperty("description").GetString());
+        Assert.Contains("search_symbols", kindFilter.GetProperty("description").GetString());
+        Assert.Contains("Record", kindFilter.GetProperty("description").GetString());
+        Assert.Contains("does not filter BaseTypes or Interfaces", kindFilter.GetProperty("description").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("kindFilter", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("kindFilter", _tool.Description);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_KindFilterString_ParsesAndReachesWorkspace()
+    {
+        // Arrange - well-formed kindFilter parses; the throwing provider proves parsing succeeded
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/Shape.cs"",
+            ""symbolName"": ""Shape"",
+            ""kindFilter"": ""Record""
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_KindFilterNonString_ReturnsParseError()
+    {
+        // Arrange - a number is not a string; deserialization fails before workspace creation
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/Shape.cs"",
+            ""symbolName"": ""Shape"",
+            ""kindFilter"": 1
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
 }

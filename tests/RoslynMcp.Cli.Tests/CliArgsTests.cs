@@ -289,6 +289,15 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void GetTypeHierarchy_KindFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-type-hierarchy", "--source-file", "/src/Entity.cs", "--symbol-name", "Entity", "--kind-filter", "Record"]);
+        Assert.Equal("get-type-hierarchy", result.ToolName);
+        Assert.Equal("/src/Entity.cs", result.Options["source-file"]);
+        Assert.Equal("Record", result.Options["kind-filter"]);
+    }
+
+    [Fact]
     public void GetDiagnostics_NamespaceFilterOption_ParsesValue()
     {
         var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Error", "--namespace-filter", "App.Services"]);

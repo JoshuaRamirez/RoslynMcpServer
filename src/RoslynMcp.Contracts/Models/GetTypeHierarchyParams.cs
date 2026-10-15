@@ -81,7 +81,8 @@ public sealed class GetTypeHierarchyParams
     /// <c>search_symbols</c> / <c>find_implementations</c> <c>namespaceFilter</c>. Compared with
     /// <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
     /// <c>global::</c> is accepted. Combined with <see cref="DerivedFile"/>, <see cref="ProjectPath"/>,
-    /// and <see cref="Transitive"/>, and applied before <see cref="MaxResults"/> so
+    /// <see cref="Transitive"/>, <see cref="AccessibilityFilter"/>, and <see cref="KindFilter"/>, and
+    /// applied before <see cref="MaxResults"/> so
     /// <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered set. Derived types in the
     /// global namespace never match a named filter. Does not filter BaseTypes or Interfaces. Omit,
     /// blank, or a bare <c>global::</c> (the root namespace) reports derived types in all namespaces.
@@ -101,10 +102,32 @@ public sealed class GetTypeHierarchyParams
     /// defaults count: a top-level type with no modifier is <c>internal</c>, a nested type with no
     /// modifier is <c>private</c>; <c>protected internal</c> is not matched by <c>protected</c> or
     /// <c>internal</c>). Combined with <see cref="DerivedFile"/>, <see cref="ProjectPath"/>,
-    /// <see cref="Transitive"/>, and <see cref="NamespaceFilter"/>, and applied before
+    /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, and <see cref="KindFilter"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
     /// accessibility-filtered set. Does not filter BaseTypes or Interfaces. Omit or blank reports
     /// derived types of every accessibility.
     /// </summary>
     public string? AccessibilityFilter { get; init; }
+
+    /// <summary>
+    /// Optional symbol kind to restrict reported derived types to: a single <c>SymbolKind</c> name
+    /// shared with <c>search_symbols</c> / <c>get_document_outline</c> / <c>get_symbol_info</c> /
+    /// <c>find_implementations</c> <c>kindFilter</c> (Class, Struct, Interface, Enum, Record, Delegate,
+    /// Method, Property, Field, Event, Constant, Local, Parameter, Namespace; case-insensitive;
+    /// surrounding whitespace trimmed; numeric or comma-combined values rejected). When set, only
+    /// derived types whose shared <c>SymbolKind</c> classification (the same one
+    /// <c>find_implementations</c> reports in <c>ImplementationInfo.Kind</c>) equals it are returned in
+    /// <c>DerivedTypes</c>: records match <c>Record</c>, not <c>Class</c>, even though
+    /// <c>TypeHierarchyEntry.Kind</c> reports the type's <c>TypeKind</c> name (<c>Class</c> for a
+    /// record class). Because C# only lets classes derive from classes and records from records, the
+    /// derived types of one target are typically all <c>Class</c> or all <c>Record</c>. Combined with
+    /// <see cref="DerivedFile"/>, <see cref="ProjectPath"/>, <see cref="Transitive"/>,
+    /// <see cref="NamespaceFilter"/>, and <see cref="AccessibilityFilter"/> (a derived type must satisfy
+    /// all that are set), and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the kind-filtered set. A kind that no derived type has returns an empty
+    /// success. Does not filter BaseTypes or Interfaces. Omit, empty, or whitespace for no kind filter.
+    /// An unrecognized value fails with <c>InvalidSymbolKind</c>, even when <c>direction</c> is
+    /// <c>Ancestors</c>.
+    /// </summary>
+    public string? KindFilter { get; init; }
 }

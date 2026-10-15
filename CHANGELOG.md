@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- `get_type_hierarchy` now honors optional **`kindFilter`**: same values, parsing, and `InvalidSymbolKind` error as `search_symbols` / `get_document_outline` (#2396) / `get_symbol_info` (#2637) / `find_implementations` (#2838) `kindFilter` (shared `SymbolKindFilterParser`; a single `SymbolKind` name — `Class`, `Struct`, `Interface`, `Enum`, `Record`, `Delegate`, `Method`, `Property`, `Field`, `Event`, `Constant`, `Local`, `Parameter`, `Namespace`; case-insensitive; whitespace trimmed; numeric / comma-combined values rejected; validated even when `direction` is `Ancestors`). When set, only **DerivedTypes** whose shared kind classification (`SymbolKindMapper.Map`, the value `find_implementations` reports; records map to `Record`, not `Class`) equals the filter are reported, so callers can ask "which **record** descendants does `Entity` have?" without filtering client-side. Since C# only lets classes derive from classes and records from records, one target's derived types are typically all `Class` or all `Record`. BaseTypes and Interfaces are not filtered (same policy as `namespaceFilter` / `accessibilityFilter`). Combined with `derivedFile` / `projectPath` / `transitive` / `namespaceFilter` / `accessibilityFilter` (a derived type must satisfy all that are set) and applied before `maxResults`, so `TotalCount` / `Truncated` reflect the kind-filtered set; a kind no derived type has returns an empty success; `sourceFile` still locates the target type. Omit / blank = today's behavior. CLI: `--kind-filter`. `TypeHierarchyEntry` shape and its reported `Kind` (`TypeKind` name, so a record entry still reads `Class`) unchanged. (#2847)
+
 ## [0.10.0] - 2026-10-15
 
 ### Added
