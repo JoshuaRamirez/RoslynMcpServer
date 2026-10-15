@@ -26,11 +26,6 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         @"^[A-Za-z_][A-Za-z0-9_]*$",
         RegexOptions.Compiled);
 
-    private static readonly HashSet<string> ValidVisibilities = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "private", "internal", "protected", "public", "private protected", "protected internal"
-    };
-
     /// <summary>
     /// Creates a new extract method operation.
     /// </summary>
@@ -48,7 +43,7 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
     /// </summary>
     internal static void Validate(ExtractMethodParams @params)
     {
-        if (!ValidVisibilities.Contains(@params.Visibility))
+        if (!VisibilityTokenHelpers.IsValidVisibility(@params.Visibility))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"'{@params.Visibility}' is not a valid visibility modifier.");
 
         if (@params.AllFiles)

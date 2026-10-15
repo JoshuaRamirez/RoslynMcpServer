@@ -23,11 +23,6 @@ namespace RoslynMcp.Core.Refactoring.Extract;
 /// </summary>
 public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractConstantParams>
 {
-    private static readonly HashSet<string> ValidVisibilities = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "private", "protected", "internal", "public", "protected internal", "private protected"
-    };
-
     /// <summary>
     /// Creates a new extract constant operation.
     /// </summary>
@@ -62,7 +57,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
             }
 
-            if (!ValidVisibilities.Contains(@params.Visibility))
+            if (!VisibilityTokenHelpers.IsValidVisibility(@params.Visibility))
                 throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
 
             return;
@@ -105,7 +100,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (!IdentifierValidation.IsValidIdentifier(@params.ConstantName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid constant name: {@params.ConstantName}");
 
-        if (!ValidVisibilities.Contains(@params.Visibility))
+        if (!VisibilityTokenHelpers.IsValidVisibility(@params.Visibility))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
     }
 
