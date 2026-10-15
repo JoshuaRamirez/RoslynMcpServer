@@ -142,7 +142,10 @@ public sealed class FindReferencesParams
     /// <c>Method</c>; a field initializer is <c>Field</c> (<c>Constant</c> for a const); a property declaration
     /// site (definition) is <c>Property</c>. Definition locations (when <see cref="IncludeDeclaration"/> is on)
     /// are judged by the declared symbol itself, or for a local / parameter / local function by the member
-    /// declaring it. Namespace-level sites never match a named kind filter. Combined with
+    /// declaring it. Namespace-level sites never match a named kind filter; top-level statements, enclosed by the
+    /// synthesized <c>&lt;Main&gt;$</c> entry point, are namespace-level sites and never match any kind, including
+    /// <c>Method</c>. A site inside a delegate's synthesized <c>Invoke</c> / <c>BeginInvoke</c> / <c>EndInvoke</c> /
+    /// <c>.ctor</c> is classified as the delegate itself, so it matches <c>Delegate</c>, not <c>Method</c>. Combined with
     /// <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
     /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, and <see cref="IncludeDeclaration"/>
     /// (a location must satisfy all that are set), and applied before <see cref="MaxResults"/> so

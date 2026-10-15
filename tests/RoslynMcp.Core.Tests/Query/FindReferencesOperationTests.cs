@@ -2649,6 +2649,98 @@ public class FindReferencesOperationTests
         Assert.Equal(0, ns.Data.TotalCount);
     }
 
+    [SkippableFact]
+    public async Task FindReferences_KindFilter_TopLevelStatementSitesNeverMatch()
+    {
+        // Top-level statements (including a top-level local function and lambda) are enclosed by the
+        // synthesized <Main>$ entry point, which resolves to the global namespace: a namespace-level
+        // site, so it never matches a kind filter, not even Method.
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                public static class Target
+                {
+                    public static void Run() { }
+                }
+                """,
+            ["Program.cs"] = """
+                Target.Run();
+                void Local() { Target.Run(); }
+                System.Action a = () => Target.Run();
+                """,
+            ["Host.cs"] = """
+                public class Host
+                {
+                    private void Work() { Target.Run(); }
+                }
+                """
+        }, "Target.cs");
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var all = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false
+        });
+        var method = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false,
+            KindFilter = "Method"
+        });
+
+        Assert.True(all.Success);
+        Assert.Equal(3, all.Data!.References.Count(r => Path.GetFileName(r.File) == "Program.cs"));
+        Assert.True(method.Success);
+        Assert.Equal(new[] { "Host.cs:3" }, Sites(method.Data!.References));
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_KindFilter_DelegateMethodSitesAreDelegate()
+    {
+        // A usage in a delegate declaration's signature is enclosed by the delegate's synthesized
+        // Invoke / BeginInvoke / EndInvoke / .ctor, which are looked through to the delegate itself:
+        // the site is Delegate, not Method. A usage in an ordinary method body is the Method control.
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                namespace App;
+                public class Target { }
+                """,
+            ["Consumer.cs"] = """
+                namespace App;
+                public delegate void Handler(App.Target t);
+                public class Consumer
+                {
+                    public void Use() { _ = typeof(App.Target); }
+                }
+                """
+        });
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var @delegate = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false,
+            KindFilter = "Delegate"
+        });
+        var method = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false,
+            KindFilter = "Method"
+        });
+
+        Assert.True(@delegate.Success);
+        Assert.Equal(new[] { "Consumer.cs:2" }, Sites(@delegate.Data!.References));
+        Assert.True(method.Success);
+        Assert.Equal(new[] { "Consumer.cs:5" }, Sites(method.Data!.References));
+    }
+
     #endregion
 
 
