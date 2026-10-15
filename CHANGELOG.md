@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-15
+
 ### Added
 
 - `find_implementations` now honors optional **`kindFilter`**: same values, parsing, and `InvalidSymbolKind` error as `search_symbols` / `get_document_outline` (#2396) / `get_symbol_info` (#2637) `kindFilter` (shared `SymbolKindFilterParser`; a single `SymbolKind` name — `Class`, `Struct`, `Interface`, `Enum`, `Record`, `Delegate`, `Method`, `Property`, `Field`, `Event`, `Constant`, `Local`, `Parameter`, `Namespace`; case-insensitive; whitespace trimmed; numeric / comma-combined values rejected). When set, only implementations whose reported `Kind` (`SymbolKindMapper.Map`, the same value already returned in `ImplementationInfo.Kind`; records map to `Record`, not `Class`) equals the filter are reported, so callers can ask "which **structs** implement `IRunner`?" or "which **records** implement `IEntity`?" without filtering client-side. Combined with `implementationFile` / `projectPath` / `transitive` / `namespaceFilter` / `accessibilityFilter` (an implementation must satisfy all that are set) and applied before `maxResults`, so `TotalCount` / `Truncated` reflect the kind-filtered set; a kind no implementation has (e.g. `Local` / `Parameter` / `Namespace`) returns an empty success; `sourceFile` still locates the target symbol. Omit / blank = today's behavior. CLI: `--kind-filter`. `ImplementationInfo` shape unchanged. (#2838)
@@ -36,6 +38,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Changed
 
 - `find_references` `accessibilityFilter` (#2761) now resolves each reference site's declaring symbol through the shared `DeclaringSiteSymbol.Resolve` (same walk as `get_diagnostics` `accessibilityFilter`). Two observable effects: (1) reference sites in top-level statements (the synthesized `<Main>$` entry point) never match any accessibility filter, where `private` used to match them; (2) sites inside a delegate's compiler-synthesized `Invoke` / `BeginInvoke` / `EndInvoke` / `.ctor` resolve to the delegate type's own `DeclaredAccessibility`, where they used to count as `public`. Parameters, result shape, and other filters are unchanged. (#2778)
+- Folded generate_property / generate_method_stub / generate_constructor / extract_method / extract_constant private `ValidVisibilities` sets onto shared `VisibilityTokenHelpers.IsValidVisibility` (one `OrdinalIgnoreCase` set). No behavior change. (#2817)
+- Folded FindReferences `GetContextSnippetAsync` / FindCallers `GetSnippetAsync` (identical trimmed start-line snippet helpers) onto new `LocationSnippetHelpers.GetLineSnippetAsync`. No behavior change. (#2737)
+- Folded FindReferences / FindCallers duplicated namespace-site scope (per-tree semantic-model cache, `IsInNamespaceScopeAsync`, `GetSemanticModelAsync` fallback) onto new `NamespaceSiteScope`. No behavior change. (#2707)
+- Folded ChangeReturnType / ReorderParameters `ValidateNoOverloadCollision` sibling-overload scan (same-name method siblings, skip self, parameter-count + type-parameter arity gates) onto new `SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings`; per-candidate matching, guards, error codes and messages unchanged. No behavior change. (#2690)
+- Folded ChangeSignature / AddParameter / RemoveParameter private `WouldCollideWithSibling` sibling-overload collision loops onto new `SiblingOverloadCollisionHelpers` (prospective `(type, RefKind)` core plus insert / full-replace / remove overloads). No behavior change. (#2682)
+- Folded GenerateProperty / GenerateMethodStub private `TryGetSpecialTypeAlias` type-match copies onto new `SpecialTypeAliasHelpers.TryGetSpecialTypeAlias` / `MatchesRequestedType`; generate_property keeps its exact 15-alias matching (no `nint` / `nuint` / `void` widening). No behavior change. (#2655)
+- Folded AddBraces / RemoveBraces private `BuildDescription` copies (singular/plural count + `ScopeType` / `ScopeFile` / default description wording) onto new `BraceTypeNameHelpers.BuildDescription(verbPhrase, scope, count, typeName)`; call sites pass "Add braces to" / "Remove braces from". No behavior change. (#2646)
+- Folded ChangeReturnType / ReorderParameters private `ParameterTypesMatch` copies (per-parameter `RefKind` + `TypeEquivalenceHelpers.TypesEquivalent` loop for the overload-collision check) onto new `TypeEquivalenceHelpers.ParameterListsMatch` / `ParameterListsMatchReordered`. No behavior change. (#2632)
+- Folded ImplementAbstract (`IMethodSymbol`) and SyntaxGenerationHelper (`IPropertySymbol`) private `RequiresThrowBody` copies (the CS8156 ref-return throw gate) onto new `ThrowNotImplementedBodyHelpers.RequiresThrowBody` overloads (same predicate); generate_method_stub keeps its string-based check. No behavior change. (#2618)
+- Folded six identical `while (expr is ParenthesizedExpressionSyntax p) expr = p.Expression;` loops (`ConvertTupleToStructOperation` `IsIdentitySelectInvocation` / `IsIdentityConvertAllInvocation` / `IsIdentityLambdaBody` ×2, `ExtractVariableOperation.Unwrap`, `SafeDeleteOperation.IsPureInitializer`) onto new `ParenthesizedExpressionHelpers.SkipParentheses` (same loop body). No behavior change. (#2602)
+- Folded UseBaseType / PushMembersDown private `ImplementsInterfaceMember` loops and RenameSymbol's implicit-implementation discovery loop (`AllInterfaces` → same-name members → `FindImplementationForInterfaceMember` identity check) onto new `MethodInterfaceHelpers.ImplicitlyImplementedInterfaceMembers` / `ImplicitlyImplementsInterfaceMember` (same lazy interface-then-member order). No behavior change. (#2592)
+- Folded ImplementInterface / ImplementAbstract / GenerateOverrides private `AddUnique` copies and ImplementInterface's `AddUniqueByIdentity` onto new `MemberSignatureMatchHelpers.AddUnique(members, member, matches)`; each caller passes its own predicate (its `SignaturesMatch`, or `SymbolEqualityComparer.Default` identity for explicit implementations). No behavior change. (#2583)
+- Folded PushMembersDown private `CanPushPropertyAsAbstract` onto `HierarchyAbstractMemberRewriter.CanAbstractPropertyAccessors` (widened from private to internal, identical body) for the `leaveAbstract` property/indexer check. No behavior change. (#2575)
+- Folded RenameSymbol `MapSymbolKind`'s inline `INamedTypeSymbol` arm onto existing `NamedTypeSymbolKindHelpers.Map` (same switch as the MoveType copies). No behavior change. (#2561)
+- Folded `MemberAnalyzer.IsAccessibleFrom` and its private `SameAssembly` copy onto `MoreRestrictiveAccessibilityHelpers.IsAccessibilityVisibleFrom` (same switch arms and same-assembly comparison). No behavior change. (#2547)
+- Folded GenerateToString `MemberAccess`, GenerateEqualsHashCode `InstanceMemberAccess`, and generate_constructor's inline `this.<member>` builders onto new `SyntaxGenerationHelper.ThisMemberAccess`. No behavior change. (#2541)
 
 ## [0.9.0] - 2026-10-07
 
@@ -678,7 +696,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.8...v0.7.0
