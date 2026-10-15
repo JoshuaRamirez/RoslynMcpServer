@@ -7,6 +7,7 @@ using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Query;
@@ -16,8 +17,9 @@ namespace RoslynMcp.Core.Query;
 /// (or within one project when <see cref="FindCallersParams.ProjectPath"/> is set), optionally
 /// narrowed to call sites in one namespace (<see cref="FindCallersParams.NamespaceFilter"/>),
 /// optionally to calling symbols with a given declared accessibility
-/// (<see cref="FindCallersParams.AccessibilityFilter"/>), and optionally to calling symbols whose
-/// simple name contains a substring (<see cref="FindCallersParams.NameFilter"/>).
+/// (<see cref="FindCallersParams.AccessibilityFilter"/>), optionally to calling symbols whose
+/// simple name contains a substring (<see cref="FindCallersParams.NameFilter"/>), and optionally to
+/// calling symbols of one symbol kind (<see cref="FindCallersParams.KindFilter"/>).
 /// </summary>
 public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams, FindCallersResult>
 {
@@ -64,6 +66,10 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         ProjectPathFilter.Validate(@params.ProjectPath);
 
         AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+
+        // Same parsing and InvalidSymbolKind error as search_symbols / get_document_outline /
+        // get_symbol_info / find_implementations / get_type_hierarchy kindFilter.
+        SymbolKindFilterParser.Parse(@params.KindFilter);
     }
 
     /// <inheritdoc />
@@ -122,18 +128,30 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         // blank (no name filtering). Free text — no validation error.
         var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
 
+        // Optional kindFilter (same values / parsing as search_symbols / get_document_outline /
+        // get_symbol_info / find_implementations / get_type_hierarchy kindFilter): keep only call
+        // sites whose calling symbol (the same CallingSymbol accessibilityFilter / nameFilter judge)
+        // maps to that kind via SymbolKindMapper (methods / constructors / lambdas → Method, property
+        // bodies → Property, field initializers → Field or Constant). Null when omitted / blank.
+        // Invalid values already rejected in ValidateParams.
+        var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
+
         foreach (var caller in callerResults)
         {
-            // Accessibility / name filters run on the calling symbol before location filters /
+            // Accessibility / name / kind filters run on the calling symbol before location filters /
             // maxResults so TotalCount / Truncated reflect the filtered set. Exact
             // DeclaredAccessibility match (implicit defaults count; protected internal ≠
-            // protected / internal). Name is ISymbol.Name substring (OrdinalIgnoreCase).
+            // protected / internal). Name is ISymbol.Name substring (OrdinalIgnoreCase). Kind is
+            // SymbolKindMapper.Map equality.
             if (accessibilityFilter.HasValue
                 && caller.CallingSymbol.DeclaredAccessibility != accessibilityFilter.Value)
                 continue;
 
             if (nameFilter != null
                 && !caller.CallingSymbol.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (kindFilter.HasValue && SymbolKindMapper.Map(caller.CallingSymbol) != kindFilter.Value)
                 continue;
 
             foreach (var location in caller.Locations)
@@ -143,7 +161,7 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                 var lineSpan = location.GetLineSpan();
 
                 // Optional callerFile / projectPath / namespaceFilter filters run before maxResults
-                // (accessibilityFilter / nameFilter already applied on the calling symbol above) so
+                // (accessibilityFilter / nameFilter / kindFilter already applied on the calling symbol above) so
                 // TotalCount / Truncated reflect the filtered set.
                 if (callerFileKey != null)
                 {
