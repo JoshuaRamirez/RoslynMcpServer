@@ -70,7 +70,7 @@ public sealed class FindReferencesParams
     /// matching as <c>search_symbols</c> / <c>find_implementations</c> <c>namespaceFilter</c>.
     /// Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
     /// <c>global::</c> is accepted. Combined with <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>,
-    /// <see cref="IncludeDeclaration"/>, and <see cref="AccessibilityFilter"/>, and applied before <see cref="MaxResults"/> so
+    /// <see cref="IncludeDeclaration"/>, <see cref="AccessibilityFilter"/>, and <see cref="NameFilter"/>, and applied before <see cref="MaxResults"/> so
     /// <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered set. Sites in the global
     /// namespace (top-level statements, usings outside any namespace) never match a named filter.
     /// Omit, blank, or a bare <c>global::</c> (the root namespace) reports locations in all namespaces.
@@ -96,10 +96,35 @@ public sealed class FindReferencesParams
     /// is on) are judged by the declared symbol itself (an <c>internal</c> method on a <c>public</c>
     /// type is an <c>internal</c> site), or for a local / parameter / local function by the member
     /// declaring it. Combined with
-    /// <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>, and
-    /// <see cref="IncludeDeclaration"/>, and applied before <see cref="MaxResults"/> so
-    /// <c>TotalCount</c> / <c>Truncated</c> reflect the accessibility-filtered set. Omit or leave blank
+    /// <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
+    /// <see cref="NameFilter"/>, and <see cref="IncludeDeclaration"/>, and applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
+    /// accessibility-filtered set. Omit or leave blank
     /// for no accessibility filter. An unrecognized value fails with <c>InvalidVisibility</c>.
     /// </summary>
     public string? AccessibilityFilter { get; init; }
+
+    /// <summary>
+    /// Optional name substring to restrict reported reference locations to: keep locations whose
+    /// reference site's <strong>enclosing symbol</strong> — the same site symbol
+    /// <see cref="AccessibilityFilter"/> judges (the member or type enclosing each usage, not the target
+    /// symbol; lambdas / anonymous methods and local functions are looked through to the member
+    /// declaring them) — has a simple <c>ISymbol.Name</c> that contains this value, compared with
+    /// <c>StringComparison.OrdinalIgnoreCase</c> (same matching as <c>get_document_outline</c> /
+    /// <c>get_symbol_info</c> / <c>find_implementations</c> / <c>get_type_hierarchy</c>
+    /// <c>nameFilter</c>), e.g. <c>Handler</c> for the usages inside <c>HandleOrder</c> /
+    /// <c>OrderHandler</c>. The name is Roslyn's metadata name of that symbol, so property / indexer /
+    /// event accessors read <c>get_X</c> / <c>set_X</c> / <c>add_X</c> / <c>remove_X</c> (still containing
+    /// the property or event name), constructors <c>.ctor</c>, static constructors <c>.cctor</c>, and
+    /// operators <c>op_Addition</c> and similar. Definition locations (when <see cref="IncludeDeclaration"/>
+    /// is on) are judged by the declared symbol itself, or for a local / parameter / local function by the
+    /// member declaring it. Namespace-level sites (using aliases, a top-level type's base list, top-level
+    /// statements, a namespace's own declaration) never match. Surrounding whitespace is trimmed; inner whitespace is not collapsed.
+    /// Combined with <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
+    /// <see cref="AccessibilityFilter"/>, and <see cref="IncludeDeclaration"/> (a location must satisfy all
+    /// that are set), and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the name-filtered set. A value no site name contains returns an empty
+    /// success. Omit, empty, or whitespace for no name filter.
+    /// </summary>
+    public string? NameFilter { get; init; }
 }
