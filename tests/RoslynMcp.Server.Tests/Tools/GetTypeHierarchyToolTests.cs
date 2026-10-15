@@ -389,4 +389,63 @@ public class GetTypeHierarchyToolTests
         Assert.True(result.IsError);
         Assert.DoesNotContain("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
     }
+
+    [Fact]
+    public void GetDefinition_NameFilter_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var nameFilter = doc.RootElement.GetProperty("properties").GetProperty("nameFilter");
+
+        Assert.Equal("string", nameFilter.GetProperty("type").GetString());
+        var description = nameFilter.GetProperty("description").GetString();
+        Assert.Contains("case-insensitive", description);
+        Assert.Contains("get_document_outline", description);
+        Assert.Contains("find_implementations", description);
+        Assert.Contains("before maxResults", description);
+        Assert.Contains("does not filter BaseTypes or Interfaces", description);
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("nameFilter", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("nameFilter", _tool.Description);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NameFilterString_ParsesAndReachesWorkspace()
+    {
+        // Arrange - well-formed nameFilter parses; the throwing provider proves parsing succeeded
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/Controller.cs"",
+            ""symbolName"": ""Controller"",
+            ""nameFilter"": ""Admin""
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NameFilterNonString_ReturnsParseError()
+    {
+        // Arrange - a number is not a string; deserialization fails before workspace creation
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/Controller.cs"",
+            ""symbolName"": ""Controller"",
+            ""nameFilter"": 1
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
 }

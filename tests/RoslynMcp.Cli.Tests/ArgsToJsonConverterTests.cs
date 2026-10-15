@@ -704,6 +704,44 @@ public class ArgsToJsonConverterTests
     }
 
     [Fact]
+    public void GetTypeHierarchy_NameFilter_RoundTripsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Controller.cs",
+            ["symbol-name"] = "Controller",
+            ["name-filter"] = "Admin",
+            ["kind-filter"] = "Class",
+            ["max-results"] = "2"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("Admin", doc.RootElement.GetProperty("nameFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetTypeHierarchyParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("Admin", p.NameFilter);
+        Assert.Equal("Class", p.KindFilter);
+        Assert.Equal(2, p.MaxResults);
+    }
+
+    [Fact]
+    public void GetTypeHierarchy_NameFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Controller.cs",
+            ["symbol-name"] = "Controller"
+        });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetTypeHierarchyParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.NameFilter);
+    }
+
+    [Fact]
     public void GoToDefinition_DefinitionFileOption_BindsToParams()
     {
         var dict = new Dictionary<string, string>

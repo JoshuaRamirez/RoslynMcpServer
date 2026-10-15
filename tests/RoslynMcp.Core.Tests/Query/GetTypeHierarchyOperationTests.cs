@@ -2277,6 +2277,337 @@ public class GetTypeHierarchyOperationTests
 
     #endregion
 
+    #region nameFilter
+
+    // App.Controller (base Root, interface IMarker) has six descendants: four whose simple names
+    // contain "Admin" (SuperAdminController only through AdminController; AdminTools internal;
+    // AdminReports in App.Admin, Admin.cs) and two that do not (OrderController, App.Admin.Billing).
+    private static readonly Dictionary<string, string> NameSources = new()
+    {
+        ["Controller.cs"] = """
+            namespace App
+            {
+                public class Root { }
+                public interface IMarker { }
+
+                public class Controller : Root, IMarker { }
+            }
+            """,
+        ["Derived.cs"] = """
+            namespace App
+            {
+                public class AdminController : Controller { }
+                public class SuperAdminController : AdminController { }
+                internal class AdminTools : Controller { }
+                public class OrderController : Controller { }
+            }
+            """,
+        ["Admin.cs"] = """
+            namespace App.Admin
+            {
+                public class AdminReports : App.Controller { }
+                public class Billing : App.Controller { }
+            }
+            """
+    };
+
+    private static readonly string[] AllNameDescendants =
+        { "AdminController", "AdminReports", "AdminTools", "Billing", "OrderController", "SuperAdminController" };
+
+    private static readonly string[] AdminDescendants =
+        { "AdminController", "AdminReports", "AdminTools", "SuperAdminController" };
+
+    private static GetTypeHierarchyParams NameParams(TempWorkspace workspace, string? nameFilter) => new()
+    {
+        SourceFile = workspace.SourcePath,
+        SymbolName = "Controller",
+        Direction = "Descendants",
+        NameFilter = nameFilter
+    };
+
+    [Fact]
+    public void NameFilter_DefaultsToNull()
+    {
+        var @params = new GetTypeHierarchyParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.NameFilter);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NameFilterOmittedOrBlank_ReturnsEveryName()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources, "Controller.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        foreach (var filter in new[] { null, "", "   ", "\t" })
+        {
+            var result = await operation.ExecuteAsync(NameParams(workspace, filter));
+
+            Assert.True(result.Success);
+            Assert.Equal(AllNameDescendants, SortedNames(result.Data!.DerivedTypes));
+            Assert.Equal(6, result.Data.TotalCount);
+            Assert.False(result.Data.Truncated);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("Admin")]
+    [InlineData("admin")]
+    [InlineData("  ADMIN  ")]
+    [InlineData("dMi")]
+    public async Task GetTypeHierarchy_NameFilter_KeepsCaseInsensitiveTrimmedSubstringMatchesOnly(string nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources, "Controller.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(NameParams(workspace, nameFilter));
+
+        Assert.True(result.Success);
+        Assert.Equal(AdminDescendants, SortedNames(result.Data!.DerivedTypes));
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NameFilter_MatchesSuffixAndInnerSubstring()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources, "Controller.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var suffix = await operation.ExecuteAsync(NameParams(workspace, "Controller"));
+
+        Assert.True(suffix.Success);
+        Assert.Equal(new[] { "AdminController", "OrderController", "SuperAdminController" }, SortedNames(suffix.Data!.DerivedTypes));
+        Assert.Equal(3, suffix.Data.TotalCount);
+
+        var inner = await operation.ExecuteAsync(NameParams(workspace, "rAdmin"));
+
+        Assert.True(inner.Success);
+        Assert.Equal(new[] { "SuperAdminController" }, SortedNames(inner.Data!.DerivedTypes));
+        Assert.Equal(1, inner.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("Zebra")]
+    [InlineData("Admin Controller")] // inner whitespace is not collapsed
+    [InlineData("App.Admin")] // simple Name only, not the fully qualified name
+    [InlineData("Controller.")]
+    public async Task GetTypeHierarchy_NameFilterNoMatch_ReturnsEmptySuccess(string nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources, "Controller.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(NameParams(workspace, nameFilter));
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.DerivedTypes);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NameFilter_DoesNotFilterBaseTypesOrInterfaces()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources, "Controller.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Root and IMarker do not contain "Admin", yet both stay in BaseTypes / Interfaces.
+        var both = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            NameFilter = "Admin"
+        });
+
+        Assert.True(both.Success);
+        Assert.Equal(AdminDescendants, SortedNames(both.Data!.DerivedTypes));
+        Assert.Contains(both.Data.BaseTypes, b => b.TypeName == "Root");
+        Assert.Contains(both.Data.Interfaces, i => i.TypeName == "IMarker");
+
+        // A filter that only matches a base type / interface name does not pull them into DerivedTypes.
+        var ancestors = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            Direction = "Ancestors",
+            NameFilter = "Zebra"
+        });
+
+        Assert.True(ancestors.Success);
+        Assert.Empty(ancestors.Data!.DerivedTypes);
+        Assert.Contains(ancestors.Data.BaseTypes, b => b.TypeName == "Root");
+        Assert.Contains(ancestors.Data.Interfaces, i => i.TypeName == "IMarker");
+
+        var rootOnly = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            NameFilter = "Root"
+        });
+
+        Assert.True(rootOnly.Success);
+        Assert.Empty(rootOnly.Data!.DerivedTypes);
+        Assert.Equal(0, rootOnly.Data.TotalCount);
+        Assert.Contains(rootOnly.Data.BaseTypes, b => b.TypeName == "Root");
+        Assert.Contains(rootOnly.Data.Interfaces, i => i.TypeName == "IMarker");
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NameFilterWithMaxResults_CapsFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources, "Controller.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            Direction = "Descendants",
+            NameFilter = "admin",
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.DerivedTypes.Count);
+        Assert.All(capped.Data.DerivedTypes, d => Assert.Contains(d.TypeName, AdminDescendants));
+        Assert.Equal(4, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var exact = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            Direction = "Descendants",
+            NameFilter = "admin",
+            MaxResults = 4
+        });
+
+        Assert.True(exact.Success);
+        Assert.Equal(AdminDescendants, SortedNames(exact.Data!.DerivedTypes));
+        Assert.Equal(4, exact.Data.TotalCount);
+        Assert.False(exact.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NameFilterWithTransitiveFalse_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources, "Controller.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // SuperAdminController derives through AdminController, so the direct set drops it.
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            Direction = "Descendants",
+            Transitive = false,
+            NameFilter = "Admin"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "AdminController", "AdminReports", "AdminTools" }, SortedNames(result.Data!.DerivedTypes));
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_NameFilterWithOtherFilters_AndsTheScopes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources, "Controller.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var internalAdmin = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            Direction = "Descendants",
+            NameFilter = "Admin",
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.True(internalAdmin.Success);
+        Assert.Equal(new[] { "AdminTools" }, SortedNames(internalAdmin.Data!.DerivedTypes));
+        Assert.Equal(1, internalAdmin.Data.TotalCount);
+
+        var namespaced = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            Direction = "Descendants",
+            NameFilter = "Admin",
+            NamespaceFilter = "App.Admin"
+        });
+
+        Assert.True(namespaced.Success);
+        Assert.Equal(new[] { "AdminReports" }, SortedNames(namespaced.Data!.DerivedTypes));
+        Assert.Equal(1, namespaced.Data.TotalCount);
+
+        var classes = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            Direction = "Descendants",
+            NameFilter = "Admin",
+            KindFilter = "Class"
+        });
+
+        Assert.True(classes.Success);
+        Assert.Equal(AdminDescendants, SortedNames(classes.Data!.DerivedTypes));
+        Assert.Equal(4, classes.Data.TotalCount);
+
+        var records = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            Direction = "Descendants",
+            NameFilter = "Admin",
+            KindFilter = "Record"
+        });
+
+        Assert.True(records.Success);
+        Assert.Empty(records.Data!.DerivedTypes);
+        Assert.Equal(0, records.Data.TotalCount);
+
+        var scoped = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            Direction = "Descendants",
+            NameFilter = "admin",
+            DerivedFile = workspace.PathOf("Derived.cs"),
+            ProjectPath = workspace.ProjectPath,
+            MaxResults = 2
+        });
+
+        Assert.True(scoped.Success);
+        Assert.Equal(2, scoped.Data!.DerivedTypes.Count);
+        Assert.All(scoped.Data.DerivedTypes, d =>
+        {
+            Assert.Contains(d.TypeName, new[] { "AdminController", "AdminTools", "SuperAdminController" });
+            Assert.True(SamePath(d.File, workspace.PathOf("Derived.cs")));
+        });
+        Assert.Equal(3, scoped.Data.TotalCount);
+        Assert.True(scoped.Data.Truncated);
+
+        // OrderController lives in App and neither App.Admin type contains "Order", so a public +
+        // App.Admin + "Order" filter finds none.
+        var none = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Controller",
+            Direction = "Descendants",
+            NameFilter = "Order",
+            NamespaceFilter = "App.Admin",
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(none.Success);
+        Assert.Empty(none.Data!.DerivedTypes);
+        Assert.Equal(0, none.Data.TotalCount);
+        Assert.False(none.Data.Truncated);
+    }
+
+    #endregion
+
     private static List<string> SortedNames(IEnumerable<TypeHierarchyEntry> entries) =>
         entries.Select(e => e.TypeName).OrderBy(n => n, StringComparer.Ordinal).ToList();
 
