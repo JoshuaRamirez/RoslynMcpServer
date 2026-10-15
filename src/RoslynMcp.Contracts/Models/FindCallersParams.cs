@@ -94,10 +94,10 @@ public sealed class FindCallersParams
     /// compared with <c>StringComparison.OrdinalIgnoreCase</c> (same matching as
     /// <c>get_document_outline</c> / <c>get_symbol_info</c> / <c>find_implementations</c> /
     /// <c>get_type_hierarchy</c> / <c>find_references</c> <c>nameFilter</c>), e.g. <c>Handle</c> for
-    /// callers named <c>HandleOrder</c> / <c>OrderHandler</c>. The name is Roslyn's metadata name of
-    /// that symbol, so property / indexer / event accessors read <c>get_X</c> / <c>set_X</c> /
-    /// <c>add_X</c> / <c>remove_X</c> (still containing the property or event name), constructors
-    /// <c>.ctor</c>, static constructors <c>.cctor</c>, and operators <c>op_Addition</c> and similar.
+    /// callers named <c>HandleOrder</c> / <c>OrderHandler</c>. The matched name is exactly the
+    /// reported <c>CallerName</c> (both read <c>caller.CallingSymbol.Name</c>); for a call inside a
+    /// property accessor body Roslyn reports the property itself, so it reads and matches as the
+    /// property name (e.g. <c>Total</c>, not <c>get_Total</c>).
     /// Surrounding whitespace is trimmed; inner whitespace is not collapsed. Combined with
     /// <see cref="CallerFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>, and
     /// <see cref="AccessibilityFilter"/> (a site must satisfy all that are set), and applied before

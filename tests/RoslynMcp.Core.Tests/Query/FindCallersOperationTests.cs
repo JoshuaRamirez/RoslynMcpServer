@@ -1357,6 +1357,9 @@ public class FindCallersOperationTests
     [InlineData("Audit", new[] { "Audit" })]
     [InlineData("Helper", new[] { "Helper" })]
     [InlineData("Total", new[] { "Total" })]
+    // A call inside a property getter body is reported (and matched) as the property itself,
+    // so the accessor metadata name get_Total never appears and never matches.
+    [InlineData("get_", new string[] { })]
     [InlineData("Go", new[] { "Go" })]
     [InlineData("H", new[] { "Handle", "HandleReport", "Helper" })]
     public async Task FindCallers_NameFilter_SelectsSitesByCallingSymbolName(string nameFilter, string[] expected)
