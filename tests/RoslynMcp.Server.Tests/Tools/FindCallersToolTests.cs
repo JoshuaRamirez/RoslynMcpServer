@@ -76,6 +76,7 @@ public class FindCallersToolTests
         Assert.True(properties.TryGetProperty("projectPath", out _));
         Assert.True(properties.TryGetProperty("namespaceFilter", out _));
         Assert.True(properties.TryGetProperty("accessibilityFilter", out _));
+        Assert.True(properties.TryGetProperty("nameFilter", out _));
     }
 
     [Fact]
@@ -258,6 +259,59 @@ public class FindCallersToolTests
             ""sourceFile"": ""C:/test/Lib/Target.cs"",
             ""symbolName"": ""Run"",
             ""accessibilityFilter"": 42
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
+
+    [Fact]
+    public void GetDefinition_NameFilter_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var nameFilter = doc.RootElement.GetProperty("properties").GetProperty("nameFilter");
+
+        Assert.Equal("string", nameFilter.GetProperty("type").GetString());
+        var description = nameFilter.GetProperty("description").GetString();
+        Assert.Contains("calling symbol", description);
+        Assert.Contains("case-insensitive", description);
+        Assert.Contains("find_references", description);
+        Assert.Contains("before maxResults", description);
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("nameFilter", required);
+        Assert.Contains("nameFilter", _tool.Description);
+        Assert.Contains("nameFilter", doc.RootElement.GetProperty("properties").GetProperty("accessibilityFilter").GetProperty("description").GetString());
+        Assert.Contains("nameFilter", doc.RootElement.GetProperty("properties").GetProperty("namespaceFilter").GetProperty("description").GetString());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NameFilterString_ParsesAndReachesWorkspace()
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/Target.cs"",
+            ""symbolName"": ""Run"",
+            ""nameFilter"": ""Handle""
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NameFilterNonString_ReturnsParseError()
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/Target.cs"",
+            ""symbolName"": ""Run"",
+            ""nameFilter"": 42
         }").RootElement;
 
         var result = await _tool.ExecuteAsync(args);

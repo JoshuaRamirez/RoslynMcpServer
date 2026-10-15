@@ -16,7 +16,10 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <c>namespaceFilter</c> (restricts reported call sites by call-site containing namespace; peer of
 /// <c>find_references</c> / <c>find_implementations</c> / <c>search_symbols</c> <c>namespaceFilter</c>),
 /// and optional <c>accessibilityFilter</c> (restricts by calling symbol DeclaredAccessibility; peer of
-/// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>search_symbols</c> <c>accessibilityFilter</c>).
+/// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>search_symbols</c> <c>accessibilityFilter</c>),
+/// and optional <c>nameFilter</c> (restricts by calling symbol simple name; peer of
+/// <c>find_references</c> / <c>get_document_outline</c> / <c>get_symbol_info</c> /
+/// <c>find_implementations</c> / <c>get_type_hierarchy</c> <c>nameFilter</c>).
 /// </summary>
 public class FindCallersOperationTests
 {
@@ -1267,6 +1270,209 @@ public class FindCallersOperationTests
 
     private static List<string> SortedCallerNames(IEnumerable<CallerInfo> callers) =>
         callers.Select(c => c.CallerName).OrderBy(n => n, StringComparer.Ordinal).ToList();
+
+    #endregion
+
+    #region NameFilter
+
+    // Calling-symbol NameFilter: Target.Run is called from members with distinct simple names
+    // (Handle / Audit / HandleReport / Total / Go / Helper). Judged on CallingSymbol.Name only.
+    private static readonly Dictionary<string, string> NameSources = new()
+    {
+        ["Target.cs"] = """
+            namespace App;
+            public class Target
+            {
+                public void Run() { }
+            }
+            """,
+        ["Handlers.cs"] = """
+            namespace App.Handlers;
+            public class OrderHandler
+            {
+                public void Handle(App.Target t) { t.Run(); }
+                private void Audit(App.Target t) { t.Run(); }
+            }
+            public class Reporter
+            {
+                public void HandleReport(App.Target t) { t.Run(); }
+                public int Total { get { new App.Target().Run(); return 0; } }
+            }
+            """,
+        ["Other.cs"] = """
+            namespace App;
+            public class Consumer
+            {
+                public void Go(Target t) { t.Run(); }
+                private void Helper(Target t) { t.Run(); }
+            }
+            """
+    };
+
+    private static readonly string[] AllNameCallerNames =
+    [
+        "Audit", "Go", "Handle", "HandleReport", "Helper", "Total"
+    ];
+
+    [Fact]
+    public void NameFilter_DefaultsToNull()
+    {
+        var @params = new FindCallersParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.NameFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task FindCallers_BlankNameFilter_MatchesOmitted(string nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run"
+        });
+        var filtered = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = nameFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(filtered.Success);
+        Assert.Equal(AllNameCallerNames, SortedCallerNames(omitted.Data!.Callers));
+        Assert.Equal(AllNameCallerNames, SortedCallerNames(filtered.Data!.Callers));
+        Assert.Equal(AllNameCallerNames.Length, filtered.Data.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Handle", new[] { "Handle", "HandleReport" })]
+    [InlineData("handle", new[] { "Handle", "HandleReport" })]
+    [InlineData("  HANDLE  ", new[] { "Handle", "HandleReport" })]
+    [InlineData("Report", new[] { "HandleReport" })]
+    [InlineData("Audit", new[] { "Audit" })]
+    [InlineData("Helper", new[] { "Helper" })]
+    [InlineData("Total", new[] { "Total" })]
+    [InlineData("Go", new[] { "Go" })]
+    [InlineData("H", new[] { "Handle", "HandleReport", "Helper" })]
+    public async Task FindCallers_NameFilter_SelectsSitesByCallingSymbolName(string nameFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success, nameFilter);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("OrderHandler")]
+    [InlineData("Target")]
+    [InlineData("Han*")]
+    [InlineData("Hand le")]
+    [InlineData("NoSuchName")]
+    public async Task FindCallers_NameFilterNoMatch_ReturnsEmptySuccess(string nameFilter)
+    {
+        // Containing-type names are not matched; value is a literal substring (no glob; inner
+        // whitespace kept).
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success, nameFilter);
+        Assert.Empty(result.Data!.Callers);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_NameFilterWithMaxResults_CapsAfterNameFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = "H",
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Callers.Count);
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+        Assert.All(result.Data.Callers, c =>
+            Assert.Contains(c.CallerName, new[] { "Handle", "HandleReport", "Helper" }));
+    }
+
+    [SkippableTheory]
+    [InlineData("public", "Handle", new[] { "Handle", "HandleReport" })]
+    [InlineData("private", "Handle", new string[0])]
+    [InlineData("private", "H", new[] { "Helper" })]
+    [InlineData("public", "Total", new[] { "Total" })]
+    [InlineData("private", "Audit", new[] { "Audit" })]
+    [InlineData("public", "Audit", new string[0])]
+    public async Task FindCallers_NameFilterWithAccessibilityFilter_AndsTheSiteFilters(
+        string accessibilityFilter, string nameFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = accessibilityFilter,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Handlers", "H", new[] { "Handle", "HandleReport" })]
+    [InlineData("App", "H", new[] { "Handle", "HandleReport", "Helper" })]
+    [InlineData("App.Handlers", "Helper", new string[0])]
+    public async Task FindCallers_NameFilterWithNamespaceFilter_AndsTheSiteFilters(
+        string namespaceFilter, string nameFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
 
     #endregion
 
