@@ -19,7 +19,9 @@ namespace RoslynMcp.Core.Query;
 /// is false; only implementations in one namespace subtree when
 /// <see cref="FindImplementationsParams.NamespaceFilter"/> is set; only implementations with a given
 /// declared accessibility when <see cref="FindImplementationsParams.AccessibilityFilter"/> is set;
-/// only implementations of a given kind when <see cref="FindImplementationsParams.KindFilter"/> is set).
+/// only implementations of a given kind when <see cref="FindImplementationsParams.KindFilter"/> is set;
+/// only implementations whose name contains a substring when
+/// <see cref="FindImplementationsParams.NameFilter"/> is set).
 /// Delegates to Roslyn's SymbolFinder.FindImplementationsAsync.
 /// </summary>
 public sealed class FindImplementationsOperation : QueryOperationBase<FindImplementationsParams, FindImplementationsResult>
@@ -160,6 +162,12 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
         // rejected in ValidateParams.
         var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
 
+        // Optional nameFilter (same matching as get_document_outline / get_symbol_info nameFilter):
+        // keep only implementations whose reported Name (ISymbol.Name, as in ImplementationInfo)
+        // contains the trimmed value, ordinal case-insensitive. Null when omitted / blank (no name
+        // filtering).
+        var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
+
         foreach (var impl in implSymbols)
         {
             // Applied before maxResults (and before the location filters below) so TotalCount /
@@ -176,6 +184,11 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
             // Kind filter runs with the other symbol filters before maxResults so TotalCount /
             // Truncated reflect the filtered set. Matches the Kind reported for the implementation.
             if (kindFilter.HasValue && SymbolKindMapper.Map(impl) != kindFilter.Value)
+                continue;
+
+            // Name filter runs with the other symbol filters before maxResults so TotalCount /
+            // Truncated reflect the filtered set. Matches the Name reported for the implementation.
+            if (nameFilter != null && !impl.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
                 continue;
 
             Location? location;

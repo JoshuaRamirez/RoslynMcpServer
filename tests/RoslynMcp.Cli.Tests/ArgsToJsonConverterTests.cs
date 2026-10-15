@@ -495,6 +495,44 @@ public class ArgsToJsonConverterTests
     }
 
     [Fact]
+    public void FindImplementations_NameFilter_RoundTripsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/IRepository.cs",
+            ["symbol-name"] = "IRepository",
+            ["name-filter"] = "Sql",
+            ["kind-filter"] = "Class",
+            ["max-results"] = "2"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("Sql", doc.RootElement.GetProperty("nameFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.FindImplementationsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("Sql", p.NameFilter);
+        Assert.Equal("Class", p.KindFilter);
+        Assert.Equal(2, p.MaxResults);
+    }
+
+    [Fact]
+    public void FindImplementations_NameFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/IRepository.cs",
+            ["symbol-name"] = "IRepository"
+        });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.FindImplementationsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.NameFilter);
+    }
+
+    [Fact]
     public void GetTypeHierarchy_DerivedFileOption_BindsToParams()
     {
         var dict = new Dictionary<string, string>
