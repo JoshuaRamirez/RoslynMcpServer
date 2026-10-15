@@ -74,9 +74,9 @@ public sealed class FindImplementationsParams
     /// <c>App.ServicesExtra</c>); same matching as <c>search_symbols</c> <c>namespaceFilter</c>.
     /// Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
     /// <c>global::</c> is accepted. Combined with <see cref="ImplementationFile"/>,
-    /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, and <see cref="AccessibilityFilter"/>, and
-    /// applied before <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
-    /// namespace-filtered set. Implementations in the global namespace never match a named filter. Omit, blank, or a bare
+    /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, <see cref="AccessibilityFilter"/>, and
+    /// <see cref="KindFilter"/>, and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the namespace-filtered set. Implementations in the global namespace never match a named filter. Omit, blank, or a bare
     /// <c>global::</c> (the root namespace) reports implementations in all namespaces.
     /// <see cref="SourceFile"/> still locates the target symbol and may be in another namespace.
     /// </summary>
@@ -94,10 +94,28 @@ public sealed class FindImplementationsParams
     /// (<c>protected internal</c> is not matched by <c>protected</c> or <c>internal</c>). For member
     /// targets, the implementing member's declared accessibility is used (explicit interface
     /// implementations are <c>private</c>). Combined with <see cref="ImplementationFile"/>,
-    /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, and <see cref="NamespaceFilter"/>, and
-    /// applied before <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
-    /// accessibility-filtered set. Omit or leave blank for no accessibility filter. An unrecognized
+    /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, and
+    /// <see cref="KindFilter"/>, and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the accessibility-filtered set. Omit or leave blank for no accessibility filter. An unrecognized
     /// value fails with <c>InvalidVisibility</c>.
     /// </summary>
     public string? AccessibilityFilter { get; init; }
+
+    /// <summary>
+    /// Optional symbol kind to restrict reported implementations to: a single <c>SymbolKind</c> name
+    /// shared with <c>search_symbols</c> / <c>get_document_outline</c> / <c>get_symbol_info</c>
+    /// <c>kindFilter</c> (Class, Struct, Interface, Enum, Record, Delegate, Method, Property, Field,
+    /// Event, Constant, Local, Parameter, Namespace; case-insensitive; surrounding whitespace trimmed;
+    /// numeric or comma-combined values rejected). When set, only implementations whose reported
+    /// <c>Kind</c> (the same value returned in <c>ImplementationInfo.Kind</c>; records map to
+    /// <c>Record</c>, not <c>Class</c>) equals it are returned, e.g. <c>Struct</c> for "which structs
+    /// implement this interface?". Combined with <see cref="ImplementationFile"/>,
+    /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, and
+    /// <see cref="AccessibilityFilter"/> (an implementation must satisfy all that are set), and applied
+    /// before <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
+    /// kind-filtered set. A kind that no implementation has (e.g. <c>Local</c>, <c>Parameter</c>,
+    /// <c>Namespace</c>) returns an empty success. Omit, empty, or whitespace for no kind filter. An
+    /// unrecognized value fails with <c>InvalidSymbolKind</c>.
+    /// </summary>
+    public string? KindFilter { get; init; }
 }

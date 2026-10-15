@@ -226,6 +226,15 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void FindImplementations_KindFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-implementations", "--source-file", "/src/IRunner.cs", "--symbol-name", "IRunner", "--kind-filter", "Record"]);
+        Assert.Equal("find-implementations", result.ToolName);
+        Assert.Equal("/src/IRunner.cs", result.Options["source-file"]);
+        Assert.Equal("Record", result.Options["kind-filter"]);
+    }
+
+    [Fact]
     public void FindReferences_NamespaceFilterOption_ParsesValue()
     {
         var result = CliArgs.Parse(["My.sln", "find-references", "--source-file", "/src/Target.cs", "--symbol-name", "Run", "--namespace-filter", "App.Services"]);
