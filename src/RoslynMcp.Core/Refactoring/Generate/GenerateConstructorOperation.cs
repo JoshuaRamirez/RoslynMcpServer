@@ -48,11 +48,6 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// </summary>
 public sealed class GenerateConstructorOperation : RefactoringOperationBase<GenerateConstructorParams>
 {
-    private static readonly HashSet<string> ValidVisibilities = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "public", "private", "protected", "internal", "protected internal", "private protected"
-    };
-
     private static readonly HashSet<string> ProtectedVisibilities = new(StringComparer.OrdinalIgnoreCase)
     {
         "protected", "protected internal", "private protected"
@@ -129,7 +124,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     /// </summary>
     private static void ValidateConstructorShapeFlags(GenerateConstructorParams @params)
     {
-        if (!string.IsNullOrWhiteSpace(@params.Visibility) && !ValidVisibilities.Contains(@params.Visibility.Trim()))
+        if (!string.IsNullOrWhiteSpace(@params.Visibility) && !VisibilityTokenHelpers.IsValidVisibility(@params.Visibility.Trim()))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
 
         if (@params.ClassBaseCopy && !@params.CopyConstructor)

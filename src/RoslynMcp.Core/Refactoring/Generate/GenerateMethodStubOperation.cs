@@ -34,11 +34,6 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// </summary>
 public sealed class GenerateMethodStubOperation : RefactoringOperationBase<GenerateMethodStubParams>
 {
-    private static readonly HashSet<string> ValidVisibilities = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "public", "private", "protected", "internal", "protected internal", "private protected"
-    };
-
     /// <summary>
     /// Creates a new generate method stub operation.
     /// </summary>
@@ -108,7 +103,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         if (!string.IsNullOrWhiteSpace(@params.ReturnType) && !IsValidTypeName(@params.ReturnType))
             throw new RefactoringException(ErrorCodes.InvalidReturnType, $"Invalid return type: {@params.ReturnType}");
 
-        if (!string.IsNullOrWhiteSpace(@params.Visibility) && !ValidVisibilities.Contains(@params.Visibility.Trim()))
+        if (!string.IsNullOrWhiteSpace(@params.Visibility) && !VisibilityTokenHelpers.IsValidVisibility(@params.Visibility.Trim()))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
     }
 
