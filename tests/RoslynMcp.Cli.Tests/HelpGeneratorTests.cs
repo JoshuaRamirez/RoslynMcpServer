@@ -2637,4 +2637,24 @@ public class HelpGeneratorTests
         Assert.Contains("--accessibility-filter", optionalSection);
         Assert.Contains("--name-filter", optionalSection);
     }
+
+    [Fact]
+    public void GenerateToolHelp_GetDocumentOutline_ShowsNamespaceFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-document-outline")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("namespaceFilter (optional)", tool.Description, StringComparison.Ordinal);
+        Assert.Contains("namespace entries match on the namespace itself", tool.Description, StringComparison.Ordinal);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        Assert.DoesNotContain("--namespace-filter", help[requiredIdx..optionalIdx]);
+        Assert.Contains("--namespace-filter", help[optionalIdx..]);
+        Assert.Contains("--accessibility-filter", help[optionalIdx..]);
+    }
 }

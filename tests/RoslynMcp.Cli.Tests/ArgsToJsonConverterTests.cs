@@ -1132,4 +1132,38 @@ public class ArgsToJsonConverterTests
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
         Assert.Null(p.AccessibilityFilter);
     }
+
+    [Fact]
+    public void GetDocumentOutline_NamespaceFilter_RoundTripsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Foo.cs",
+            ["namespace-filter"] = "App.Services",
+            ["kind-filter"] = "Method",
+            ["max-depth"] = "2"
+        };
+        var json = ArgsToJsonConverter.Convert(dict, typeof(GetDocumentOutlineParams));
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("App.Services", doc.RootElement.GetProperty("namespaceFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<GetDocumentOutlineParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("/src/Foo.cs", p.SourceFile);
+        Assert.Equal("App.Services", p.NamespaceFilter);
+        Assert.Equal("Method", p.KindFilter);
+        Assert.Equal(2, p.MaxDepth);
+    }
+
+    [Fact]
+    public void GetDocumentOutline_NamespaceFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string> { ["source-file"] = "/src/Foo.cs" });
+
+        var p = JsonSerializer.Deserialize<GetDocumentOutlineParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.NamespaceFilter);
+    }
 }

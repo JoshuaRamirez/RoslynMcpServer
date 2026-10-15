@@ -11,7 +11,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <summary>
 /// Operation-level tests for <see cref="GetDocumentOutlineOperation"/> optional <c>maxResults</c>
 /// (peer of <see cref="GetDiagnosticsOperation"/> / <see cref="SearchSymbolsOperation"/>), optional
-/// <c>maxDepth</c>, optional <c>kindFilter</c>, and optional <c>nameFilter</c>.
+/// <c>maxDepth</c>, optional <c>kindFilter</c>, optional <c>nameFilter</c>, optional <c>accessibilityFilter</c>, and
+/// optional <c>namespaceFilter</c>.
 /// </summary>
 public class GetDocumentOutlineOperationTests
 {
@@ -1477,6 +1478,450 @@ public class GetDocumentOutlineOperationTests
         Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
         Assert.StartsWith($"Invalid accessibilityFilter '{accessibilityFilter}'. Valid values: ", ex.Message);
         Assert.Contains("private protected", ex.Message);
+    }
+
+    #endregion
+
+    #region Execute namespaceFilter
+
+    private const string NamespaceSource = """
+        namespace App
+        {
+            public class Root
+            {
+                public void A() { }
+            }
+        }
+
+        namespace App.Services
+        {
+            public class OrderService
+            {
+                public void Place() { }
+                private int _count;
+            }
+
+            internal enum Status { Open, Closed }
+        }
+
+        namespace App.Services.Orders
+        {
+            public interface IOrder
+            {
+                void Submit();
+            }
+        }
+
+        namespace App.ServicesExtra
+        {
+            public class Extra
+            {
+                public void Run() { }
+            }
+        }
+
+        namespace Outer
+        {
+            namespace Inner
+            {
+                public class Deep { }
+            }
+        }
+
+        public class Global
+        {
+            public void G() { }
+        }
+        """;
+
+    // App > [Root > [A]], App.Services > [OrderService > [Place, _count], Status > [Open, Closed]],
+    // App.Services.Orders > [IOrder > [Submit]], App.ServicesExtra > [Extra > [Run]], Outer, Inner > [Deep],
+    // Global > [G] => 21 nodes.
+    private const int NamespaceSourceTotal = 21;
+
+    // namespaceFilter "App.Services": App.Services subtree (7) + App.Services.Orders subtree (3) => 10 nodes.
+    private const int ServicesFilteredTotal = 10;
+
+    [Fact]
+    public void NamespaceFilter_DefaultsToNull()
+    {
+        var @params = new GetDocumentOutlineParams { SourceFile = "/tmp/x.cs" };
+        Assert.Null(@params.NamespaceFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t")]
+    [InlineData("global::")]
+    [InlineData("  global::  ")]
+    public async Task GetDocumentOutline_OmittedBlankOrGlobalNamespaceFilter_MatchesTodayOutputExactly(string? namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var baseline = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        var filtered = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(baseline.Success);
+        Assert.NotNull(baseline.Data);
+        Assert.True(filtered.Success);
+        Assert.NotNull(filtered.Data);
+        Assert.Equal(NamespaceSourceTotal, baseline.Data.TotalCount);
+        Assert.Equal(NamespaceSourceTotal, filtered.Data.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+        Assert.Equal(SerializeOutline(baseline.Data), SerializeOutline(filtered.Data));
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NamespaceFilter_KeepsMatchingAndNestedNamespacesWithContainers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(full.Success);
+        Assert.NotNull(full.Data);
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+
+        // The App.Services namespace entry matches itself (not its parent App); the nested App.Services.Orders
+        // namespace and everything declared in both are kept; App, App.ServicesExtra (not nested at a '.'
+        // boundary), Outer / Inner, and the global-namespace Global are dropped.
+        var flat = Flatten(result.Data.Entries);
+        Assert.Equal(
+            new[]
+            {
+                ("App.Services", "Namespace", 1),
+                ("OrderService", "Class", 2),
+                ("Place", "Method", 3),
+                ("_count", "Field", 3),
+                ("Status", "Enum", 2),
+                ("Open", "EnumMember", 3),
+                ("Closed", "EnumMember", 3),
+                ("App.Services.Orders", "Namespace", 1),
+                ("IOrder", "Interface", 2),
+                ("Submit", "Method", 3)
+            },
+            flat.Select(e => (e.Name, e.Kind, e.Depth)));
+
+        // Kept entries keep their original positions and metadata.
+        var original = Flatten(full.Data.Entries);
+        Assert.All(flat, e => Assert.Contains(e, original));
+
+        Assert.Equal(ServicesFilteredTotal, result.Data.TotalCount);
+        Assert.Equal(result.Data.TotalCount, CountNodes(result.Data.Entries));
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("App", new[] { "App", "Root", "A", "App.Services", "OrderService", "Place", "_count", "Status", "Open", "Closed", "App.Services.Orders", "IOrder", "Submit", "App.ServicesExtra", "Extra", "Run" })]
+    [InlineData("App.Services.Orders", new[] { "App.Services.Orders", "IOrder", "Submit" })]
+    [InlineData("App.ServicesExtra", new[] { "App.ServicesExtra", "Extra", "Run" })]
+    [InlineData("Outer", new[] { "Outer", "Inner", "Deep" })]
+    [InlineData("Outer.Inner", new[] { "Inner", "Deep" })]
+    public async Task GetDocumentOutline_NamespaceFilter_MatchesNamespaceItselfAndNestedNamespaces(
+        string namespaceFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(expected, Flatten(result.Data.Entries).Select(e => e.Name));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Nope")]
+    [InlineData("App.Serv")]
+    [InlineData("app.services")]
+    [InlineData("Services")]
+    [InlineData("Inner")]
+    [InlineData("Global")]
+    public async Task GetDocumentOutline_NamespaceFilterNoMatch_ReturnsEmptySuccess(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Entries);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("  App.Services  ")]
+    [InlineData("global::App.Services")]
+    [InlineData("  global::App.Services\t")]
+    public async Task GetDocumentOutline_NamespaceFilter_TrimsWhitespaceAndAcceptsLeadingGlobal(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var canonical = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services"
+        });
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(canonical.Success);
+        Assert.NotNull(canonical.Data);
+        Assert.Equal(ServicesFilteredTotal, canonical.Data.TotalCount);
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(SerializeOutline(canonical.Data), SerializeOutline(result.Data));
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NamespaceFilterWithFileScopedNamespace_MatchesNamespaceEntryItself()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace App.Services;
+
+            public class OrderService
+            {
+                public void Place() { }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var exact = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services"
+        });
+        var parent = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App"
+        });
+        var child = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services.Orders"
+        });
+
+        Assert.True(exact.Success);
+        Assert.NotNull(exact.Data);
+        Assert.Equal(
+            new[] { ("App.Services", "Namespace", 1), ("OrderService", "Class", 2), ("Place", "Method", 3) },
+            Flatten(exact.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.Equal(3, exact.Data.TotalCount);
+
+        Assert.True(parent.Success);
+        Assert.NotNull(parent.Data);
+        Assert.Equal(SerializeOutline(exact.Data), SerializeOutline(parent.Data));
+
+        Assert.True(child.Success);
+        Assert.NotNull(child.Data);
+        Assert.Empty(child.Data.Entries);
+        Assert.Equal(0, child.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NamespaceFilterWithKindFilter_RequiresBothToMatch()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var methods = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services",
+            KindFilter = "Method"
+        });
+
+        Assert.True(methods.Success);
+        Assert.NotNull(methods.Data);
+        Assert.Equal(
+            new[]
+            {
+                ("App.Services", "Namespace", 1),
+                ("OrderService", "Class", 2),
+                ("Place", "Method", 3),
+                ("App.Services.Orders", "Namespace", 1),
+                ("IOrder", "Interface", 2),
+                ("Submit", "Method", 3)
+            },
+            Flatten(methods.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.Equal(6, methods.Data.TotalCount);
+
+        // Namespace entries match on the namespace itself, so kindFilter Namespace keeps exactly the matching
+        // namespace entries (their non-namespace children are dropped).
+        var namespaces = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services",
+            KindFilter = "Namespace"
+        });
+
+        Assert.True(namespaces.Success);
+        Assert.NotNull(namespaces.Data);
+        Assert.Equal(
+            new[] { ("App.Services", "Namespace", 1), ("App.Services.Orders", "Namespace", 1) },
+            Flatten(namespaces.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.All(namespaces.Data.Entries, e => Assert.Null(e.Children));
+        Assert.Equal(2, namespaces.Data.TotalCount);
+        Assert.False(namespaces.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NamespaceFilterWithNameAndAccessibilityFilter_RequiresAllToMatch()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        // nameFilter "Place" under App (nested App.Services counts).
+        var place = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App",
+            NameFilter = "place"
+        });
+
+        Assert.True(place.Success);
+        Assert.NotNull(place.Data);
+        Assert.Equal(new[] { "App.Services", "OrderService", "Place" }, Flatten(place.Data.Entries).Select(e => e.Name));
+        Assert.Equal(3, place.Data.TotalCount);
+
+        // Run exists only in App.ServicesExtra, which is not nested in App.Services.
+        var run = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services",
+            NameFilter = "Run"
+        });
+
+        Assert.True(run.Success);
+        Assert.NotNull(run.Data);
+        Assert.Empty(run.Data.Entries);
+        Assert.Equal(0, run.Data.TotalCount);
+        Assert.False(run.Data.Truncated);
+
+        // accessibilityFilter "private" + App.Services keeps only the private field.
+        var privates = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services",
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(privates.Success);
+        Assert.NotNull(privates.Data);
+        Assert.Equal(new[] { "App.Services", "OrderService", "_count" }, Flatten(privates.Data.Entries).Select(e => e.Name));
+        Assert.Equal(3, privates.Data.TotalCount);
+
+        // accessibilityFilter "internal" + App.Services keeps the internal enum (the namespace is only a container).
+        var internals = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services",
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.True(internals.Success);
+        Assert.NotNull(internals.Data);
+        Assert.Equal(
+            new[] { ("App.Services", "Namespace", 1), ("Status", "Enum", 2) },
+            Flatten(internals.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.Equal(2, internals.Data.TotalCount);
+
+        // All four filters together.
+        var all = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App",
+            KindFilter = "Method",
+            NameFilter = "R",
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(all.Success);
+        Assert.NotNull(all.Data);
+        Assert.Equal(new[] { "App.ServicesExtra", "Extra", "Run" }, Flatten(all.Data.Entries).Select(e => e.Name));
+        Assert.Equal(3, all.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NamespaceFilterWithMaxDepthAndMaxResults_AppliesFilterFirst()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var depth = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services",
+            MaxDepth = 1
+        });
+
+        Assert.True(depth.Success);
+        Assert.NotNull(depth.Data);
+        Assert.Equal(new[] { "App.Services", "App.Services.Orders" }, Flatten(depth.Data.Entries).Select(e => e.Name));
+        Assert.Equal(ServicesFilteredTotal, depth.Data.TotalCount);
+        Assert.True(depth.Data.Truncated);
+
+        var capped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services",
+            MaxResults = 3
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(new[] { "App.Services", "OrderService", "Place" }, Flatten(capped.Data.Entries).Select(e => e.Name));
+        Assert.Equal(ServicesFilteredTotal, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var notCapped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App.Services",
+            MaxResults = ServicesFilteredTotal
+        });
+
+        Assert.True(notCapped.Success);
+        Assert.NotNull(notCapped.Data);
+        Assert.Equal(ServicesFilteredTotal, CountNodes(notCapped.Data.Entries));
+        Assert.False(notCapped.Data.Truncated);
     }
 
     #endregion
