@@ -32,7 +32,7 @@ public sealed class GetDiagnosticsTool : IToolHandler
     public string Name => "get_diagnostics";
 
     /// <inheritdoc />
-    public string Description => "Get compiler diagnostics (errors, warnings) for the solution or a specific file. Useful for checking compilation status before or after refactoring. Optional diagnosticIds restricts results to the given IDs (e.g. CS0168; case-insensitive; omit = all IDs). Optional excludeDiagnosticIds drops the given IDs (e.g. CS1591; case-insensitive; wins over diagnosticIds on overlap; omit = exclude none). Optional projectPath restricts results to one project of the solution (absolute .csproj path; omit = whole solution). Optional namespaceFilter restricts results to diagnostics whose diagnostic site — the member / type / namespace declaration enclosing the diagnostic location — lives in a namespace that equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as find_references / find_callers namespaceFilter; global-namespace sites and diagnostics with no source location never match), combined with the other filters and applied before maxResults. Optional maxResults caps the returned list (omit = no cap).";
+    public string Description => "Get compiler diagnostics (errors, warnings) for the solution or a specific file. Useful for checking compilation status before or after refactoring. Optional diagnosticIds restricts results to the given IDs (e.g. CS0168; case-insensitive; omit = all IDs). Optional excludeDiagnosticIds drops the given IDs (e.g. CS1591; case-insensitive; wins over diagnosticIds on overlap; omit = exclude none). Optional projectPath restricts results to one project of the solution (absolute .csproj path; omit = whole solution). Optional namespaceFilter restricts results to diagnostics whose diagnostic site — the member / type / namespace declaration enclosing the diagnostic location — lives in a namespace that equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as find_references / find_callers namespaceFilter; global-namespace sites and diagnostics with no source location never match), combined with the other filters and applied before maxResults. Optional accessibilityFilter (public, internal, protected, private, protected internal, or private protected; case-insensitive; same values as search_symbols / find_references accessibilityFilter) keeps only diagnostics whose diagnostic site's DeclaredAccessibility equals it exactly (implicit defaults count: a class member with no modifier is private; declaration-attached diagnostics such as CS0169 resolve to the declared member; lambdas / local functions looked through to declaring member; namespace-level sites and diagnostics with no source location never match), combined with the other filters and applied before maxResults. Optional maxResults caps the returned list (omit = no cap).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -83,7 +83,12 @@ public sealed class GetDiagnosticsTool : IToolHandler
             namespaceFilter = new
             {
                 type = "string",
-                description = "Namespace to restrict diagnostics to (optional; omit for all namespaces). Keeps diagnostics whose diagnostic site — the member, type, or namespace declaration enclosing the diagnostic location — lives in a namespace that equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace sites and diagnostics with no source location never match a named filter. Same matching as find_references / find_callers / search_symbols namespaceFilter; combined with sourceFile/projectPath/severityFilter/diagnosticIds/excludeDiagnosticIds and applied before maxResults so totalCount/truncated reflect the filtered set"
+                description = "Namespace to restrict diagnostics to (optional; omit for all namespaces). Keeps diagnostics whose diagnostic site — the member, type, or namespace declaration enclosing the diagnostic location — lives in a namespace that equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace sites and diagnostics with no source location never match a named filter. Same matching as find_references / find_callers / search_symbols namespaceFilter; combined with sourceFile/projectPath/severityFilter/diagnosticIds/excludeDiagnosticIds/accessibilityFilter and applied before maxResults so totalCount/truncated reflect the filtered set"
+            },
+            accessibilityFilter = new
+            {
+                type = "string",
+                description = "Declared accessibility to restrict diagnostics to (optional; omit for all accessibilities): public, internal, protected, private, protected internal, or private protected (case-insensitive; same values as search_symbols / find_references accessibilityFilter; whitespace trimmed/collapsed; internal protected / protected private also accepted). Keeps diagnostics whose diagnostic site — the nearest declared member at a declaration-attached location (e.g. CS0169 on a field), otherwise the member / type enclosing the location (lambdas and local functions looked through to their declaring member; namespace-level sites never match) — has a DeclaredAccessibility equal to it exactly (implicit defaults count: a class member with no modifier is private; protected internal is not matched by protected or internal). Diagnostics with no source location never match. Combined with sourceFile/projectPath/severityFilter/diagnosticIds/excludeDiagnosticIds/namespaceFilter and applied before maxResults so totalCount/truncated reflect the filtered set; invalid value → InvalidVisibility"
             }
         },
         additionalProperties = false
@@ -112,7 +117,8 @@ public sealed class GetDiagnosticsTool : IToolHandler
                 DiagnosticIds = args.DiagnosticIds,
                 ExcludeDiagnosticIds = args.ExcludeDiagnosticIds,
                 ProjectPath = args.ProjectPath,
-                NamespaceFilter = args.NamespaceFilter
+                NamespaceFilter = args.NamespaceFilter,
+                AccessibilityFilter = args.AccessibilityFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -146,5 +152,6 @@ public sealed class GetDiagnosticsTool : IToolHandler
         public List<string>? ExcludeDiagnosticIds { get; init; }
         public string? ProjectPath { get; init; }
         public string? NamespaceFilter { get; init; }
+        public string? AccessibilityFilter { get; init; }
     }
 }

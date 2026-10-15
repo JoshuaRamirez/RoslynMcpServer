@@ -131,7 +131,7 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         // accessibilityFilter): keep only locations whose site symbol has a DeclaredAccessibility equal
         // to the filter exactly. For a usage that is the member / type / namespace enclosing it (the
         // same enclosing-symbol notion namespaceFilter uses, not the target symbol); for a definition
-        // location it is the declared symbol itself (see DeclaringSiteSymbol). Null when omitted /
+        // location it is the declared symbol itself (see <see cref="DeclaringSiteSymbol"/>). Null when omitted /
         // blank (no accessibility filtering). Invalid values already rejected in ValidateParams.
         var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
 
@@ -157,7 +157,7 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         {
             // Every definition location of this entry declares the same symbol, so its accessibility
             // site is computed once.
-            var definitionSiteSymbol = DeclaringSiteSymbol(referencedSymbol.Definition);
+            var definitionSiteSymbol = DeclaringSiteSymbol.Resolve(referencedSymbol.Definition);
 
             // Add the definition itself (skipped entirely when includeDeclaration is false)
             var definitionLocations = includeDeclaration
@@ -213,7 +213,7 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                         cancellationToken))
                     continue;
                 if (accessibilityFilter.HasValue
-                    && !MatchesAccessibility(DeclaringSiteSymbol(await siteResolver.GetEnclosingSymbolAsync(
+                    && !MatchesAccessibility(DeclaringSiteSymbol.Resolve(await siteResolver.GetEnclosingSymbolAsync(
                         refLocation.Location.SourceTree, refLocation.Document, refLocation.Location.SourceSpan.Start,
                         cancellationToken))))
                     continue;
@@ -248,30 +248,4 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
 
         return QueryResult<FindReferencesResult>.Succeeded(operationId, result);
     }
-
-    /// <summary>
-    /// The declared member, type, or namespace whose accessibility <c>accessibilityFilter</c> judges for
-    /// a site, starting from <paramref name="symbol"/> (the symbol enclosing a usage, or the declared
-    /// symbol of a definition location) and walking out through symbols that have no declared
-    /// accessibility of their own: lambdas / anonymous methods and local functions (which report
-    /// <c>private</c>) and locals, parameters, type parameters, range variables, and labels (which
-    /// report <c>NotApplicable</c>). So a reference inside a lambda in a <c>public</c> method is a
-    /// <c>public</c> site, and the declaration of a local is judged by the member declaring it.
-    /// Namespaces are returned as-is; Roslyn reports them as <c>Public</c>, so the caller rejects them
-    /// explicitly (a namespace-level site never matches a filter).
-    /// </summary>
-    private static ISymbol? DeclaringSiteSymbol(ISymbol? symbol)
-    {
-        var current = symbol;
-        while (current != null && !IsDeclaringSite(current))
-            current = current.ContainingSymbol;
-        return current;
-    }
-
-    private static bool IsDeclaringSite(ISymbol symbol) => symbol switch
-    {
-        IMethodSymbol method => method.MethodKind is not (MethodKind.AnonymousFunction or MethodKind.LocalFunction),
-        IPropertySymbol or IFieldSymbol or IEventSymbol or INamedTypeSymbol or INamespaceSymbol => true,
-        _ => false
-    };
 }

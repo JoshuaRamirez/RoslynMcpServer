@@ -1541,6 +1541,60 @@ public class FindReferencesOperationTests
         Assert.DoesNotContain(publicSites.Data!.References, r => r.IsDefinition);
     }
 
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilter_TopLevelStatementSitesNeverMatch()
+    {
+        // References in top-level statements (including a top-level local function and lambda) are
+        // enclosed by the synthesized private `<Main>$` entry point; they are namespace-level sites and
+        // never match a named filter (not even private).
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                public static class Target
+                {
+                    public static void Run() { }
+                }
+                """,
+            ["Program.cs"] = """
+                Target.Run();
+                void Local() { Target.Run(); }
+                System.Action a = () => Target.Run();
+                """,
+            ["Host.cs"] = """
+                public class Host
+                {
+                    private void Priv() { Target.Run(); }
+                }
+                """
+        }, "Target.cs");
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var all = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run"
+        });
+        var privateSites = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "private"
+        });
+        var internalSites = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.True(all.Success);
+        Assert.Equal(3, all.Data!.References.Count(r => Path.GetFileName(r.File) == "Program.cs"));
+        Assert.True(privateSites.Success);
+        Assert.Equal(new[] { "Host.cs:3" }, Sites(privateSites.Data!.References.Where(r => !r.IsDefinition)));
+        Assert.True(internalSites.Success);
+        Assert.DoesNotContain(internalSites.Data!.References, r => Path.GetFileName(r.File) == "Program.cs");
+    }
+
     [SkippableTheory]
     [InlineData("PUBLIC", "public")]
     [InlineData("  Private  ", "private")]

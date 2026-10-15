@@ -278,4 +278,14 @@ public class CliArgsTests
         Assert.Equal("Error", result.Options["severity-filter"]);
         Assert.Equal("App.Services", result.Options["namespace-filter"]);
     }
+
+    [Fact]
+    public void GetDiagnostics_AccessibilityFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Error", "--accessibility-filter", "protected internal"]);
+        Assert.Equal("get-diagnostics", result.ToolName);
+        Assert.Equal("Error", result.Options["severity-filter"]);
+        Assert.Equal("protected internal", result.Options["accessibility-filter"]);
+    }
 }
+
