@@ -7,6 +7,7 @@ using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Query;
@@ -16,8 +17,10 @@ namespace RoslynMcp.Core.Query;
 /// <see cref="FindReferencesParams.ProjectPath"/> is set), optionally narrowed to reference sites in one
 /// namespace (<see cref="FindReferencesParams.NamespaceFilter"/>), optionally to reference sites
 /// whose enclosing symbol has a given declared accessibility
-/// (<see cref="FindReferencesParams.AccessibilityFilter"/>), and optionally to reference sites whose
-/// enclosing symbol's simple name contains a substring (<see cref="FindReferencesParams.NameFilter"/>).
+/// (<see cref="FindReferencesParams.AccessibilityFilter"/>), optionally to reference sites whose
+/// enclosing symbol's simple name contains a substring (<see cref="FindReferencesParams.NameFilter"/>),
+/// and optionally to reference sites whose enclosing symbol has one symbol kind
+/// (<see cref="FindReferencesParams.KindFilter"/>).
 /// Delegates to Roslyn's SymbolFinder.FindReferencesAsync.
 /// </summary>
 public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesParams, FindReferencesResult>
@@ -65,6 +68,10 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         ProjectPathFilter.Validate(@params.ProjectPath);
 
         AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+
+        // Same parsing and InvalidSymbolKind error as search_symbols / get_document_outline /
+        // get_symbol_info / find_implementations / get_type_hierarchy / find_callers kindFilter.
+        SymbolKindFilterParser.Parse(@params.KindFilter);
     }
 
     /// <inheritdoc />
@@ -167,9 +174,24 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
             || (siteSymbol is not null and not INamespaceSymbol
                 && siteSymbol.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase));
 
-        // Both enclosing-symbol filters judge the same site symbol.
-        bool MatchesSiteSymbol(ISymbol? siteSymbol) => MatchesAccessibility(siteSymbol) && MatchesName(siteSymbol);
-        var filtersBySiteSymbol = accessibilityFilter.HasValue || nameFilter != null;
+        // Optional kindFilter (same values / parsing as search_symbols / get_document_outline /
+        // get_symbol_info / find_implementations / get_type_hierarchy / find_callers kindFilter): keep
+        // only locations whose site symbol (the same DeclaringSiteSymbol accessibilityFilter /
+        // nameFilter judge) maps to that kind via SymbolKindMapper (methods / constructors /
+        // accessors → Method, field initializers → Field or Constant, property definitions → Property).
+        // Namespace-level sites never match a named kind filter. Null when omitted / blank.
+        // Invalid values already rejected in ValidateParams.
+        var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
+
+        bool MatchesKind(ISymbol? siteSymbol) =>
+            !kindFilter.HasValue
+            || (siteSymbol is not null and not INamespaceSymbol
+                && SymbolKindMapper.Map(siteSymbol) == kindFilter.Value);
+
+        // All enclosing-symbol filters judge the same site symbol.
+        bool MatchesSiteSymbol(ISymbol? siteSymbol) =>
+            MatchesAccessibility(siteSymbol) && MatchesName(siteSymbol) && MatchesKind(siteSymbol);
+        var filtersBySiteSymbol = accessibilityFilter.HasValue || nameFilter != null || kindFilter.HasValue;
 
         foreach (var referencedSymbol in referencedSymbols)
         {
@@ -186,8 +208,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 var lineSpan = defLocation.GetLineSpan();
 
                 // Optional referenceFile / projectPath / namespaceFilter / accessibilityFilter /
-                // nameFilter filters run before maxResults so TotalCount / Truncated reflect the
-                // filtered set.
+                // nameFilter / kindFilter filters run before maxResults so TotalCount / Truncated
+                // reflect the filtered set.
                 if (!IsInReferenceFile(lineSpan.Path)) continue;
                 if (projectScope != null && !IsInProjectScope(Context.Solution.GetDocumentId(defLocation.SourceTree))) continue;
                 if (namespaceScope != null

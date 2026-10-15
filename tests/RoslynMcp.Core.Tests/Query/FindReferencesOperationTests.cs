@@ -17,7 +17,9 @@ namespace RoslynMcp.Core.Tests.Query;
 /// of <c>find_callers</c> / <c>find_implementations</c> / <c>search_symbols</c> <c>accessibilityFilter</c>),
 /// and optional <c>nameFilter</c> (restricts by reference-site enclosing symbol simple name; peer of
 /// <c>get_document_outline</c> / <c>get_symbol_info</c> / <c>find_implementations</c> /
-/// <c>get_type_hierarchy</c> <c>nameFilter</c>).
+/// <c>get_type_hierarchy</c> <c>nameFilter</c>), and optional <c>kindFilter</c> (restricts by
+/// reference-site enclosing symbol kind; peer of <c>find_callers</c> / <c>search_symbols</c> /
+/// <c>find_implementations</c> / <c>get_type_hierarchy</c> <c>kindFilter</c>).
 /// </summary>
 public class FindReferencesOperationTests
 {
@@ -2285,6 +2287,370 @@ public class FindReferencesOperationTests
     }
 
     #endregion
+
+    #region KindFilter
+
+    // Site-symbol KindFilter: Target.Run is referenced from a field initializer (_seed → Field), a
+    // constructor (.ctor → Method), methods (Handle / Helper → Method), a block-bodied property getter
+    // (get_Total → Method), and an expression-bodied property (get_Count → Method). Judged on
+    // SymbolKindMapper.Map(DeclaringSiteSymbol) — the same site accessibilityFilter / nameFilter judge
+    // (property accessors are Method, unlike find_callers CallingSymbol which reports the property).
+    private static readonly Dictionary<string, string> KindSources = new()
+    {
+        ["Target.cs"] = """
+            namespace App;
+            public static class Target
+            {
+                public static int Run() => 0;
+            }
+            """,
+        ["Sites.cs"] = """
+            namespace App.Sites;
+            public class Worker
+            {
+                private int _seed = App.Target.Run();
+                public Worker() { App.Target.Run(); }
+                public void Handle() { App.Target.Run(); }
+                private int Helper() => App.Target.Run();
+                public int Total { get { return App.Target.Run(); } }
+                public int Count => App.Target.Run();
+            }
+            """
+    };
+
+    // Usages only (includeDeclaration false): six sites in Sites.cs. Line numbers are 1-based in the
+    // file as written above (namespace=1, class=2, {=3, _seed=4, .ctor=5, Handle=6, Helper=7, Total=8, Count=9).
+    private static readonly string[] AllKindUsageSites =
+    [
+        "Sites.cs:4", "Sites.cs:5", "Sites.cs:6", "Sites.cs:7", "Sites.cs:8", "Sites.cs:9"
+    ];
+
+    [Fact]
+    public void KindFilter_DefaultsToNull()
+    {
+        var @params = new FindReferencesParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.KindFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task FindReferences_BlankKindFilter_MatchesOmitted(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false
+        });
+        var filtered = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(filtered.Success);
+        Assert.Equal(AllKindUsageSites, Sites(omitted.Data!.References));
+        Assert.Equal(AllKindUsageSites, Sites(filtered.Data!.References));
+        Assert.Equal(AllKindUsageSites.Length, filtered.Data.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Method", new[] { "Sites.cs:5", "Sites.cs:6", "Sites.cs:7", "Sites.cs:8", "Sites.cs:9" })]
+    [InlineData("method", new[] { "Sites.cs:5", "Sites.cs:6", "Sites.cs:7", "Sites.cs:8", "Sites.cs:9" })]
+    [InlineData("  FIELD  ", new[] { "Sites.cs:4" })]
+    [InlineData("Field", new[] { "Sites.cs:4" })]
+    [InlineData("Property", new string[] { })]
+    [InlineData("Constant", new string[] { })]
+    [InlineData("Event", new string[] { })]
+    [InlineData("Struct", new string[] { })]
+    [InlineData("Class", new string[] { })]
+    [InlineData("Local", new string[] { })]
+    [InlineData("Namespace", new string[] { })]
+    public async Task FindReferences_KindFilter_SelectsSitesByEnclosingSymbolKind(string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success, kindFilter);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Klass")]
+    [InlineData("6")]
+    [InlineData("Method, Property")]
+    public async Task FindReferences_UnknownKindFilter_ThrowsInvalidSymbolKind(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new FindReferencesParams
+            {
+                SourceFile = workspace.PathOf("Target.cs"),
+                SymbolName = "Run",
+                KindFilter = kindFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.StartsWith($"Invalid kindFilter '{kindFilter}'. Valid values: ", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_KindFilterWithMaxResults_CapsAfterKindFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false,
+            KindFilter = "Method",
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.References.Count);
+        Assert.Equal(5, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+        Assert.All(result.Data.References, r => Assert.Contains(
+            $"{Path.GetFileName(r.File)}:{r.Line}",
+            new[] { "Sites.cs:5", "Sites.cs:6", "Sites.cs:7", "Sites.cs:8", "Sites.cs:9" }));
+    }
+
+    [SkippableTheory]
+    [InlineData("Method", "H", new[] { "Sites.cs:6", "Sites.cs:7" })]
+    [InlineData("Method", "get_", new[] { "Sites.cs:8", "Sites.cs:9" })]
+    [InlineData("Field", "seed", new[] { "Sites.cs:4" })]
+    [InlineData("Field", "H", new string[0])]
+    [InlineData("Property", "Total", new string[0])]
+    public async Task FindReferences_KindFilterWithNameFilter_AndsTheSiteFilters(
+        string kindFilter, string nameFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false,
+            KindFilter = kindFilter,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("private", "Method", new[] { "Sites.cs:7" })]
+    [InlineData("public", "Method", new[] { "Sites.cs:5", "Sites.cs:6", "Sites.cs:8", "Sites.cs:9" })]
+    [InlineData("private", "Field", new[] { "Sites.cs:4" })]
+    [InlineData("public", "Field", new string[0])]
+    public async Task FindReferences_KindFilterWithAccessibilityFilter_AndsTheSiteFilters(
+        string accessibilityFilter, string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false,
+            AccessibilityFilter = accessibilityFilter,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Sites", "Field", new[] { "Sites.cs:4" })]
+    [InlineData("App.Other", "Method", new string[0])]
+    public async Task FindReferences_KindFilterWithNamespaceFilter_AndsTheSiteFilters(
+        string namespaceFilter, string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false,
+            NamespaceFilter = namespaceFilter,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_KindFilter_IncludeDeclarationJudgesDefinitionByDeclaredSymbol()
+    {
+        // Run's definition is a Method site; usages include Field + Method sites. Method filter keeps
+        // the definition plus the five Method usages; Field keeps only the field initializer.
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var method = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            KindFilter = "Method"
+        });
+        var field = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            KindFilter = "Field"
+        });
+
+        Assert.True(method.Success);
+        Assert.Contains("Target.cs:4", Sites(method.Data!.References));
+        Assert.Equal(6, method.Data.TotalCount); // definition + 5 Method usages
+        Assert.DoesNotContain(method.Data.References, r => Path.GetFileName(r.File) == "Sites.cs" && r.Line == 4);
+
+        Assert.True(field.Success);
+        Assert.Equal(new[] { "Sites.cs:4" }, Sites(field.Data!.References));
+        Assert.Equal(1, field.Data.TotalCount);
+        Assert.All(field.Data.References, r => Assert.False(r.IsDefinition));
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_KindFilter_PropertyDefinitionIsProperty()
+    {
+        // A property declaration site maps to Property; usages of the property from a method are Method.
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                namespace App;
+                public class Target
+                {
+                    public int Value { get; set; }
+                }
+                """,
+            ["Consumer.cs"] = """
+                namespace App;
+                public class Consumer
+                {
+                    public int Read(Target t) => t.Value;
+                }
+                """
+        });
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var property = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Value",
+            KindFilter = "Property"
+        });
+        var method = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Value",
+            IncludeDeclaration = false,
+            KindFilter = "Method"
+        });
+
+        Assert.True(property.Success);
+        var definition = Assert.Single(property.Data!.References);
+        Assert.True(definition.IsDefinition);
+        Assert.True(SamePath(definition.File, workspace.PathOf("Target.cs")));
+
+        Assert.True(method.Success);
+        Assert.Equal(new[] { "Consumer.cs:4" }, Sites(method.Data!.References));
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_KindFilter_NamespaceLevelSitesNeverMatch()
+    {
+        // Using aliases and a top-level type's base list are namespace-level sites; even kindFilter
+        // Namespace never matches them (same as accessibilityFilter / nameFilter). A typeof usage
+        // inside a method body is a Method site; a method return-type annotation is a Class site
+        // (containing type), so use a body usage for the Method control.
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                namespace App;
+                public class Target { }
+                """,
+            ["Consumer.cs"] = """
+                using GlobalAlias = App.Target;
+                namespace App.Consumers
+                {
+                    using InnerAlias = App.Target;
+                    public class Derived : App.Target { }
+                    public class Consumer
+                    {
+                        public void Use() { _ = typeof(App.Target); }
+                    }
+                }
+                """
+        });
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var unfiltered = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false
+        });
+        var method = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false,
+            KindFilter = "Method"
+        });
+        var ns = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false,
+            KindFilter = "Namespace"
+        });
+
+        Assert.True(unfiltered.Success);
+        // using + using + base list + method-body typeof
+        Assert.True(unfiltered.Data!.TotalCount >= 4);
+        Assert.True(method.Success);
+        Assert.Equal(new[] { "Consumer.cs:8" }, Sites(method.Data!.References));
+        Assert.True(ns.Success);
+        Assert.Empty(ns.Data!.References);
+        Assert.Equal(0, ns.Data.TotalCount);
+    }
+
+    #endregion
+
 
     // Roslyn does not guarantee reference order across runs, so compare locations as sorted sets.
     private static List<(string File, int Line, int Column, bool IsDefinition)> SortedLocations(
