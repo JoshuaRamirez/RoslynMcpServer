@@ -112,7 +112,7 @@ public sealed class FindReferencesParams
     /// declaring them) — has a simple <c>ISymbol.Name</c> that contains this value, compared with
     /// <c>StringComparison.OrdinalIgnoreCase</c> (same matching as <c>get_document_outline</c> /
     /// <c>get_symbol_info</c> / <c>find_implementations</c> / <c>get_type_hierarchy</c>
-    /// <c>nameFilter</c>), e.g. <c>Handler</c> for the usages inside <c>HandleOrder</c> /
+    /// <c>nameFilter</c>), e.g. <c>Handle</c> for the usages inside <c>HandleOrder</c> /
     /// <c>OrderHandler</c>. The name is Roslyn's metadata name of that symbol, so property / indexer /
     /// event accessors read <c>get_X</c> / <c>set_X</c> / <c>add_X</c> / <c>remove_X</c> (still containing
     /// the property or event name), constructors <c>.ctor</c>, static constructors <c>.cctor</c>, and
