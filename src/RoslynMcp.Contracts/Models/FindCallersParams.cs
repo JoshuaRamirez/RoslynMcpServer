@@ -61,7 +61,7 @@ public sealed class FindCallersParams
     /// matching as <c>search_symbols</c> / <c>find_implementations</c> / <c>find_references</c>
     /// <c>namespaceFilter</c>. Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace
     /// is trimmed and a leading <c>global::</c> is accepted. Combined with <see cref="CallerFile"/>,
-    /// <see cref="ProjectPath"/>, and <see cref="AccessibilityFilter"/>, and applied before
+    /// <see cref="ProjectPath"/>, <see cref="AccessibilityFilter"/>, and <see cref="NameFilter"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
     /// namespace-filtered set. Sites in the global namespace never match a named filter. Omit, blank,
     /// or a bare <c>global::</c> (the root namespace) reports call sites in all namespaces.
@@ -80,10 +80,30 @@ public sealed class FindCallersParams
     /// <c>ISymbol.DeclaredAccessibility</c> equals it exactly are returned (semantic, so implicit
     /// defaults count: a class member with no modifier is <c>private</c>); the match is exact
     /// (<c>protected internal</c> is not matched by <c>protected</c> or <c>internal</c>). Combined
-    /// with <see cref="CallerFile"/>, <see cref="ProjectPath"/>, and <see cref="NamespaceFilter"/>,
-    /// and applied before <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect
-    /// the accessibility-filtered set. Omit or leave blank for no accessibility filter. An
-    /// unrecognized value fails with <c>InvalidVisibility</c>.
+    /// with <see cref="CallerFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>, and
+    /// <see cref="NameFilter"/>, and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the accessibility-filtered set. Omit or leave blank for no accessibility
+    /// filter. An unrecognized value fails with <c>InvalidVisibility</c>.
     /// </summary>
     public string? AccessibilityFilter { get; init; }
+
+    /// <summary>
+    /// Optional name substring to restrict reported call sites to: keep call sites whose
+    /// <strong>calling symbol</strong> — the same symbol <see cref="AccessibilityFilter"/> judges
+    /// (<c>caller.CallingSymbol</c>) — has a simple <c>ISymbol.Name</c> that contains this value,
+    /// compared with <c>StringComparison.OrdinalIgnoreCase</c> (same matching as
+    /// <c>get_document_outline</c> / <c>get_symbol_info</c> / <c>find_implementations</c> /
+    /// <c>get_type_hierarchy</c> / <c>find_references</c> <c>nameFilter</c>), e.g. <c>Handle</c> for
+    /// callers named <c>HandleOrder</c> / <c>OrderHandler</c>. The matched name is exactly the
+    /// reported <c>CallerName</c> (both read <c>caller.CallingSymbol.Name</c>); for a call inside a
+    /// property accessor body Roslyn reports the property itself, so it reads and matches as the
+    /// property name (e.g. <c>Total</c>, not <c>get_Total</c>).
+    /// Surrounding whitespace is trimmed; inner whitespace is not collapsed. Combined with
+    /// <see cref="CallerFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>, and
+    /// <see cref="AccessibilityFilter"/> (a site must satisfy all that are set), and applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the name-filtered set.
+    /// A value no calling-symbol name contains returns an empty success. Omit, empty, or whitespace
+    /// for no name filter.
+    /// </summary>
+    public string? NameFilter { get; init; }
 }

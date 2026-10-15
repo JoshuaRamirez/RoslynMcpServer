@@ -14,9 +14,10 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Finds all callers of a symbol using Roslyn's SymbolFinder.FindCallersAsync(), across the solution
 /// (or within one project when <see cref="FindCallersParams.ProjectPath"/> is set), optionally
-/// narrowed to call sites in one namespace (<see cref="FindCallersParams.NamespaceFilter"/>), and
+/// narrowed to call sites in one namespace (<see cref="FindCallersParams.NamespaceFilter"/>),
 /// optionally to calling symbols with a given declared accessibility
-/// (<see cref="FindCallersParams.AccessibilityFilter"/>).
+/// (<see cref="FindCallersParams.AccessibilityFilter"/>), and optionally to calling symbols whose
+/// simple name contains a substring (<see cref="FindCallersParams.NameFilter"/>).
 /// </summary>
 public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams, FindCallersResult>
 {
@@ -114,13 +115,25 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         // ValidateParams.
         var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
 
+        // Optional nameFilter (same matching as get_document_outline / get_symbol_info /
+        // find_implementations / get_type_hierarchy / find_references nameFilter): keep only call
+        // sites whose calling symbol (the same CallingSymbol accessibilityFilter judges) has a
+        // simple Name containing the trimmed value, ordinal case-insensitive. Null when omitted /
+        // blank (no name filtering). Free text — no validation error.
+        var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
+
         foreach (var caller in callerResults)
         {
-            // Accessibility filter runs on the calling symbol before location filters / maxResults
-            // so TotalCount / Truncated reflect the filtered set. Exact DeclaredAccessibility
-            // match (implicit defaults count; protected internal ≠ protected / internal).
+            // Accessibility / name filters run on the calling symbol before location filters /
+            // maxResults so TotalCount / Truncated reflect the filtered set. Exact
+            // DeclaredAccessibility match (implicit defaults count; protected internal ≠
+            // protected / internal). Name is ISymbol.Name substring (OrdinalIgnoreCase).
             if (accessibilityFilter.HasValue
                 && caller.CallingSymbol.DeclaredAccessibility != accessibilityFilter.Value)
+                continue;
+
+            if (nameFilter != null
+                && !caller.CallingSymbol.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
                 continue;
 
             foreach (var location in caller.Locations)
@@ -130,8 +143,8 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                 var lineSpan = location.GetLineSpan();
 
                 // Optional callerFile / projectPath / namespaceFilter filters run before maxResults
-                // (accessibilityFilter already applied on the calling symbol above) so TotalCount /
-                // Truncated reflect the filtered set.
+                // (accessibilityFilter / nameFilter already applied on the calling symbol above) so
+                // TotalCount / Truncated reflect the filtered set.
                 if (callerFileKey != null)
                 {
                     var locationPath = lineSpan.Path;
