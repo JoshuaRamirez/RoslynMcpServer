@@ -125,10 +125,14 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
 
         if (kindFilter.HasValue || nameFilter != null || accessibilityMatches != null || namespaceMatches != null)
         {
-            returned = FilterOutlineForest(entries, entry =>
+            Func<OutlineEntry, bool> matches = entry =>
                 OutlineEntryMatches(entry, kindFilter, nameFilter) &&
                 (accessibilityMatches == null || accessibilityMatches(entry)) &&
-                (namespaceMatches == null || namespaceMatches(entry)));
+                (namespaceMatches == null || namespaceMatches(entry));
+            if (namespaceMatches != null && declarations != null)
+                matches = WithEnclosingNamespaceContainers(matches, declarations);
+
+            returned = FilterOutlineForest(entries, matches);
             totalCount = CountNodes(returned);
         }
 
@@ -199,6 +203,37 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
             ReturnType = entry.ReturnType,
             Children = children
         };
+    }
+
+    /// <summary>
+    /// Extends <paramref name="matches"/> so a namespace entry whose declaration syntactically encloses a
+    /// matching declaration is also kept as a container. Block-scoped nested namespaces
+    /// (<c>namespace Outer { namespace Inner { ... } }</c>) are emitted as sibling outline roots rather than
+    /// as children, so without this <c>namespaceFilter</c> <c>Outer.Inner</c> would drop the containing
+    /// <c>Outer</c> entry. Only true syntactic ancestors qualify: a sibling dotted declaration such as
+    /// <c>namespace App</c> next to <c>namespace App.Services</c> does not enclose it and is not kept.
+    /// Each entry's match is evaluated once up front.
+    /// </summary>
+    private static Func<OutlineEntry, bool> WithEnclosingNamespaceContainers(
+        Func<OutlineEntry, bool> matches,
+        IReadOnlyDictionary<OutlineEntry, SyntaxNode> declarations)
+    {
+        var matched = new HashSet<OutlineEntry>(ReferenceEqualityComparer.Instance);
+        var enclosingNamespaces = new HashSet<SyntaxNode>();
+        foreach (var (entry, node) in declarations)
+        {
+            if (!matches(entry))
+                continue;
+
+            matched.Add(entry);
+            foreach (var ancestor in node.Ancestors().OfType<BaseNamespaceDeclarationSyntax>())
+                enclosingNamespaces.Add(ancestor);
+        }
+
+        return entry => matched.Contains(entry) ||
+            (declarations.TryGetValue(entry, out var node) &&
+             node is BaseNamespaceDeclarationSyntax &&
+             enclosingNamespaces.Contains(node));
     }
 
     /// <summary>

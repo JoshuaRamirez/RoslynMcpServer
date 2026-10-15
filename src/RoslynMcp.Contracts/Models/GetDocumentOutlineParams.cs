@@ -74,8 +74,10 @@ public sealed class GetDocumentOutlineParams
     /// <see cref="KindFilter"/>. Type and member entries match when their containing namespace equals the
     /// filter or is nested inside it; namespace entries match when the namespace itself does (e.g.
     /// <c>App.Services</c> matches the entries <c>App.Services</c> and <c>App.Services.Orders</c> and the
-    /// types/members declared in them, not <c>App.ServicesExtra</c>). Compared with
-    /// <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading <c>global::</c> is
+    /// types/members declared in them, not <c>App.ServicesExtra</c>). A block namespace declaration that
+    /// syntactically encloses a match (<c>Outer</c> in <c>namespace Outer { namespace Inner { ... } }</c> for
+    /// <c>Outer.Inner</c>) is kept as a container too, though nested namespaces remain sibling outline roots.
+    /// Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading <c>global::</c> is
     /// accepted. Symbols in the global namespace never match a named filter. Combined with
     /// <see cref="KindFilter"/> / <see cref="NameFilter"/> / <see cref="AccessibilityFilter"/>, an entry matches
     /// only when it satisfies all of them. Applied before <see cref="MaxDepth"/> and <see cref="MaxResults"/>,

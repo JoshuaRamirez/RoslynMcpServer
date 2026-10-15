@@ -1636,7 +1636,7 @@ public class GetDocumentOutlineOperationTests
     [InlineData("App.Services.Orders", new[] { "App.Services.Orders", "IOrder", "Submit" })]
     [InlineData("App.ServicesExtra", new[] { "App.ServicesExtra", "Extra", "Run" })]
     [InlineData("Outer", new[] { "Outer", "Inner", "Deep" })]
-    [InlineData("Outer.Inner", new[] { "Inner", "Deep" })]
+    [InlineData("Outer.Inner", new[] { "Outer", "Inner", "Deep" })]
     public async Task GetDocumentOutline_NamespaceFilter_MatchesNamespaceItselfAndNestedNamespaces(
         string namespaceFilter, string[] expected)
     {
@@ -1654,6 +1654,116 @@ public class GetDocumentOutlineOperationTests
         Assert.Equal(expected, Flatten(result.Data.Entries).Select(e => e.Name));
         Assert.Equal(expected.Length, result.Data.TotalCount);
         Assert.False(result.Data.Truncated);
+    }
+
+    private const string NestedNamespaceSource = """
+        namespace Outer
+        {
+            public class Sibling { }
+
+            namespace Inner
+            {
+                public class Deep
+                {
+                    public void Run() { }
+                }
+
+                public interface IShape { }
+            }
+        }
+
+        namespace Outer.Inner.Leaf
+        {
+            public class L { }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NamespaceFilter_KeepsSyntacticallyEnclosingNamespaceAsContainer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedNamespaceSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var baseline = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "Outer.Inner"
+        });
+
+        // Unfiltered: Outer and Inner stay sibling roots (unchanged shape).
+        Assert.True(baseline.Success);
+        Assert.NotNull(baseline.Data);
+        Assert.Equal(
+            new[]
+            {
+                ("Outer", "Namespace", 1),
+                ("Sibling", "Class", 2),
+                ("Inner", "Namespace", 1),
+                ("Deep", "Class", 2),
+                ("Run", "Method", 3),
+                ("IShape", "Interface", 2),
+                ("Outer.Inner.Leaf", "Namespace", 1),
+                ("L", "Class", 2)
+            },
+            Flatten(baseline.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+
+        // Outer encloses Inner, so it is kept as a container; Sibling (declared in Outer itself) is dropped.
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var flat = Flatten(result.Data.Entries);
+        Assert.Equal(
+            new[]
+            {
+                ("Outer", "Namespace", 1),
+                ("Inner", "Namespace", 1),
+                ("Deep", "Class", 2),
+                ("Run", "Method", 3),
+                ("IShape", "Interface", 2),
+                ("Outer.Inner.Leaf", "Namespace", 1),
+                ("L", "Class", 2)
+            },
+            flat.Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.Null(result.Data.Entries[0].Children);
+        var original = Flatten(baseline.Data.Entries);
+        Assert.All(flat, e => Assert.Contains(e, original));
+        Assert.Equal(7, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NamespaceFilterWithKindFilter_KeepsEnclosingNamespaceOnlyWhenItContainsAMatch()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedNamespaceSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var interfaces = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "Outer.Inner",
+            KindFilter = "Interface"
+        });
+        var enums = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "Outer.Inner",
+            KindFilter = "Enum"
+        });
+
+        Assert.True(interfaces.Success);
+        Assert.NotNull(interfaces.Data);
+        Assert.Equal(
+            new[] { ("Outer", "Namespace", 1), ("Inner", "Namespace", 1), ("IShape", "Interface", 2) },
+            Flatten(interfaces.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.Equal(3, interfaces.Data.TotalCount);
+
+        Assert.True(enums.Success);
+        Assert.NotNull(enums.Data);
+        Assert.Empty(enums.Data.Entries);
+        Assert.Equal(0, enums.Data.TotalCount);
     }
 
     [SkippableTheory]
