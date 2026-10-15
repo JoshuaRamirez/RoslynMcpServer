@@ -81,8 +81,8 @@ public sealed class GetTypeHierarchyParams
     /// <c>search_symbols</c> / <c>find_implementations</c> <c>namespaceFilter</c>. Compared with
     /// <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
     /// <c>global::</c> is accepted. Combined with <see cref="DerivedFile"/>, <see cref="ProjectPath"/>,
-    /// <see cref="Transitive"/>, <see cref="AccessibilityFilter"/>, and <see cref="KindFilter"/>, and
-    /// applied before <see cref="MaxResults"/> so
+    /// <see cref="Transitive"/>, <see cref="AccessibilityFilter"/>, <see cref="KindFilter"/>, and
+    /// <see cref="NameFilter"/>, and applied before <see cref="MaxResults"/> so
     /// <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered set. Derived types in the
     /// global namespace never match a named filter. Does not filter BaseTypes or Interfaces. Omit,
     /// blank, or a bare <c>global::</c> (the root namespace) reports derived types in all namespaces.
@@ -102,9 +102,9 @@ public sealed class GetTypeHierarchyParams
     /// defaults count: a top-level type with no modifier is <c>internal</c>, a nested type with no
     /// modifier is <c>private</c>; <c>protected internal</c> is not matched by <c>protected</c> or
     /// <c>internal</c>). Combined with <see cref="DerivedFile"/>, <see cref="ProjectPath"/>,
-    /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, and <see cref="KindFilter"/>, and applied before
-    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
-    /// accessibility-filtered set. Does not filter BaseTypes or Interfaces. Omit or blank reports
+    /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, <see cref="KindFilter"/>, and
+    /// <see cref="NameFilter"/>, and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the accessibility-filtered set. Does not filter BaseTypes or Interfaces. Omit or blank reports
     /// derived types of every accessibility.
     /// </summary>
     public string? AccessibilityFilter { get; init; }
@@ -122,12 +122,29 @@ public sealed class GetTypeHierarchyParams
     /// record class). Because C# only lets classes derive from classes and records from records, the
     /// derived types of one target are typically all <c>Class</c> or all <c>Record</c>. Combined with
     /// <see cref="DerivedFile"/>, <see cref="ProjectPath"/>, <see cref="Transitive"/>,
-    /// <see cref="NamespaceFilter"/>, and <see cref="AccessibilityFilter"/> (a derived type must satisfy
-    /// all that are set), and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>, and <see cref="NameFilter"/> (a
+    /// derived type must satisfy all that are set), and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
     /// <c>Truncated</c> reflect the kind-filtered set. A kind that no derived type has returns an empty
     /// success. Does not filter BaseTypes or Interfaces. Omit, empty, or whitespace for no kind filter.
     /// An unrecognized value fails with <c>InvalidSymbolKind</c>, even when <c>direction</c> is
     /// <c>Ancestors</c>.
     /// </summary>
     public string? KindFilter { get; init; }
+
+    /// <summary>
+    /// Optional name substring to restrict reported derived types to: keep derived types whose simple
+    /// <c>Name</c> (the derived type's <c>INamedTypeSymbol.Name</c>, as reported in
+    /// <c>TypeHierarchyEntry.TypeName</c>) contains this value, compared with
+    /// <c>StringComparison.OrdinalIgnoreCase</c> (same matching as <c>get_document_outline</c> /
+    /// <c>get_symbol_info</c> / <c>find_implementations</c> <c>nameFilter</c>), e.g. <c>Admin</c> for the
+    /// <c>AdminController</c> / <c>SuperAdminController</c> subclasses of <c>ControllerBase</c>.
+    /// Surrounding whitespace is trimmed; inner whitespace is not collapsed. Combined with
+    /// <see cref="DerivedFile"/>, <see cref="ProjectPath"/>, <see cref="Transitive"/>,
+    /// <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>, and <see cref="KindFilter"/> (a
+    /// derived type must satisfy all that are set), and applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the name-filtered set. A value no derived type name
+    /// contains returns an empty success. Does not filter BaseTypes or Interfaces. Omit, empty, or
+    /// whitespace for no name filter.
+    /// </summary>
+    public string? NameFilter { get; init; }
 }

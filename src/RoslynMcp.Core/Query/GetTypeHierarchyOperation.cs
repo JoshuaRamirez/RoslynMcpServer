@@ -18,8 +18,9 @@ namespace RoslynMcp.Core.Query;
 /// are searched across the solution (or reported only within one project when
 /// <see cref="GetTypeHierarchyParams.ProjectPath"/> is set, only within one namespace subtree when
 /// <see cref="GetTypeHierarchyParams.NamespaceFilter"/> is set, only with a given declared
-/// accessibility when <see cref="GetTypeHierarchyParams.AccessibilityFilter"/> is set, and only of a
-/// given symbol kind when <see cref="GetTypeHierarchyParams.KindFilter"/> is set).
+/// accessibility when <see cref="GetTypeHierarchyParams.AccessibilityFilter"/> is set, only of a
+/// given symbol kind when <see cref="GetTypeHierarchyParams.KindFilter"/> is set, and only with a
+/// name containing a substring when <see cref="GetTypeHierarchyParams.NameFilter"/> is set).
 /// </summary>
 public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierarchyParams, GetTypeHierarchyResult>
 {
@@ -189,6 +190,12 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
             // rejected in ValidateParams.
             var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
 
+            // Optional nameFilter (same matching as get_document_outline / get_symbol_info /
+            // find_implementations nameFilter): keep only derived types whose simple Name (as reported
+            // in TypeHierarchyEntry.TypeName) contains the trimmed value, ordinal case-insensitive.
+            // Null when omitted / blank (no name filtering).
+            var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
+
             foreach (var d in derived)
             {
                 // Applied before maxResults (and before the location filters below) so TotalCount /
@@ -206,6 +213,11 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
                 // Kind filter runs with the other symbol filters before maxResults so TotalCount /
                 // Truncated reflect the filtered set. BaseTypes and Interfaces are never filtered.
                 if (kindFilter.HasValue && SymbolKindMapper.Map(d) != kindFilter.Value)
+                    continue;
+
+                // Name filter runs with the other symbol filters before maxResults so TotalCount /
+                // Truncated reflect the filtered set. BaseTypes and Interfaces are never filtered.
+                if (nameFilter != null && !d.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 if (!filtered)

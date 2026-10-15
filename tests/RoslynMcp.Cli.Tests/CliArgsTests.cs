@@ -307,6 +307,15 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void GetTypeHierarchy_NameFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-type-hierarchy", "--source-file", "/src/Controller.cs", "--symbol-name", "Controller", "--name-filter", "Admin"]);
+        Assert.Equal("get-type-hierarchy", result.ToolName);
+        Assert.Equal("/src/Controller.cs", result.Options["source-file"]);
+        Assert.Equal("Admin", result.Options["name-filter"]);
+    }
+
+    [Fact]
     public void GetDiagnostics_NamespaceFilterOption_ParsesValue()
     {
         var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Error", "--namespace-filter", "App.Services"]);
