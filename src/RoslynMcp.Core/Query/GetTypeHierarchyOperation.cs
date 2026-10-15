@@ -8,6 +8,7 @@ using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Query;
@@ -16,8 +17,9 @@ namespace RoslynMcp.Core.Query;
 /// Gets the type hierarchy (base types, derived types, interfaces) for a type symbol. Derived types
 /// are searched across the solution (or reported only within one project when
 /// <see cref="GetTypeHierarchyParams.ProjectPath"/> is set, only within one namespace subtree when
-/// <see cref="GetTypeHierarchyParams.NamespaceFilter"/> is set, and only with a given declared
-/// accessibility when <see cref="GetTypeHierarchyParams.AccessibilityFilter"/> is set).
+/// <see cref="GetTypeHierarchyParams.NamespaceFilter"/> is set, only with a given declared
+/// accessibility when <see cref="GetTypeHierarchyParams.AccessibilityFilter"/> is set, and only of a
+/// given symbol kind when <see cref="GetTypeHierarchyParams.KindFilter"/> is set).
 /// </summary>
 public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierarchyParams, GetTypeHierarchyResult>
 {
@@ -71,6 +73,10 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
         ProjectPathFilter.Validate(@params.ProjectPath);
 
         AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+
+        // Same parsing and InvalidSymbolKind error as search_symbols / get_document_outline /
+        // get_symbol_info / find_implementations kindFilter.
+        SymbolKindFilterParser.Parse(@params.KindFilter);
     }
 
     /// <inheritdoc />
@@ -176,6 +182,13 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
             // accessibility filtering). Invalid values already rejected in ValidateParams.
             var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
 
+            // Optional kindFilter (same values / parsing as search_symbols / find_implementations
+            // kindFilter): keep only derived types whose shared SymbolKind classification
+            // (SymbolKindMapper.Map, as find_implementations reports; records are Record, not Class)
+            // equals the filter. Null when omitted / blank (no kind filtering). Invalid values already
+            // rejected in ValidateParams.
+            var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
+
             foreach (var d in derived)
             {
                 // Applied before maxResults (and before the location filters below) so TotalCount /
@@ -188,6 +201,11 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
                 // TotalCount / Truncated reflect the filtered set. Exact DeclaredAccessibility match
                 // (implicit defaults count; protected internal ≠ protected / internal).
                 if (accessibilityFilter.HasValue && d.DeclaredAccessibility != accessibilityFilter.Value)
+                    continue;
+
+                // Kind filter runs with the other symbol filters before maxResults so TotalCount /
+                // Truncated reflect the filtered set. BaseTypes and Interfaces are never filtered.
+                if (kindFilter.HasValue && SymbolKindMapper.Map(d) != kindFilter.Value)
                     continue;
 
                 if (!filtered)
