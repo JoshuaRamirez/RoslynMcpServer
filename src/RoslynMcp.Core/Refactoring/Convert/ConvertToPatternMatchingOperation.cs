@@ -29,42 +29,12 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     /// Validates convert-to-pattern-matching parameters. Internal so tests
     /// can exercise input rules without loading a workspace.
     /// </summary>
-    internal static void Validate(ConvertToPatternMatchingParams @params)
-    {
-        if (@params.AllFiles)
-        {
-            if (@params.Line.HasValue || @params.Column.HasValue)
-            {
-                throw new RefactoringException(
-                    ErrorCodes.MissingRequiredParam,
-                    "allFiles cannot be combined with line or column.");
-            }
-
-            // When processing all files, sourceFile is optional; validate path
-            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
-            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
-
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
-        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
-
-        if (!@params.Line.HasValue)
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "line is required.");
-
-        if (@params.Line.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
-
-        if (@params.Column.HasValue && @params.Column.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-    }
+    internal static void Validate(ConvertToPatternMatchingParams @params) =>
+        LineSelectionParamsHelpers.ValidateAllFilesOrLine(
+            @params.AllFiles,
+            @params.SourceFile,
+            @params.Line,
+            @params.Column);
 
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
