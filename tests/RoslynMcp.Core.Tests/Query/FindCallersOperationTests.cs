@@ -19,7 +19,9 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>search_symbols</c> <c>accessibilityFilter</c>),
 /// and optional <c>nameFilter</c> (restricts by calling symbol simple name; peer of
 /// <c>find_references</c> / <c>get_document_outline</c> / <c>get_symbol_info</c> /
-/// <c>find_implementations</c> / <c>get_type_hierarchy</c> <c>nameFilter</c>).
+/// <c>find_implementations</c> / <c>get_type_hierarchy</c> <c>nameFilter</c>),
+/// and optional <c>kindFilter</c> (restricts by calling symbol kind; peer of
+/// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>search_symbols</c> <c>kindFilter</c>).
 /// </summary>
 public class FindCallersOperationTests
 {
@@ -1470,6 +1472,220 @@ public class FindCallersOperationTests
             SymbolName = "Run",
             NamespaceFilter = namespaceFilter,
             NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    #endregion
+
+    #region KindFilter
+
+    // Calling-symbol KindFilter: Target.Run is called from a field initializer (_seed), a
+    // constructor (.ctor), methods (Handle / Helper), a block-bodied property getter (Total), and an
+    // expression-bodied property (Count). Judged on SymbolKindMapper.Map(CallingSymbol) only.
+    private static readonly Dictionary<string, string> KindSources = new()
+    {
+        ["Target.cs"] = """
+            namespace App;
+            public static class Target
+            {
+                public static int Run() => 0;
+            }
+            """,
+        ["Callers.cs"] = """
+            namespace App.Callers;
+            public class Worker
+            {
+                private int _seed = App.Target.Run();
+                public Worker() { App.Target.Run(); }
+                public void Handle() { App.Target.Run(); }
+                private int Helper() => App.Target.Run();
+                public int Total { get { return App.Target.Run(); } }
+                public int Count => App.Target.Run();
+            }
+            """
+    };
+
+    private static readonly string[] AllKindCallerNames =
+    [
+        ".ctor", "Count", "Handle", "Helper", "Total", "_seed"
+    ];
+
+    [Fact]
+    public void KindFilter_DefaultsToNull()
+    {
+        var @params = new FindCallersParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.KindFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task FindCallers_BlankKindFilter_MatchesOmitted(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run"
+        });
+        var filtered = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            KindFilter = kindFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(filtered.Success);
+        Assert.Equal(AllKindCallerNames, SortedCallerNames(omitted.Data!.Callers));
+        Assert.Equal(AllKindCallerNames, SortedCallerNames(filtered.Data!.Callers));
+        Assert.Equal(AllKindCallerNames.Length, filtered.Data.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Method", new[] { ".ctor", "Handle", "Helper" })]
+    [InlineData("method", new[] { ".ctor", "Handle", "Helper" })]
+    [InlineData("  PROPERTY  ", new[] { "Count", "Total" })]
+    [InlineData("Property", new[] { "Count", "Total" })]
+    [InlineData("Field", new[] { "_seed" })]
+    [InlineData("Constant", new string[] { })]
+    [InlineData("Event", new string[] { })]
+    [InlineData("Struct", new string[] { })]
+    [InlineData("Class", new string[] { })]
+    [InlineData("Local", new string[] { })]
+    [InlineData("Namespace", new string[] { })]
+    public async Task FindCallers_KindFilter_SelectsSitesByCallingSymbolKind(string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success, kindFilter);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Klass")]
+    [InlineData("6")]
+    [InlineData("Method, Property")]
+    public async Task FindCallers_UnknownKindFilter_ThrowsInvalidSymbolKind(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new FindCallersParams
+            {
+                SourceFile = workspace.PathOf("Target.cs"),
+                SymbolName = "Run",
+                KindFilter = kindFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.StartsWith($"Invalid kindFilter '{kindFilter}'. Valid values: ", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_KindFilterWithMaxResults_CapsAfterKindFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            KindFilter = "Method",
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Callers.Count);
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+        Assert.All(result.Data.Callers, c =>
+            Assert.Contains(c.CallerName, new[] { ".ctor", "Handle", "Helper" }));
+    }
+
+    [SkippableTheory]
+    [InlineData("Method", "H", new[] { "Handle", "Helper" })]
+    [InlineData("Property", "Co", new[] { "Count" })]
+    [InlineData("Field", "seed", new[] { "_seed" })]
+    [InlineData("Field", "H", new string[0])]
+    public async Task FindCallers_KindFilterWithNameFilter_AndsTheSiteFilters(
+        string kindFilter, string nameFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            KindFilter = kindFilter,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("private", "Method", new[] { "Helper" })]
+    [InlineData("public", "Method", new[] { ".ctor", "Handle" })]
+    [InlineData("private", "Field", new[] { "_seed" })]
+    [InlineData("public", "Field", new string[0])]
+    [InlineData("public", "Property", new[] { "Count", "Total" })]
+    public async Task FindCallers_KindFilterWithAccessibilityFilter_AndsTheSiteFilters(
+        string accessibilityFilter, string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = accessibilityFilter,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Callers", "Property", new[] { "Count", "Total" })]
+    [InlineData("App.Other", "Method", new string[0])]
+    public async Task FindCallers_KindFilterWithNamespaceFilter_AndsTheSiteFilters(
+        string namespaceFilter, string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter,
+            KindFilter = kindFilter
         });
 
         Assert.True(result.Success);

@@ -77,6 +77,7 @@ public class FindCallersToolTests
         Assert.True(properties.TryGetProperty("namespaceFilter", out _));
         Assert.True(properties.TryGetProperty("accessibilityFilter", out _));
         Assert.True(properties.TryGetProperty("nameFilter", out _));
+        Assert.True(properties.TryGetProperty("kindFilter", out _));
     }
 
     [Fact]
@@ -312,6 +313,62 @@ public class FindCallersToolTests
             ""sourceFile"": ""C:/test/Lib/Target.cs"",
             ""symbolName"": ""Run"",
             ""nameFilter"": 42
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
+
+    [Fact]
+    public void GetDefinition_KindFilter_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+        var kindFilter = properties.GetProperty("kindFilter");
+
+        Assert.Equal("string", kindFilter.GetProperty("type").GetString());
+        var description = kindFilter.GetProperty("description").GetString();
+        Assert.Contains("calling symbol", description);
+        Assert.Contains("case-insensitive", description);
+        Assert.Contains("InvalidSymbolKind", description);
+        Assert.Contains("find_implementations", description);
+        Assert.Contains("before maxResults", description);
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("kindFilter", required);
+        Assert.Contains("kindFilter", _tool.Description);
+        Assert.Contains("kindFilter", properties.GetProperty("accessibilityFilter").GetProperty("description").GetString());
+        Assert.Contains("kindFilter", properties.GetProperty("namespaceFilter").GetProperty("description").GetString());
+        Assert.Contains("kindFilter", properties.GetProperty("nameFilter").GetProperty("description").GetString());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_KindFilterString_ParsesAndReachesWorkspace()
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/Target.cs"",
+            ""symbolName"": ""Run"",
+            ""kindFilter"": ""Property""
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_KindFilterNonString_ReturnsParseError()
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/Target.cs"",
+            ""symbolName"": ""Run"",
+            ""kindFilter"": 7
         }").RootElement;
 
         var result = await _tool.ExecuteAsync(args);
