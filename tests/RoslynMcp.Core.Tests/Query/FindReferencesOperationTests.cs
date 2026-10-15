@@ -14,7 +14,10 @@ namespace RoslynMcp.Core.Tests.Query;
 /// optional <c>projectPath</c> (restricts reported locations to one project; peer of
 /// <c>get_diagnostics</c> / <c>search_symbols</c> <c>projectPath</c>), and optional
 /// <c>accessibilityFilter</c> (restricts by reference-site enclosing symbol DeclaredAccessibility; peer
-/// of <c>find_callers</c> / <c>find_implementations</c> / <c>search_symbols</c> <c>accessibilityFilter</c>).
+/// of <c>find_callers</c> / <c>find_implementations</c> / <c>search_symbols</c> <c>accessibilityFilter</c>),
+/// and optional <c>nameFilter</c> (restricts by reference-site enclosing symbol simple name; peer of
+/// <c>get_document_outline</c> / <c>get_symbol_info</c> / <c>find_implementations</c> /
+/// <c>get_type_hierarchy</c> <c>nameFilter</c>).
 /// </summary>
 public class FindReferencesOperationTests
 {
@@ -1900,6 +1903,386 @@ public class FindReferencesOperationTests
             .ThenBy(l => l.Line)
             .Select(l => $"{l.File}:{l.Line}")
             .ToList();
+
+    #endregion
+
+    #region NameFilter
+
+    // Run is internal on a public type: its definition location is judged by Run itself, while every
+    // usage site is judged by the member enclosing it (lambdas and local functions looked through to
+    // their declaring member, accessors by their own get_X name), never by the target symbol or by the
+    // containing type of the enclosing member (OrderHandler.Audit is an "Audit" site, not a "Handle" one).
+    private static readonly Dictionary<string, string> NameSources = new()
+    {
+        ["Target.cs"] = """
+            namespace App;
+            public class Target
+            {
+                internal void Run() { }
+            }
+            """,
+        ["Handlers.cs"] = """
+            namespace App.Handlers;
+            public class OrderHandler
+            {
+                public void Handle(App.Target t) { t.Run(); }
+                private void Audit(App.Target t) { System.Action a = () => t.Run(); a(); }
+            }
+            public class Reporter
+            {
+                public void HandleReport(App.Target t) { t.Run(); }
+                public int Total { get { new App.Target().Run(); return 0; } }
+            }
+            """,
+        ["Other.cs"] = """
+            namespace App;
+            public class Consumer
+            {
+                public void Go(Target t) { t.Run(); }
+                private void Helper(Target t) { void Inner() => t.Run(); Inner(); }
+            }
+            """
+    };
+
+    [Fact]
+    public void NameFilter_DefaultsToNull()
+    {
+        var @params = new FindReferencesParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.NameFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task FindReferences_BlankNameFilter_MatchesOmitted(string nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run"
+        });
+        var filtered = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = nameFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(filtered.Success);
+        Assert.Equal(7, omitted.Data!.TotalCount);
+        Assert.Equal(7, filtered.Data!.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+        Assert.Equal(SortedLocations(omitted.Data.References), SortedLocations(filtered.Data.References));
+    }
+
+    [SkippableTheory]
+    [InlineData("Handle", new[] { "Handlers.cs:4", "Handlers.cs:9" })]
+    [InlineData("handle", new[] { "Handlers.cs:4", "Handlers.cs:9" })]
+    [InlineData("  HANDLE  ", new[] { "Handlers.cs:4", "Handlers.cs:9" })]
+    [InlineData("Report", new[] { "Handlers.cs:9" })]
+    [InlineData("Audit", new[] { "Handlers.cs:5" })]
+    [InlineData("Helper", new[] { "Other.cs:5" })]
+    [InlineData("Total", new[] { "Handlers.cs:10" })]
+    [InlineData("get_", new[] { "Handlers.cs:10" })]
+    [InlineData("Go", new[] { "Other.cs:4" })]
+    [InlineData("Run", new[] { "Target.cs:4" })]
+    [InlineData("H", new[] { "Handlers.cs:4", "Handlers.cs:9", "Other.cs:5" })]
+    public async Task FindReferences_NameFilter_SelectsSitesByEnclosingSymbolName(string nameFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success, nameFilter);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Inner")]
+    [InlineData("OrderHandler")]
+    [InlineData("Target")]
+    [InlineData("Han*")]
+    [InlineData("Hand le")]
+    [InlineData("NoSuchName")]
+    public async Task FindReferences_NameFilterNoMatch_ReturnsEmptySuccess(string nameFilter)
+    {
+        // Local functions are looked through to their declaring member (Inner -> Helper), usages are
+        // judged by their enclosing member rather than its containing type (OrderHandler) or the target
+        // symbol's type (Target), and the value is a literal substring (no glob, inner whitespace kept).
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success, nameFilter);
+        Assert.Empty(result.Data!.References);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NameFilter_JudgesDefinitionByDeclaredSymbol()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var withDeclaration = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = "run"
+        });
+        var usagesOnly = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = "run",
+            IncludeDeclaration = false
+        });
+
+        Assert.True(withDeclaration.Success);
+        var definition = Assert.Single(withDeclaration.Data!.References);
+        Assert.True(definition.IsDefinition);
+        Assert.True(SamePath(definition.File, workspace.PathOf("Target.cs")));
+        Assert.Equal(4, definition.Line);
+
+        // No usage site is enclosed by a member whose name contains "run".
+        Assert.True(usagesOnly.Success);
+        Assert.Empty(usagesOnly.Data!.References);
+        Assert.Equal(0, usagesOnly.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NameFilterWithMaxResults_CapsAfterNameFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = "H",
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.References.Count);
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+        Assert.All(result.Data.References, r => Assert.Contains(
+            $"{Path.GetFileName(r.File)}:{r.Line}", new[] { "Handlers.cs:4", "Handlers.cs:9", "Other.cs:5" }));
+    }
+
+    [SkippableTheory]
+    [InlineData("public", "Handle", new[] { "Handlers.cs:4", "Handlers.cs:9" })]
+    [InlineData("private", "Handle", new string[0])]
+    [InlineData("private", "H", new[] { "Other.cs:5" })]
+    [InlineData("public", "Total", new[] { "Handlers.cs:10" })]
+    [InlineData("internal", "Run", new[] { "Target.cs:4" })]
+    [InlineData("public", "Run", new string[0])]
+    public async Task FindReferences_NameFilterWithAccessibilityFilter_AndsTheSiteFilters(
+        string accessibilityFilter, string nameFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = accessibilityFilter,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Handlers", "H", new[] { "Handlers.cs:4", "Handlers.cs:9" })]
+    [InlineData("App", "H", new[] { "Handlers.cs:4", "Handlers.cs:9", "Other.cs:5" })]
+    [InlineData("App.Handlers", "Helper", new string[0])]
+    public async Task FindReferences_NameFilterWithNamespaceFilter_AndsTheSiteFilters(
+        string namespaceFilter, string nameFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NameFilterWithReferenceFile_AndsTheScopes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            ReferenceFile = workspace.PathOf("Other.cs"),
+            NameFilter = "H"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Other.cs:5" }, Sites(result.Data!.References));
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("Factory", new[] { "Consumer.cs:5" })]
+    [InlineData("holder", new[] { "Consumer.cs:6" })]
+    [InlineData("Widget", new string[0])]
+    public async Task FindReferences_NameFilter_FieldTypeAndBaseListSitesUseTheirEnclosingSymbol(
+        string nameFilter, string[] expected)
+    {
+        // A field initializer is enclosed by the field (a lambda in it looked through to the field); a
+        // field declaration's type, with no initializer, by the containing type; and a top-level
+        // type's base list lies outside the type's body, so it is a namespace-level site that never
+        // matches a name filter (not even the derived type's own name).
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                namespace App;
+                public class Target { }
+                """,
+            ["Consumer.cs"] = """
+                namespace App;
+                public class DerivedWidget : Target { }
+                public class Holder
+                {
+                    private static readonly System.Func<object> TargetFactory = () => typeof(Target);
+                    public Target? Plain;
+                }
+                """
+        });
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var unfiltered = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false
+        });
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(unfiltered.Success);
+        Assert.Equal(new[] { "Consumer.cs:2", "Consumer.cs:5", "Consumer.cs:6" }, Sites(unfiltered.Data!.References));
+        Assert.True(result.Success, nameFilter);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NameFilter_NamespaceLevelSitesNeverMatch()
+    {
+        // The InnerAlias using directive is enclosed by namespace App.Consumers, whose name contains
+        // "Consumer"; namespace-level sites never match a name filter (same as accessibilityFilter).
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                namespace App;
+                public class Target { }
+                """,
+            ["Consumer.cs"] = """
+                using GlobalAlias = App.Target;
+                namespace App.Consumers
+                {
+                    using InnerAlias = App.Target;
+                    public class Consumer
+                    {
+                        public App.Target ConsumerMake() => null!;
+                    }
+                }
+                """
+        });
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false,
+            NameFilter = "Consumer"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Consumer.cs:7" }, Sites(result.Data!.References));
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NameFilter_TopLevelStatementSitesNeverMatch()
+    {
+        // Top-level statements are enclosed by the synthesized <Main>$ entry point, which resolves to
+        // the global namespace: a namespace-level site, so even "Main" does not match.
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                public static class Target
+                {
+                    public static void Run() { }
+                }
+                """,
+            ["Program.cs"] = """
+                Target.Run();
+                void Local() { Target.Run(); }
+                """,
+            ["Host.cs"] = """
+                public class Host
+                {
+                    private void MainLoop() { Target.Run(); }
+                }
+                """
+        }, "Target.cs");
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NameFilter = "Main"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Host.cs:3" }, Sites(result.Data!.References));
+    }
 
     #endregion
 

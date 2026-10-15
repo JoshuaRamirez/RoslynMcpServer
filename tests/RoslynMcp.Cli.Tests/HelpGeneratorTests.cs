@@ -2159,6 +2159,25 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_FindReferences_ShowsNameFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("find-references")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("nameFilter", tool.Description, StringComparison.Ordinal);
+        Assert.Contains("case-insensitive substring", tool.Description, StringComparison.Ordinal);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        Assert.DoesNotContain("--name-filter", help[requiredIdx..optionalIdx]);
+        Assert.Contains("--name-filter", help[optionalIdx..]);
+    }
+
+    [Fact]
     public void GenerateToolHelp_FindCallers_ShowsNamespaceFilter()
     {
         var registry = ToolRegistry.BuildDefault();
