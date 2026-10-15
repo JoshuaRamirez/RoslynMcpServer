@@ -18,7 +18,8 @@ namespace RoslynMcp.Core.Query;
 /// only direct implementers of an interface when <see cref="FindImplementationsParams.Transitive"/>
 /// is false; only implementations in one namespace subtree when
 /// <see cref="FindImplementationsParams.NamespaceFilter"/> is set; only implementations with a given
-/// declared accessibility when <see cref="FindImplementationsParams.AccessibilityFilter"/> is set).
+/// declared accessibility when <see cref="FindImplementationsParams.AccessibilityFilter"/> is set;
+/// only implementations of a given kind when <see cref="FindImplementationsParams.KindFilter"/> is set).
 /// Delegates to Roslyn's SymbolFinder.FindImplementationsAsync.
 /// </summary>
 public sealed class FindImplementationsOperation : QueryOperationBase<FindImplementationsParams, FindImplementationsResult>
@@ -66,6 +67,10 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
         ProjectPathFilter.Validate(@params.ProjectPath);
 
         AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+
+        // Same parsing and InvalidSymbolKind error as search_symbols / get_document_outline /
+        // get_symbol_info kindFilter.
+        SymbolKindFilterParser.Parse(@params.KindFilter);
     }
 
     /// <inheritdoc />
@@ -149,6 +154,12 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
         // omitted / blank (no accessibility filtering). Invalid values already rejected in ValidateParams.
         var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
 
+        // Optional kindFilter (same values / parsing as search_symbols / get_symbol_info kindFilter):
+        // keep only implementations whose reported Kind (SymbolKindMapper.Map, as in ImplementationInfo)
+        // equals the filter. Null when omitted / blank (no kind filtering). Invalid values already
+        // rejected in ValidateParams.
+        var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
+
         foreach (var impl in implSymbols)
         {
             // Applied before maxResults (and before the location filters below) so TotalCount /
@@ -160,6 +171,11 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
             // TotalCount / Truncated reflect the filtered set. Exact DeclaredAccessibility match
             // (implicit defaults count; protected internal ≠ protected / internal).
             if (accessibilityFilter.HasValue && impl.DeclaredAccessibility != accessibilityFilter.Value)
+                continue;
+
+            // Kind filter runs with the other symbol filters before maxResults so TotalCount /
+            // Truncated reflect the filtered set. Matches the Kind reported for the implementation.
+            if (kindFilter.HasValue && SymbolKindMapper.Map(impl) != kindFilter.Value)
                 continue;
 
             Location? location;

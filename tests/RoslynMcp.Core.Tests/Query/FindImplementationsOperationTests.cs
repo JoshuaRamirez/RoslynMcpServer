@@ -18,7 +18,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// (restricts reported implementations to one namespace subtree; peer of <c>search_symbols</c>
 /// <c>namespaceFilter</c>), and optional <c>accessibilityFilter</c> (restricts reported
 /// implementations by declared accessibility; peer of <c>search_symbols</c>
-/// <c>accessibilityFilter</c>).
+/// <c>accessibilityFilter</c>), and optional <c>kindFilter</c> (restricts reported implementations
+/// by reported kind; peer of <c>search_symbols</c> / <c>get_symbol_info</c> <c>kindFilter</c>).
 /// </summary>
 public class FindImplementationsOperationTests
 {
@@ -1679,6 +1680,315 @@ public class FindImplementationsOperationTests
         Assert.Empty(result.Data!.Implementations);
         Assert.Equal(0, result.Data.TotalCount);
         Assert.False(result.Data.Truncated);
+    }
+
+    #endregion
+
+    #region kindFilter
+
+    // KindSources: IShape implemented by classes (Circle, Square, BigCircle inheriting from Circle),
+    // structs (Point, Pixel), and a record (Tri), spread over namespaces / files / accessibilities so
+    // kindFilter can be combined with the other filters. Draw (method) and Sides (property) are the
+    // member targets.
+    private static readonly Dictionary<string, string> KindSources = new()
+    {
+        ["Contracts.cs"] = """
+            namespace App.Contracts
+            {
+                public interface IShape { void Draw(); int Sides { get; } }
+            }
+            """,
+        ["Classes.cs"] = """
+            namespace App.Shapes
+            {
+                public class Circle : App.Contracts.IShape { public void Draw() { } public int Sides => 0; }
+                internal class Square : App.Contracts.IShape { public void Draw() { } public int Sides => 4; }
+                public class BigCircle : Circle { }
+            }
+            """,
+        ["Structs.cs"] = """
+            namespace App.Shapes.Values
+            {
+                public struct Point : App.Contracts.IShape { public void Draw() { } public int Sides => 0; }
+                internal struct Pixel : App.Contracts.IShape { public void Draw() { } public int Sides => 4; }
+            }
+            """,
+        ["Records.cs"] = """
+            namespace App.Records
+            {
+                public record Tri : App.Contracts.IShape { public void Draw() { } public int Sides => 3; }
+            }
+            """
+    };
+
+    private static readonly string[] AllKindImplementations =
+        ["BigCircle", "Circle", "Pixel", "Point", "Square", "Tri"];
+
+    [Fact]
+    public void KindFilter_DefaultsToNull()
+    {
+        var @params = new FindImplementationsParams { SourceFile = "/tmp/x.cs", SymbolName = "IFoo" };
+        Assert.Null(@params.KindFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task FindImplementations_OmittedOrBlankKindFilter_ReturnsEveryKind(string? kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(AllKindImplementations, SortedNames(result.Data!.Implementations));
+        Assert.Equal(AllKindImplementations.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Class", new[] { "BigCircle", "Circle", "Square" })]
+    [InlineData("Struct", new[] { "Pixel", "Point" })]
+    [InlineData("Record", new[] { "Tri" })]
+    [InlineData("Interface", new string[0])]
+    [InlineData("Method", new string[0])]
+    [InlineData("Local", new string[0])]
+    [InlineData("Namespace", new string[0])]
+    public async Task FindImplementations_KindFilter_KeepsOnlyImplementationsOfThatKind(
+        string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success, kindFilter);
+        Assert.Equal(expected, SortedNames(result.Data!.Implementations));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+        Assert.All(result.Data.Implementations, i => Assert.Equal(kindFilter, i.Kind.ToString()));
+    }
+
+    [SkippableTheory]
+    [InlineData("STRUCT", "Struct")]
+    [InlineData("  record  ", "Record")]
+    [InlineData("class", "Class")]
+    public async Task FindImplementations_KindFilter_IsCaseInsensitiveAndTrimmed(string kindFilter, string canonical)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = kindFilter
+        });
+        var expected = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = canonical
+        });
+
+        Assert.True(filtered.Success);
+        Assert.True(expected.Success);
+        Assert.NotEmpty(expected.Data!.Implementations);
+        Assert.Equal(SortedNames(expected.Data.Implementations), SortedNames(filtered.Data!.Implementations));
+    }
+
+    [SkippableTheory]
+    [InlineData("Klass")]
+    [InlineData("6")]
+    [InlineData("Class, Struct")]
+    public async Task FindImplementations_UnknownKindFilter_ThrowsInvalidSymbolKind(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new FindImplementationsParams
+            {
+                SourceFile = workspace.PathOf("Contracts.cs"),
+                SymbolName = "IShape",
+                KindFilter = kindFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.StartsWith($"Invalid kindFilter '{kindFilter}'. Valid values: ", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_KindFilter_MemberTargets_MatchImplementingMemberKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        async Task<FindImplementationsResult> Run(string symbolName, string? kindFilter)
+        {
+            var result = await operation.ExecuteAsync(new FindImplementationsParams
+            {
+                SourceFile = workspace.PathOf("Contracts.cs"),
+                SymbolName = symbolName,
+                KindFilter = kindFilter
+            });
+            Assert.True(result.Success, $"{symbolName}/{kindFilter}");
+            return result.Data!;
+        }
+
+        var drawAll = await Run("Draw", null);
+        var drawMethods = await Run("Draw", "method");
+        var drawProperties = await Run("Draw", "Property");
+        var sidesProperties = await Run("Sides", "Property");
+        var sidesMethods = await Run("Sides", "Method");
+
+        // Every type declaring Draw (BigCircle inherits Circle.Draw).
+        Assert.Equal(5, drawAll.TotalCount);
+        Assert.Equal(5, drawMethods.TotalCount);
+        Assert.All(drawMethods.Implementations, i => Assert.Equal("Draw", i.Name));
+        Assert.Empty(drawProperties.Implementations);
+        Assert.Equal(0, drawProperties.TotalCount);
+
+        Assert.Equal(5, sidesProperties.TotalCount);
+        Assert.All(sidesProperties.Implementations, i => Assert.Equal("Sides", i.Name));
+        Assert.Empty(sidesMethods.Implementations);
+        Assert.Equal(0, sidesMethods.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_KindFilterCombinedWithNamespaceFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var structsUnderShapes = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = "Struct",
+            NamespaceFilter = "App.Shapes"
+        });
+        var recordsUnderShapes = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = "Record",
+            NamespaceFilter = "App.Shapes"
+        });
+
+        Assert.True(structsUnderShapes.Success);
+        // Structs live in App.Shapes.Values, nested under App.Shapes.
+        Assert.Equal(new[] { "Pixel", "Point" }, SortedNames(structsUnderShapes.Data!.Implementations));
+        Assert.Equal(2, structsUnderShapes.Data.TotalCount);
+
+        Assert.True(recordsUnderShapes.Success);
+        Assert.Empty(recordsUnderShapes.Data!.Implementations);
+        Assert.Equal(0, recordsUnderShapes.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_KindFilterCombinedWithAccessibilityFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = "Class",
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Square" }, SortedNames(result.Data!.Implementations));
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_KindFilterCombinedWithTransitiveFalse_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = "Class",
+            Transitive = false
+        });
+
+        Assert.True(result.Success);
+        // BigCircle only inherits the implementation from Circle, so the direct class set drops it.
+        Assert.Equal(new[] { "Circle", "Square" }, SortedNames(result.Data!.Implementations));
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_KindFilterCombinedWithImplementationFile_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var classesInStructsFile = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = "Class",
+            ImplementationFile = workspace.PathOf("Structs.cs")
+        });
+        var structsInStructsFile = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = "Struct",
+            ImplementationFile = workspace.PathOf("Structs.cs")
+        });
+
+        Assert.True(classesInStructsFile.Success);
+        Assert.Empty(classesInStructsFile.Data!.Implementations);
+        Assert.Equal(0, classesInStructsFile.Data.TotalCount);
+
+        Assert.True(structsInStructsFile.Success);
+        Assert.Equal(new[] { "Pixel", "Point" }, SortedNames(structsInStructsFile.Data!.Implementations));
+        Assert.Equal(2, structsInStructsFile.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_KindFilterThenMaxResults_TruncatesFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            KindFilter = "Class",
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Implementations.Count);
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+        Assert.All(result.Data.Implementations, i =>
+            Assert.Contains(i.Name, new[] { "BigCircle", "Circle", "Square" }));
     }
 
     #endregion
