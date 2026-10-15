@@ -19,7 +19,9 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <c>namespaceFilter</c>), and optional <c>accessibilityFilter</c> (restricts reported
 /// implementations by declared accessibility; peer of <c>search_symbols</c>
 /// <c>accessibilityFilter</c>), and optional <c>kindFilter</c> (restricts reported implementations
-/// by reported kind; peer of <c>search_symbols</c> / <c>get_symbol_info</c> <c>kindFilter</c>).
+/// by reported kind; peer of <c>search_symbols</c> / <c>get_symbol_info</c> <c>kindFilter</c>), and
+/// optional <c>nameFilter</c> (restricts reported implementations by name substring; peer of
+/// <c>get_document_outline</c> / <c>get_symbol_info</c> <c>nameFilter</c>).
 /// </summary>
 public class FindImplementationsOperationTests
 {
@@ -1989,6 +1991,355 @@ public class FindImplementationsOperationTests
         Assert.True(result.Data.Truncated);
         Assert.All(result.Data.Implementations, i =>
             Assert.Contains(i.Name, new[] { "BigCircle", "Circle", "Square" }));
+    }
+
+    #endregion
+
+    #region nameFilter
+
+    // NameSources: IRepository implemented by Sql* classes (one internal, one inheriting the
+    // implementation), a Memory* class, a struct whose name contains "Sql" in the middle, and a class
+    // with explicit interface implementations, spread over namespaces / files / accessibilities / kinds
+    // so nameFilter can be combined with the other filters. Save (method) and Count (property) are the
+    // member targets.
+    private static readonly Dictionary<string, string> NameSources = new()
+    {
+        ["Contracts.cs"] = """
+            namespace App.Data
+            {
+                public interface IRepository { void Save(); int Count { get; } }
+            }
+            """,
+        ["Sql.cs"] = """
+            namespace App.Data.Sql
+            {
+                public class SqlOrderRepository : App.Data.IRepository { public void Save() { } public int Count => 0; }
+                internal class SqlUserRepository : App.Data.IRepository { public void Save() { } public int Count => 1; }
+                public class CachedSqlOrderRepository : SqlOrderRepository { }
+            }
+            """,
+        ["Memory.cs"] = """
+            namespace App.Data.Memory
+            {
+                public class MemoryOrderRepository : App.Data.IRepository { public void Save() { } public int Count => 2; }
+                public struct OrderSqlSnapshot : App.Data.IRepository { public void Save() { } public int Count => 3; }
+            }
+            """,
+        ["Explicit.cs"] = """
+            namespace App.Data.Explicit
+            {
+                public class ExplicitRepository : App.Data.IRepository
+                {
+                    void App.Data.IRepository.Save() { }
+                    int App.Data.IRepository.Count => 4;
+                }
+            }
+            """
+    };
+
+    private static readonly string[] AllNameImplementations =
+    [
+        "CachedSqlOrderRepository", "ExplicitRepository", "MemoryOrderRepository",
+        "OrderSqlSnapshot", "SqlOrderRepository", "SqlUserRepository"
+    ];
+
+    private static async Task<FindImplementationsResult> RunNameFilterAsync(
+        TempWorkspace workspace, FindImplementationsParams @params)
+    {
+        var operation = new FindImplementationsOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(@params);
+        Assert.True(result.Success, $"{@params.SymbolName}/{@params.NameFilter}");
+        return result.Data!;
+    }
+
+    [Fact]
+    public void NameFilter_DefaultsToNull()
+    {
+        var @params = new FindImplementationsParams { SourceFile = "/tmp/x.cs", SymbolName = "IFoo" };
+        Assert.Null(@params.NameFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t")]
+    public async Task FindImplementations_OmittedOrBlankNameFilter_ReturnsEveryImplementation(string? nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var data = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = nameFilter
+        });
+
+        Assert.Equal(AllNameImplementations, SortedNames(data.Implementations));
+        Assert.Equal(AllNameImplementations.Length, data.TotalCount);
+        Assert.False(data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Sql", new[] { "CachedSqlOrderRepository", "OrderSqlSnapshot", "SqlOrderRepository", "SqlUserRepository" })]
+    [InlineData("Order", new[] { "CachedSqlOrderRepository", "MemoryOrderRepository", "OrderSqlSnapshot", "SqlOrderRepository" })]
+    [InlineData("Repository", new[] { "CachedSqlOrderRepository", "ExplicitRepository", "MemoryOrderRepository", "SqlOrderRepository", "SqlUserRepository" })]
+    [InlineData("SqlUserRepository", new[] { "SqlUserRepository" })]
+    [InlineData("Snapshot", new[] { "OrderSqlSnapshot" })]
+    [InlineData("Postgres", new string[0])]
+    [InlineData("IRepository", new string[0])]
+    public async Task FindImplementations_NameFilter_KeepsOnlyImplementationsWhoseNameContainsIt(
+        string nameFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var data = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = nameFilter
+        });
+
+        Assert.Equal(expected, SortedNames(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+        Assert.False(data.Truncated);
+        Assert.All(data.Implementations, i => Assert.Contains(nameFilter, i.Name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [SkippableTheory]
+    [InlineData("SQL")]
+    [InlineData("sql")]
+    [InlineData("  sQl  ")]
+    [InlineData("\tSql\n")]
+    public async Task FindImplementations_NameFilter_IsCaseInsensitiveAndTrimmed(string nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var data = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = nameFilter
+        });
+
+        Assert.Equal(
+            new[] { "CachedSqlOrderRepository", "OrderSqlSnapshot", "SqlOrderRepository", "SqlUserRepository" },
+            SortedNames(data.Implementations));
+        Assert.Equal(4, data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NameFilter_InnerWhitespaceIsNotCollapsed()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var data = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "Sql Order"
+        });
+
+        Assert.Empty(data.Implementations);
+        Assert.Equal(0, data.TotalCount);
+        Assert.False(data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NameFilter_MemberTargets_MatchImplementingMemberName()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        Task<FindImplementationsResult> Run(string symbolName, string? nameFilter) =>
+            RunNameFilterAsync(workspace, new FindImplementationsParams
+            {
+                SourceFile = workspace.PathOf("Contracts.cs"),
+                SymbolName = symbolName,
+                NameFilter = nameFilter
+            });
+
+        var saveAll = await Run("Save", null);
+        var saveBySave = await Run("Save", "sav");
+        var saveByInterface = await Run("Save", "IRepository");
+        var saveByCount = await Run("Save", "Count");
+        var countByCount = await Run("Count", "COUNT");
+
+        // Every type declaring Save (CachedSqlOrderRepository inherits SqlOrderRepository.Save),
+        // including the explicit implementation.
+        Assert.Equal(5, saveAll.TotalCount);
+        Assert.Equal(5, saveBySave.TotalCount);
+        Assert.Equal(SortedNames(saveAll.Implementations), SortedNames(saveBySave.Implementations));
+
+        // An explicit interface implementation reports Roslyn's qualified metadata name, which is what
+        // nameFilter matches against.
+        var explicitSave = Assert.Single(saveByInterface.Implementations);
+        Assert.Equal("App.Data.IRepository.Save", explicitSave.Name);
+        Assert.Equal(1, saveByInterface.TotalCount);
+
+        Assert.Empty(saveByCount.Implementations);
+        Assert.Equal(0, saveByCount.TotalCount);
+
+        Assert.Equal(5, countByCount.TotalCount);
+        Assert.All(countByCount.Implementations, i => Assert.EndsWith("Count", i.Name, StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NameFilterCombinedWithKindFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var sqlStructs = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "Sql",
+            KindFilter = "Struct"
+        });
+        var sqlClasses = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "Sql",
+            KindFilter = "Class"
+        });
+
+        Assert.Equal(new[] { "OrderSqlSnapshot" }, SortedNames(sqlStructs.Implementations));
+        Assert.Equal(1, sqlStructs.TotalCount);
+        Assert.Equal(
+            new[] { "CachedSqlOrderRepository", "SqlOrderRepository", "SqlUserRepository" },
+            SortedNames(sqlClasses.Implementations));
+        Assert.Equal(3, sqlClasses.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NameFilterCombinedWithNamespaceFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var sqlInMemory = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "Sql",
+            NamespaceFilter = "App.Data.Memory"
+        });
+        var explicitInSql = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "Explicit",
+            NamespaceFilter = "App.Data.Sql"
+        });
+
+        Assert.Equal(new[] { "OrderSqlSnapshot" }, SortedNames(sqlInMemory.Implementations));
+        Assert.Equal(1, sqlInMemory.TotalCount);
+        Assert.Empty(explicitInSql.Implementations);
+        Assert.Equal(0, explicitInSql.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NameFilterCombinedWithAccessibilityFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var data = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "Sql",
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.Equal(new[] { "SqlUserRepository" }, SortedNames(data.Implementations));
+        Assert.Equal(1, data.TotalCount);
+        Assert.False(data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NameFilterCombinedWithTransitiveFalse_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var data = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "Sql",
+            Transitive = false
+        });
+
+        // CachedSqlOrderRepository only inherits the implementation, so the direct set drops it.
+        Assert.Equal(
+            new[] { "OrderSqlSnapshot", "SqlOrderRepository", "SqlUserRepository" },
+            SortedNames(data.Implementations));
+        Assert.Equal(3, data.TotalCount);
+        Assert.False(data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NameFilterCombinedWithImplementationFile_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var ordersInSqlFile = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "order",
+            ImplementationFile = workspace.PathOf("Sql.cs")
+        });
+        var memoryInSqlFile = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "Memory",
+            ImplementationFile = workspace.PathOf("Sql.cs")
+        });
+
+        Assert.Equal(
+            new[] { "CachedSqlOrderRepository", "SqlOrderRepository" },
+            SortedNames(ordersInSqlFile.Implementations));
+        Assert.Equal(2, ordersInSqlFile.TotalCount);
+        Assert.Empty(memoryInSqlFile.Implementations);
+        Assert.Equal(0, memoryInSqlFile.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NameFilterThenMaxResults_TruncatesFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var data = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "Sql",
+            MaxResults = 2
+        });
+
+        Assert.Equal(2, data.Implementations.Count);
+        Assert.Equal(4, data.TotalCount);
+        Assert.True(data.Truncated);
+        Assert.All(data.Implementations, i =>
+            Assert.Contains(i.Name, new[] { "CachedSqlOrderRepository", "OrderSqlSnapshot", "SqlOrderRepository", "SqlUserRepository" }));
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_NameFilterSingleMatchWithinMaxResults_IsNotTruncated()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSources);
+
+        var data = await RunNameFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IRepository",
+            NameFilter = "Snapshot",
+            MaxResults = 1
+        });
+
+        Assert.Equal(new[] { "OrderSqlSnapshot" }, SortedNames(data.Implementations));
+        Assert.Equal(1, data.TotalCount);
+        Assert.False(data.Truncated);
     }
 
     #endregion

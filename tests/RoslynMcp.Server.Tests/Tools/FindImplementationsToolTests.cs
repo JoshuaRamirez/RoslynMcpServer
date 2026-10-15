@@ -427,6 +427,56 @@ public class FindImplementationsToolTests
         Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
     }
 
+    [Fact]
+    public void GetDefinition_NameFilter_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var nameFilter = doc.RootElement.GetProperty("properties").GetProperty("nameFilter");
+
+        Assert.Equal("string", nameFilter.GetProperty("type").GetString());
+        var description = nameFilter.GetProperty("description").GetString();
+        Assert.Contains("case-insensitive", description);
+        Assert.Contains("get_document_outline", description);
+        Assert.Contains("before maxResults", description);
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("nameFilter", required);
+        Assert.Contains("nameFilter", _tool.Description);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NameFilterString_ParsesAndReachesWorkspace()
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/IRepository.cs"",
+            ""symbolName"": ""IRepository"",
+            ""nameFilter"": ""Sql""
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NameFilterNonString_ReturnsParseError()
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/IRepository.cs"",
+            ""symbolName"": ""IRepository"",
+            ""nameFilter"": 1
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
     #endregion
 
     #region Helper Methods
