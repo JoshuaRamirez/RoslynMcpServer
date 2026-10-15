@@ -2103,6 +2103,24 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_FindReferences_ShowsAccessibilityFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("find-references")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("accessibilityFilter", tool.Description, StringComparison.Ordinal);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        Assert.DoesNotContain("--accessibility-filter", help[requiredIdx..optionalIdx]);
+        Assert.Contains("--accessibility-filter", help[optionalIdx..]);
+    }
+
+    [Fact]
     public void GenerateToolHelp_FindCallers_ShowsNamespaceFilter()
     {
         var registry = ToolRegistry.BuildDefault();
@@ -2118,6 +2136,24 @@ public class HelpGeneratorTests
 
         Assert.DoesNotContain("--namespace-filter", help[requiredIdx..optionalIdx]);
         Assert.Contains("--namespace-filter", help[optionalIdx..]);
+    }
+
+    [Fact]
+    public void GenerateToolHelp_FindCallers_ShowsAccessibilityFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("find-callers")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("accessibilityFilter", tool.Description, StringComparison.Ordinal);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        Assert.DoesNotContain("--accessibility-filter", help[requiredIdx..optionalIdx]);
+        Assert.Contains("--accessibility-filter", help[optionalIdx..]);
     }
 
     [Fact]
@@ -2222,6 +2258,25 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GetTypeHierarchy_ShowsAccessibilityFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-type-hierarchy")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("accessibilityFilter (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("declared accessibility", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        Assert.DoesNotContain("--accessibility-filter", help[requiredIdx..optionalIdx]);
+        Assert.Contains("--accessibility-filter", help[optionalIdx..]);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GetDiagnostics_ShowsExcludeDiagnosticIds()
     {
         var registry = ToolRegistry.BuildDefault();
@@ -2279,6 +2334,27 @@ public class HelpGeneratorTests
 
         Assert.Contains("--namespace-filter", help[optionalIdx..]);
     }
+
+
+    [Fact]
+    public void GenerateToolHelp_GetDiagnostics_ShowsAccessibilityFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("accessibilityFilter", tool.Description, StringComparison.Ordinal);
+        Assert.Contains("DeclaredAccessibility", tool.Description, StringComparison.Ordinal);
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        if (requiredIdx >= 0)
+            Assert.DoesNotContain("--accessibility-filter", help[requiredIdx..optionalIdx]);
+
+        Assert.Contains("--accessibility-filter", help[optionalIdx..]);
+    }
+
 
     [Fact]
     public void GenerateToolHelp_GetSymbolInfo_ShowsMaxResults()
@@ -2560,5 +2636,25 @@ public class HelpGeneratorTests
         Assert.DoesNotContain("--accessibility-filter", requiredSection);
         Assert.Contains("--accessibility-filter", optionalSection);
         Assert.Contains("--name-filter", optionalSection);
+    }
+
+    [Fact]
+    public void GenerateToolHelp_GetDocumentOutline_ShowsNamespaceFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-document-outline")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("namespaceFilter (optional)", tool.Description, StringComparison.Ordinal);
+        Assert.Contains("namespace entries match on the namespace itself", tool.Description, StringComparison.Ordinal);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        Assert.DoesNotContain("--namespace-filter", help[requiredIdx..optionalIdx]);
+        Assert.Contains("--namespace-filter", help[optionalIdx..]);
+        Assert.Contains("--accessibility-filter", help[optionalIdx..]);
     }
 }

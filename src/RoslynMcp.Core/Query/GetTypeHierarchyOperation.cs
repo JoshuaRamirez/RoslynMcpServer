@@ -15,8 +15,9 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Gets the type hierarchy (base types, derived types, interfaces) for a type symbol. Derived types
 /// are searched across the solution (or reported only within one project when
-/// <see cref="GetTypeHierarchyParams.ProjectPath"/> is set, and only within one namespace subtree when
-/// <see cref="GetTypeHierarchyParams.NamespaceFilter"/> is set).
+/// <see cref="GetTypeHierarchyParams.ProjectPath"/> is set, only within one namespace subtree when
+/// <see cref="GetTypeHierarchyParams.NamespaceFilter"/> is set, and only with a given declared
+/// accessibility when <see cref="GetTypeHierarchyParams.AccessibilityFilter"/> is set).
 /// </summary>
 public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierarchyParams, GetTypeHierarchyResult>
 {
@@ -68,6 +69,8 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
         }
 
         ProjectPathFilter.Validate(@params.ProjectPath);
+
+        AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
     }
 
     /// <inheritdoc />
@@ -167,12 +170,24 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
             // global:: (no namespace filtering).
             var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
 
+            // Optional accessibilityFilter (same values / parsing as search_symbols /
+            // find_implementations accessibilityFilter): keep only derived types whose
+            // DeclaredAccessibility equals the filter exactly. Null when omitted / blank (no
+            // accessibility filtering). Invalid values already rejected in ValidateParams.
+            var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+
             foreach (var d in derived)
             {
                 // Applied before maxResults (and before the location filters below) so TotalCount /
                 // Truncated reflect the namespace-filtered set. BaseTypes and Interfaces are never
                 // filtered.
                 if (namespaceFilter != null && !NamespaceFilter.IsInNamespace(d, namespaceFilter))
+                    continue;
+
+                // Accessibility filter runs with the other symbol filters before maxResults so
+                // TotalCount / Truncated reflect the filtered set. Exact DeclaredAccessibility match
+                // (implicit defaults count; protected internal ≠ protected / internal).
+                if (accessibilityFilter.HasValue && d.DeclaredAccessibility != accessibilityFilter.Value)
                     continue;
 
                 if (!filtered)

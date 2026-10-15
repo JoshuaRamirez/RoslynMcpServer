@@ -15,7 +15,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// and optional <c>projectPath</c> (restricts reported DerivedTypes to one project; peer of
 /// <c>get_diagnostics</c> / <c>search_symbols</c> / <c>find_references</c> / <c>find_callers</c> /
 /// <c>find_implementations</c> <c>projectPath</c>), and optional <c>transitive</c> (<c>false</c> reports
-/// only direct subclasses instead of every descendant).
+/// only direct subclasses instead of every descendant), and optional <c>accessibilityFilter</c> (keeps
+/// only DerivedTypes with that exact declared accessibility).
 /// </summary>
 public class GetTypeHierarchyOperationTests
 {
@@ -1631,6 +1632,327 @@ public class GetTypeHierarchyOperationTests
         Assert.NotEmpty(omitted.Data!.DerivedTypes);
         Assert.Equal(SortedSites(omitted.Data.DerivedTypes), SortedSites(bareGlobal.Data!.DerivedTypes));
         Assert.Equal(omitted.Data.TotalCount, bareGlobal.Data.TotalCount);
+    }
+
+    #endregion
+
+    #region accessibilityFilter
+
+    // App.Shape (public; base Root, interface IMarker) is derived from by nested types of every
+    // accessibility inside Shape.cs and by top-level public / internal (explicit and implicit) types in
+    // Derived.cs; PubLeaf derives only through Pub1, so it is a transitive-only descendant.
+    private static readonly Dictionary<string, string> AccessibilitySources = new()
+    {
+        ["Shape.cs"] = """
+            namespace App
+            {
+                public class Root { }
+                public interface IMarker { }
+
+                public class Shape : Root, IMarker
+                {
+                    private class PrivNested : Shape { }
+                    class DefaultNested : Shape { }
+                    protected class ProtNested : Shape { }
+                    protected internal class ProtIntNested : Shape { }
+                    private protected class PrivProtNested : Shape { }
+                    internal class IntNested : Shape { }
+                }
+            }
+            """,
+        ["Derived.cs"] = """
+            namespace App
+            {
+                public class Pub1 : Shape { }
+                public class Pub2 : Shape { }
+                public class PubLeaf : Pub1 { }
+                internal class Int1 : Shape { }
+                class Implicit : Shape { }
+            }
+            """
+    };
+
+    private static readonly string[] AllAccessibilityDescendants =
+    {
+        "DefaultNested", "Implicit", "Int1", "IntNested", "PrivNested", "PrivProtNested",
+        "ProtIntNested", "ProtNested", "Pub1", "Pub2", "PubLeaf"
+    };
+
+    private static GetTypeHierarchyParams AccessibilityParams(TempWorkspace workspace, string? accessibilityFilter) => new()
+    {
+        SourceFile = workspace.SourcePath,
+        SymbolName = "Shape",
+        Direction = "Descendants",
+        AccessibilityFilter = accessibilityFilter
+    };
+
+    [Fact]
+    public void AccessibilityFilter_DefaultsToNull()
+    {
+        var @params = new GetTypeHierarchyParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.AccessibilityFilter);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AccessibilityFilterOmittedOrBlank_ReturnsEveryAccessibility()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        foreach (var filter in new[] { null, "", "   " })
+        {
+            var result = await operation.ExecuteAsync(AccessibilityParams(workspace, filter));
+
+            Assert.True(result.Success);
+            Assert.Equal(AllAccessibilityDescendants, SortedNames(result.Data!.DerivedTypes));
+            Assert.Equal(11, result.Data.TotalCount);
+            Assert.False(result.Data.Truncated);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("public", new[] { "Pub1", "Pub2", "PubLeaf" })]
+    [InlineData("internal", new[] { "Implicit", "Int1", "IntNested" })]
+    [InlineData("private", new[] { "DefaultNested", "PrivNested" })]
+    [InlineData("protected", new[] { "ProtNested" })]
+    [InlineData("protected internal", new[] { "ProtIntNested" })]
+    [InlineData("private protected", new[] { "PrivProtNested" })]
+    public async Task GetTypeHierarchy_AccessibilityFilter_KeepsExactDeclaredAccessibilityOnly(
+        string accessibilityFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Implicit defaults count (top-level no modifier = internal, nested no modifier = private), and
+        // protected internal / private protected are never matched by protected, internal, or private.
+        var result = await operation.ExecuteAsync(AccessibilityParams(workspace, accessibilityFilter));
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedNames(result.Data!.DerivedTypes));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("PUBLIC", "public")]
+    [InlineData("  Internal  ", "internal")]
+    [InlineData("protected   internal", "protected internal")]
+    [InlineData("internal protected", "protected internal")]
+    [InlineData("Protected Private", "private protected")]
+    public async Task GetTypeHierarchy_AccessibilityFilterCaseWhitespaceAndOrder_IsNormalized(
+        string accessibilityFilter, string canonical)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(AccessibilityParams(workspace, accessibilityFilter));
+        var expected = await operation.ExecuteAsync(AccessibilityParams(workspace, canonical));
+
+        Assert.True(filtered.Success);
+        Assert.True(expected.Success);
+        Assert.NotEmpty(expected.Data!.DerivedTypes);
+        Assert.Equal(SortedNames(expected.Data.DerivedTypes), SortedNames(filtered.Data!.DerivedTypes));
+        Assert.Equal(expected.Data.TotalCount, filtered.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("friend", "Descendants")]
+    [InlineData("ProtectedOrInternal", "Both")]
+    [InlineData("public, internal", "Ancestors")]
+    public async Task GetTypeHierarchy_UnknownAccessibilityFilter_ThrowsInvalidVisibility(
+        string accessibilityFilter, string direction)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Validated up front, even when direction is Ancestors (no DerivedTypes to filter).
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetTypeHierarchyParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Shape",
+                Direction = direction,
+                AccessibilityFilter = accessibilityFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.StartsWith($"Invalid accessibilityFilter '{accessibilityFilter}'. Valid values: ", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AccessibilityFilter_DoesNotFilterBaseTypesOrInterfaces()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Root and IMarker are public, yet stay in BaseTypes / Interfaces under a private filter.
+        var both = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(both.Success);
+        Assert.Equal(new[] { "DefaultNested", "PrivNested" }, SortedNames(both.Data!.DerivedTypes));
+        Assert.Contains(both.Data.BaseTypes, b => b.TypeName == "Root");
+        Assert.Contains(both.Data.Interfaces, i => i.TypeName == "IMarker");
+
+        var ancestors = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Ancestors",
+            AccessibilityFilter = "private protected"
+        });
+
+        Assert.True(ancestors.Success);
+        Assert.Empty(ancestors.Data!.DerivedTypes);
+        Assert.Contains(ancestors.Data.BaseTypes, b => b.TypeName == "Root");
+        Assert.Contains(ancestors.Data.Interfaces, i => i.TypeName == "IMarker");
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AccessibilityFilterWithMaxResults_CapsFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            AccessibilityFilter = "public",
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.DerivedTypes.Count);
+        Assert.All(capped.Data.DerivedTypes, d => Assert.Contains(d.TypeName, new[] { "Pub1", "Pub2", "PubLeaf" }));
+        Assert.Equal(3, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var exact = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            AccessibilityFilter = "public",
+            MaxResults = 3
+        });
+
+        Assert.True(exact.Success);
+        Assert.Equal(3, exact.Data!.DerivedTypes.Count);
+        Assert.Equal(3, exact.Data.TotalCount);
+        Assert.False(exact.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AccessibilityFilterWithTransitiveFalse_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // PubLeaf derives through Pub1, so the direct public set drops it.
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            Transitive = false,
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Pub1", "Pub2" }, SortedNames(result.Data!.DerivedTypes));
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AccessibilityFilterWithDerivedFileAndProjectPath_AndsTheScopes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // IntNested is internal but declared in Shape.cs, so the Derived.cs scope drops it.
+        var derivedFile = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            DerivedFile = workspace.PathOf("Derived.cs"),
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.True(derivedFile.Success);
+        Assert.Equal(new[] { "Implicit", "Int1" }, SortedNames(derivedFile.Data!.DerivedTypes));
+        Assert.All(derivedFile.Data.DerivedTypes, d => Assert.True(SamePath(d.File, workspace.PathOf("Derived.cs"))));
+        Assert.Equal(2, derivedFile.Data.TotalCount);
+
+        // Derived.cs declares no private types, so the combined scope finds none.
+        var none = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            DerivedFile = workspace.PathOf("Derived.cs"),
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(none.Success);
+        Assert.Empty(none.Data!.DerivedTypes);
+        Assert.Equal(0, none.Data.TotalCount);
+        Assert.False(none.Data.Truncated);
+
+        var project = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            ProjectPath = workspace.ProjectPath,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(project.Success);
+        Assert.Equal(new[] { "DefaultNested", "PrivNested" }, SortedNames(project.Data!.DerivedTypes));
+        Assert.Equal(2, project.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AccessibilityFilterWithNamespaceFilter_AndsTheScopes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Every NamespaceSources descendant is public, so public keeps the namespace-filtered set and
+        // internal keeps nothing.
+        var pub = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            NamespaceFilter = "App.Services",
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(pub.Success);
+        Assert.Equal(new[] { "Nested", "S1", "S2", "S3" }, SortedNames(pub.Data!.DerivedTypes));
+        Assert.Equal(4, pub.Data.TotalCount);
+
+        var internalOnly = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            NamespaceFilter = "App.Services",
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.True(internalOnly.Success);
+        Assert.Empty(internalOnly.Data!.DerivedTypes);
+        Assert.Equal(0, internalOnly.Data.TotalCount);
     }
 
     #endregion

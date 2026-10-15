@@ -30,11 +30,6 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// </summary>
 public sealed class GeneratePropertyOperation : RefactoringOperationBase<GeneratePropertyParams>
 {
-    private static readonly HashSet<string> ValidVisibilities = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "public", "private", "protected", "internal", "protected internal", "private protected"
-    };
-
     /// <summary>
     /// Creates a new generate property operation.
     /// </summary>
@@ -105,7 +100,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         if (@params.PropertyName != null && !SyntaxIdentifierValidation.IsValidIdentifier(@params.PropertyName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid property name: {@params.PropertyName}");
 
-        if (!string.IsNullOrWhiteSpace(@params.Visibility) && !ValidVisibilities.Contains(@params.Visibility.Trim()))
+        if (!string.IsNullOrWhiteSpace(@params.Visibility) && !VisibilityTokenHelpers.IsValidVisibility(@params.Visibility.Trim()))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
     }
 

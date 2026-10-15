@@ -12,7 +12,9 @@ namespace RoslynMcp.Core.Tests.Query;
 /// (LSP <c>ReferenceContext.includeDeclaration</c> peer) and optional <c>referenceFile</c>
 /// (restricts reported locations to one file; peer of <c>find_callers</c> <c>callerFile</c>), and
 /// optional <c>projectPath</c> (restricts reported locations to one project; peer of
-/// <c>get_diagnostics</c> / <c>search_symbols</c> <c>projectPath</c>).
+/// <c>get_diagnostics</c> / <c>search_symbols</c> <c>projectPath</c>), and optional
+/// <c>accessibilityFilter</c> (restricts by reference-site enclosing symbol DeclaredAccessibility; peer
+/// of <c>find_callers</c> / <c>find_implementations</c> / <c>search_symbols</c> <c>accessibilityFilter</c>).
 /// </summary>
 public class FindReferencesOperationTests
 {
@@ -1399,6 +1401,505 @@ public class FindReferencesOperationTests
         Assert.Equal(0, mismatch.Data.TotalCount);
         Assert.False(mismatch.Data.Truncated);
     }
+
+    #endregion
+
+    #region AccessibilityFilter
+
+    // Run is internal on a public type: its definition location is judged by Run itself (internal, not
+    // the public containing type) while every usage site is judged by the member enclosing it (lambdas
+    // and local functions looked through to their declaring member), never by the target symbol.
+    private static readonly Dictionary<string, string> AccessibilitySources = new()
+    {
+        ["Target.cs"] = """
+            namespace App;
+            public class Target
+            {
+                internal void Run() { }
+            }
+            """,
+        ["Host.cs"] = """
+            namespace App;
+            public class Host
+            {
+                public void Pub(Target t) { t.Run(); }
+                internal void Int(Target t) { t.Run(); }
+                protected void Prot(Target t) { t.Run(); }
+                private void Priv(Target t) { t.Run(); }
+                protected internal void ProtInt(Target t) { t.Run(); }
+                private protected void PrivProt(Target t) { t.Run(); }
+                void DefaultPriv(Target t) { t.Run(); }
+                public void Lam(Target t) { System.Action a = () => t.Run(); a(); }
+                internal void Loc(Target t) { void Inner() => t.Run(); Inner(); }
+            }
+            """,
+        ["Services.cs"] = """
+            namespace App.Services;
+            public class ServiceCaller
+            {
+                public void Place(App.Target t) { t.Run(); }
+                private void Hidden(App.Target t) { t.Run(); }
+            }
+            """,
+        ["OtherFile.cs"] = """
+            namespace App;
+            public class OtherHost
+            {
+                public void Elsewhere(Target t) { t.Run(); }
+                internal void ElsewhereInt(Target t) { t.Run(); }
+            }
+            """
+    };
+
+    [Fact]
+    public void AccessibilityFilter_DefaultsToNull()
+    {
+        var @params = new FindReferencesParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.AccessibilityFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task FindReferences_BlankAccessibilityFilter_MatchesOmitted(string accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run"
+        });
+        var filtered = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(filtered.Success);
+        Assert.Equal(14, omitted.Data!.TotalCount);
+        Assert.Equal(14, filtered.Data!.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+        Assert.Equal(SortedLocations(omitted.Data.References), SortedLocations(filtered.Data.References));
+    }
+
+    [SkippableTheory]
+    [InlineData("public", new[] { "Host.cs:4", "Host.cs:11", "OtherFile.cs:4", "Services.cs:4" })]
+    [InlineData("internal", new[] { "Host.cs:5", "Host.cs:12", "OtherFile.cs:5", "Target.cs:4" })]
+    [InlineData("protected", new[] { "Host.cs:6" })]
+    [InlineData("private", new[] { "Host.cs:7", "Host.cs:10", "Services.cs:5" })]
+    [InlineData("protected internal", new[] { "Host.cs:8" })]
+    [InlineData("private protected", new[] { "Host.cs:9" })]
+    public async Task FindReferences_AccessibilityFilter_SelectsSitesByEnclosingSymbolDeclaredAccessibility(
+        string accessibilityFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(result.Success, accessibilityFilter);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilter_JudgesDefinitionByItsEnclosingSymbolNotTheType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var internalSites = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "internal"
+        });
+        var publicSites = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(internalSites.Success);
+        var definition = Assert.Single(internalSites.Data!.References, r => r.IsDefinition);
+        Assert.True(SamePath(definition.File, workspace.PathOf("Target.cs")));
+        Assert.Equal(4, definition.Line);
+
+        // The containing type Target is public, but the definition site is judged by Run (internal).
+        Assert.True(publicSites.Success);
+        Assert.DoesNotContain(publicSites.Data!.References, r => r.IsDefinition);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilter_TopLevelStatementSitesNeverMatch()
+    {
+        // References in top-level statements (including a top-level local function and lambda) are
+        // enclosed by the synthesized private `<Main>$` entry point; they are namespace-level sites and
+        // never match a named filter (not even private).
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                public static class Target
+                {
+                    public static void Run() { }
+                }
+                """,
+            ["Program.cs"] = """
+                Target.Run();
+                void Local() { Target.Run(); }
+                System.Action a = () => Target.Run();
+                """,
+            ["Host.cs"] = """
+                public class Host
+                {
+                    private void Priv() { Target.Run(); }
+                }
+                """
+        }, "Target.cs");
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var all = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run"
+        });
+        var privateSites = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "private"
+        });
+        var internalSites = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "internal"
+        });
+
+        Assert.True(all.Success);
+        Assert.Equal(3, all.Data!.References.Count(r => Path.GetFileName(r.File) == "Program.cs"));
+        Assert.True(privateSites.Success);
+        Assert.Equal(new[] { "Host.cs:3" }, Sites(privateSites.Data!.References.Where(r => !r.IsDefinition)));
+        Assert.True(internalSites.Success);
+        Assert.DoesNotContain(internalSites.Data!.References, r => Path.GetFileName(r.File) == "Program.cs");
+    }
+
+    [SkippableTheory]
+    [InlineData("PUBLIC", "public")]
+    [InlineData("  Private  ", "private")]
+    [InlineData("Protected   Internal", "protected internal")]
+    [InlineData("internal protected", "protected internal")]
+    [InlineData("protected private", "private protected")]
+    public async Task FindReferences_AccessibilityFilter_IsCaseInsensitiveAndAcceptsEitherModifierOrder(
+        string accessibilityFilter, string canonical)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = accessibilityFilter
+        });
+        var expected = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = canonical
+        });
+
+        Assert.True(filtered.Success);
+        Assert.True(expected.Success);
+        Assert.NotEmpty(expected.Data!.References);
+        Assert.Equal(Sites(expected.Data.References), Sites(filtered.Data!.References));
+    }
+
+    [SkippableTheory]
+    [InlineData("friend")]
+    [InlineData("ProtectedOrInternal")]
+    [InlineData("public, internal")]
+    public async Task FindReferences_UnknownAccessibilityFilter_ThrowsInvalidVisibility(string accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new FindReferencesParams
+            {
+                SourceFile = workspace.PathOf("Target.cs"),
+                SymbolName = "Run",
+                AccessibilityFilter = accessibilityFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.StartsWith($"Invalid accessibilityFilter '{accessibilityFilter}'. Valid values: ", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilterWithReferenceFile_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var inHost = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public",
+            ReferenceFile = workspace.PathOf("Host.cs")
+        });
+        var inTarget = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "internal",
+            ReferenceFile = workspace.PathOf("Target.cs")
+        });
+
+        Assert.True(inHost.Success);
+        Assert.Equal(new[] { "Host.cs:4", "Host.cs:11" }, Sites(inHost.Data!.References));
+        Assert.Equal(2, inHost.Data.TotalCount);
+        Assert.False(inHost.Data.Truncated);
+
+        Assert.True(inTarget.Success);
+        var definition = Assert.Single(inTarget.Data!.References);
+        Assert.True(definition.IsDefinition);
+        Assert.Equal(1, inTarget.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilterWithNamespaceFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public",
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Services.cs:4" }, Sites(result.Data!.References));
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilterWithIncludeDeclarationFalse_DropsDefinition()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "internal",
+            IncludeDeclaration = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Host.cs:5", "Host.cs:12", "OtherFile.cs:5" }, Sites(result.Data!.References));
+        Assert.All(result.Data.References, r => Assert.False(r.IsDefinition));
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilterWithMaxResults_CapsAfterAccessibilityFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public",
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.References.Count);
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+        Assert.All(Sites(result.Data.References), site =>
+            Assert.Contains(site, new[] { "Host.cs:4", "Host.cs:11", "OtherFile.cs:4", "Services.cs:4" }));
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilterNoMatch_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = "public class Target { public void Run() { } }",
+            ["OnlyPublic.cs"] = "public class OnlyPub { public void Go(Target t) { t.Run(); } }"
+        });
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.References);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilterWithProjectPath_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "private",
+            ProjectPath = workspace.ProjectPath
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Host.cs:7", "Host.cs:10", "Services.cs:5" }, Sites(result.Data!.References));
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilterLocalTarget_JudgesDefinitionAndUsagesByDeclaringMember()
+    {
+        // "total" is a local of the private Compute method (column 33 on line 3).
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class Holder
+            {
+                private int Compute() { var total = 1; return total + total; }
+                public int Expose() => 0;
+            }
+            """);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var privateSites = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 3,
+            Column = 33,
+            AccessibilityFilter = "private"
+        });
+        var publicSites = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 3,
+            Column = 33,
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(privateSites.Success);
+        Assert.Equal("total", privateSites.Data!.SymbolName);
+        Assert.Equal(3, privateSites.Data.TotalCount);
+        Assert.Single(privateSites.Data.References, r => r.IsDefinition);
+
+        Assert.True(publicSites.Success);
+        Assert.Empty(publicSites.Data!.References);
+        Assert.Equal(0, publicSites.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilter_NamespaceLevelSitesNeverMatch()
+    {
+        // Roslyn reports INamespaceSymbol.DeclaredAccessibility as Public, so the using alias sites
+        // (enclosed by the global namespace and by namespace App.Consumers) must still be excluded.
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                namespace App;
+                public class Target { }
+                """,
+            ["Consumer.cs"] = """
+                using GlobalAlias = App.Target;
+                namespace App.Consumers
+                {
+                    using InnerAlias = App.Target;
+                    public class Consumer
+                    {
+                        public App.Target Make() => null!;
+                    }
+                }
+                """
+        });
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var unfiltered = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false
+        });
+        var publicSites = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false,
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(unfiltered.Success);
+        Assert.Equal(new[] { "Consumer.cs:1", "Consumer.cs:4", "Consumer.cs:7" }, Sites(unfiltered.Data!.References));
+
+        Assert.True(publicSites.Success);
+        Assert.Equal(new[] { "Consumer.cs:7" }, Sites(publicSites.Data!.References));
+        Assert.Equal(1, publicSites.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_AccessibilityFilterNamespaceTarget_DefinitionNeverMatches()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace App.Things
+            {
+                public class Thing { }
+            }
+            """);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 1,
+            Column = 16,
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(result.Success);
+        Assert.DoesNotContain(result.Data!.References, r => r.IsDefinition);
+    }
+
+    private static List<string> Sites(IEnumerable<ReferenceLocationInfo> references) =>
+        references
+            .Select(r => (File: Path.GetFileName(r.File), r.Line))
+            .OrderBy(l => l.File, StringComparer.Ordinal)
+            .ThenBy(l => l.Line)
+            .Select(l => $"{l.File}:{l.Line}")
+            .ToList();
 
     #endregion
 

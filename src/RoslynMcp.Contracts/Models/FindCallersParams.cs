@@ -60,12 +60,30 @@ public sealed class FindCallersParams
     /// sites in <c>App.Services</c> and <c>App.Services.Orders</c>, not <c>App.ServicesExtra</c>); same
     /// matching as <c>search_symbols</c> / <c>find_implementations</c> / <c>find_references</c>
     /// <c>namespaceFilter</c>. Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace
-    /// is trimmed and a leading <c>global::</c> is accepted. Combined with <see cref="CallerFile"/>
-    /// and <see cref="ProjectPath"/>, and applied before <see cref="MaxResults"/> so
-    /// <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered set. Sites in the global
-    /// namespace never match a named filter. Omit, blank, or a bare <c>global::</c> (the root
-    /// namespace) reports call sites in all namespaces. <see cref="SourceFile"/> still locates the
-    /// target symbol and may be in another namespace.
+    /// is trimmed and a leading <c>global::</c> is accepted. Combined with <see cref="CallerFile"/>,
+    /// <see cref="ProjectPath"/>, and <see cref="AccessibilityFilter"/>, and applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
+    /// namespace-filtered set. Sites in the global namespace never match a named filter. Omit, blank,
+    /// or a bare <c>global::</c> (the root namespace) reports call sites in all namespaces.
+    /// <see cref="SourceFile"/> still locates the target symbol and may be in another namespace.
     /// </summary>
     public string? NamespaceFilter { get; init; }
+
+    /// <summary>
+    /// Optional declared accessibility to restrict reported call sites to: same values and parsing
+    /// as <c>search_symbols</c> / <c>get_document_outline</c> / <c>get_symbol_info</c> /
+    /// <c>find_implementations</c> / <c>get_type_hierarchy</c> <c>accessibilityFilter</c>
+    /// (<c>public</c>, <c>internal</c>, <c>protected</c>, <c>private</c>, <c>protected internal</c>,
+    /// or <c>private protected</c>; case-insensitive; surrounding whitespace trimmed and inner
+    /// whitespace runs collapsed; <c>internal protected</c> / <c>protected private</c> also
+    /// accepted). When set, only call sites whose <strong>calling symbol's</strong>
+    /// <c>ISymbol.DeclaredAccessibility</c> equals it exactly are returned (semantic, so implicit
+    /// defaults count: a class member with no modifier is <c>private</c>); the match is exact
+    /// (<c>protected internal</c> is not matched by <c>protected</c> or <c>internal</c>). Combined
+    /// with <see cref="CallerFile"/>, <see cref="ProjectPath"/>, and <see cref="NamespaceFilter"/>,
+    /// and applied before <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect
+    /// the accessibility-filtered set. Omit or leave blank for no accessibility filter. An
+    /// unrecognized value fails with <c>InvalidVisibility</c>.
+    /// </summary>
+    public string? AccessibilityFilter { get; init; }
 }

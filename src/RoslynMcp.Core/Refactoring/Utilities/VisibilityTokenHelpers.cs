@@ -4,13 +4,28 @@ using Microsoft.CodeAnalysis.CSharp;
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
-/// Shared visibility-string → <see cref="SyntaxToken"/> parsing used by
-/// generate_constructor / generate_property. Same bodies as the two private
-/// copies. Distinct from generate_method_stub (PrivateKeyword empty/unknown
-/// default + trailing Space trivia).
+/// Shared visibility-string validation and → <see cref="SyntaxToken"/> parsing
+/// used by generate_constructor / generate_property / generate_method_stub /
+/// extract_method / extract_constant. Token parsing matches the prior private
+/// copies on generate_constructor / generate_property. Distinct from
+/// generate_method_stub's PrivateKeyword empty/unknown default + trailing
+/// Space trivia.
 /// </summary>
 internal static class VisibilityTokenHelpers
 {
+    private static readonly HashSet<string> ValidVisibilities = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "public", "private", "protected", "internal", "protected internal", "private protected"
+    };
+
+    /// <summary>
+    /// True when <paramref name="visibility"/> is one of the six C# accessibility
+    /// spellings (OrdinalIgnoreCase). Callers keep their own Trim /
+    /// null-or-whitespace gates; this only checks set membership.
+    /// </summary>
+    internal static bool IsValidVisibility(string visibility) =>
+        ValidVisibilities.Contains(visibility);
+
     /// <summary>
     /// Splits <paramref name="visibility"/> on whitespace into modifier
     /// tokens so <c>protected internal</c> and <c>private protected</c>

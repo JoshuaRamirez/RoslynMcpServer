@@ -4,8 +4,9 @@ namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
 /// Normalizes and applies the optional <c>namespaceFilter</c> of <c>search_symbols</c>,
-/// <c>find_implementations</c>, <c>find_references</c>, <c>find_callers</c>, <c>get_type_hierarchy</c>, and <c>get_diagnostics</c>: a symbol (or reference / call / diagnostic site) matches when
-/// its containing namespace equals the filter or is nested inside it (ordinal).
+/// <c>find_implementations</c>, <c>find_references</c>, <c>find_callers</c>, <c>get_type_hierarchy</c>, <c>get_diagnostics</c>, and <c>get_document_outline</c>: a symbol (or reference / call / diagnostic site) matches when
+/// its containing namespace equals the filter or is nested inside it (ordinal); a namespace outline entry matches when
+/// the namespace itself does.
 /// </summary>
 internal static class NamespaceFilter
 {
@@ -33,7 +34,7 @@ internal static class NamespaceFilter
     /// namespace never match.
     /// </summary>
     public static bool IsInNamespace(ISymbol symbol, string normalizedFilter) =>
-        IsNamespaceInFilter(symbol.ContainingNamespace, normalizedFilter);
+        IsNamespaceOrNestedIn(symbol.ContainingNamespace, normalizedFilter);
 
     /// <summary>
     /// Whether a reference site whose enclosing symbol (e.g. from
@@ -45,11 +46,20 @@ internal static class NamespaceFilter
     /// match.
     /// </summary>
     public static bool IsSiteInNamespace(ISymbol enclosingSymbol, string normalizedFilter) =>
-        IsNamespaceInFilter(
+        IsNamespaceOrNestedIn(
             enclosingSymbol as INamespaceSymbol ?? enclosingSymbol.ContainingNamespace,
             normalizedFilter);
 
-    private static bool IsNamespaceInFilter(INamespaceSymbol? containingNamespace, string normalizedFilter)
+    /// <summary>
+    /// Whether <paramref name="namespaceSymbol"/> itself (not its parent) equals
+    /// <paramref name="normalizedFilter"/> (a value returned by <see cref="Normalize"/>) or is nested
+    /// inside it (ordinal), e.g. the namespace <c>App.Services</c> matches the filter <c>App.Services</c>.
+    /// The global namespace never matches.
+    /// </summary>
+    public static bool IsNamespaceInFilter(INamespaceSymbol namespaceSymbol, string normalizedFilter) =>
+        IsNamespaceOrNestedIn(namespaceSymbol, normalizedFilter);
+
+    private static bool IsNamespaceOrNestedIn(INamespaceSymbol? containingNamespace, string normalizedFilter)
     {
         if (containingNamespace == null || containingNamespace.IsGlobalNamespace) return false;
 

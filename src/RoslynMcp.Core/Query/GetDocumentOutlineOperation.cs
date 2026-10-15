@@ -14,7 +14,8 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Gets a structured outline of all declarations in a document.
 /// Pure syntax traversal; the semantic model is requested only when
-/// <see cref="GetDocumentOutlineParams.AccessibilityFilter"/> is set, to resolve declared accessibility.
+/// <see cref="GetDocumentOutlineParams.AccessibilityFilter"/> or <see cref="GetDocumentOutlineParams.NamespaceFilter"/>
+/// is set, to resolve declared accessibility / the declared symbol's namespace.
 /// </summary>
 public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocumentOutlineParams, GetDocumentOutlineResult>
 {
@@ -62,10 +63,12 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         var entries = new List<OutlineEntry>();
         var totalCount = 0;
 
-        // When accessibilityFilter is set, remember each entry's declaration node so its declared
-        // accessibility can be resolved semantically (implicit defaults and other partial parts count).
+        // When accessibilityFilter or namespaceFilter is set, remember each entry's declaration node so its
+        // declared accessibility (implicit defaults and other partial parts count) or namespace can be
+        // resolved semantically.
         var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
-        var declarations = accessibilityFilter.HasValue
+        var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
+        var declarations = accessibilityFilter.HasValue || namespaceFilter != null
             ? new Dictionary<OutlineEntry, SyntaxNode>(ReferenceEqualityComparer.Instance)
             : null;
 
@@ -102,19 +105,34 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
         var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
         Func<OutlineEntry, bool>? accessibilityMatches = null;
-        if (accessibilityFilter.HasValue)
+        Func<OutlineEntry, bool>? namespaceMatches = null;
+        if (declarations != null)
         {
             var semanticModel = await document.GetSemanticModelAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not get semantic model.");
-            accessibilityMatches = entry => OutlineAccessibilityMatches(
-                entry, accessibilityFilter.Value, declarations!, semanticModel, cancellationToken);
+            if (accessibilityFilter.HasValue)
+            {
+                accessibilityMatches = entry => OutlineAccessibilityMatches(
+                    entry, accessibilityFilter.Value, declarations, semanticModel, cancellationToken);
+            }
+
+            if (namespaceFilter != null)
+            {
+                namespaceMatches = entry => OutlineNamespaceMatches(
+                    entry, namespaceFilter, declarations, semanticModel, cancellationToken);
+            }
         }
 
-        if (kindFilter.HasValue || nameFilter != null || accessibilityMatches != null)
+        if (kindFilter.HasValue || nameFilter != null || accessibilityMatches != null || namespaceMatches != null)
         {
-            returned = FilterOutlineForest(entries, entry =>
+            Func<OutlineEntry, bool> matches = entry =>
                 OutlineEntryMatches(entry, kindFilter, nameFilter) &&
-                (accessibilityMatches == null || accessibilityMatches(entry)));
+                (accessibilityMatches == null || accessibilityMatches(entry)) &&
+                (namespaceMatches == null || namespaceMatches(entry));
+            if (namespaceMatches != null && declarations != null)
+                matches = WithEnclosingNamespaceContainers(matches, declarations);
+
+            returned = FilterOutlineForest(entries, matches);
             totalCount = CountNodes(returned);
         }
 
@@ -188,6 +206,37 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
     }
 
     /// <summary>
+    /// Extends <paramref name="matches"/> so a namespace entry whose declaration syntactically encloses a
+    /// matching declaration is also kept as a container. Block-scoped nested namespaces
+    /// (<c>namespace Outer { namespace Inner { ... } }</c>) are emitted as sibling outline roots rather than
+    /// as children, so without this <c>namespaceFilter</c> <c>Outer.Inner</c> would drop the containing
+    /// <c>Outer</c> entry. Only true syntactic ancestors qualify: a sibling dotted declaration such as
+    /// <c>namespace App</c> next to <c>namespace App.Services</c> does not enclose it and is not kept.
+    /// Each entry's match is evaluated once up front.
+    /// </summary>
+    private static Func<OutlineEntry, bool> WithEnclosingNamespaceContainers(
+        Func<OutlineEntry, bool> matches,
+        IReadOnlyDictionary<OutlineEntry, SyntaxNode> declarations)
+    {
+        var matched = new HashSet<OutlineEntry>(ReferenceEqualityComparer.Instance);
+        var enclosingNamespaces = new HashSet<SyntaxNode>();
+        foreach (var (entry, node) in declarations)
+        {
+            if (!matches(entry))
+                continue;
+
+            matched.Add(entry);
+            foreach (var ancestor in node.Ancestors().OfType<BaseNamespaceDeclarationSyntax>())
+                enclosingNamespaces.Add(ancestor);
+        }
+
+        return entry => matched.Contains(entry) ||
+            (declarations.TryGetValue(entry, out var node) &&
+             node is BaseNamespaceDeclarationSyntax &&
+             enclosingNamespaces.Contains(node));
+    }
+
+    /// <summary>
     /// Whether an outline entry satisfies every active filter: its kind matches <paramref name="kind"/>
     /// (when set) and its name contains <paramref name="nameFilter"/> as an ordinal, case-insensitive
     /// substring (when set).
@@ -221,8 +270,34 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
     }
 
     /// <summary>
+    /// Whether an outline entry's declared symbol lives in <paramref name="normalizedFilter"/> (a value
+    /// returned by <see cref="NamespaceFilter.Normalize"/>) or a namespace nested inside it (the same ordinal
+    /// matching as <c>search_symbols</c> <c>namespaceFilter</c>). Type and member entries match on their
+    /// containing namespace; namespace entries match on the namespace itself (so the entry <c>App.Services</c>
+    /// matches the filter <c>App.Services</c>). Global-namespace symbols and entries without a tracked
+    /// declaration or a declared symbol never match.
+    /// </summary>
+    private static bool OutlineNamespaceMatches(
+        OutlineEntry entry,
+        string normalizedFilter,
+        IReadOnlyDictionary<OutlineEntry, SyntaxNode> declarations,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (!declarations.TryGetValue(entry, out var node))
+            return false;
+
+        return semanticModel.GetDeclaredSymbol(node, cancellationToken) switch
+        {
+            INamespaceSymbol ns => NamespaceFilter.IsNamespaceInFilter(ns, normalizedFilter),
+            { } symbol => NamespaceFilter.IsInNamespace(symbol, normalizedFilter),
+            null => false
+        };
+    }
+
+    /// <summary>
     /// Records <paramref name="node"/> as the declaration of <paramref name="entry"/> when
-    /// <paramref name="declarations"/> is tracked (accessibilityFilter set) and returns the entry.
+    /// <paramref name="declarations"/> is tracked (accessibilityFilter or namespaceFilter set) and returns the entry.
     /// </summary>
     private static OutlineEntry Track(OutlineEntry entry, SyntaxNode node, Dictionary<OutlineEntry, SyntaxNode>? declarations)
     {
@@ -385,14 +460,14 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         }
 
         var lineSpan = ns.GetLocation().GetLineSpan();
-        return new OutlineEntry
+        return Track(new OutlineEntry
         {
             Name = ns.Name.ToString(),
             Kind = "Namespace",
             Line = lineSpan.StartLinePosition.Line + 1,
             Column = lineSpan.StartLinePosition.Character + 1,
             Children = children.Count > 0 ? children : null
-        };
+        }, ns, declarations);
     }
 
     private static OutlineEntry BuildTypeEntry(
