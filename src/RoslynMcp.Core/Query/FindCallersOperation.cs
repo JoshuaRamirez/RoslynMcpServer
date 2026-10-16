@@ -126,7 +126,7 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         // sites whose calling symbol (the same CallingSymbol accessibilityFilter judges) has a
         // simple Name containing the trimmed value, ordinal case-insensitive. Null when omitted /
         // blank (no name filtering). Free text — no validation error.
-        var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
+        var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
 
         // Optional kindFilter (same values / parsing as search_symbols / get_document_outline /
         // get_symbol_info / find_implementations / get_type_hierarchy kindFilter): keep only call
@@ -147,8 +147,7 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                 && caller.CallingSymbol.DeclaredAccessibility != accessibilityFilter.Value)
                 continue;
 
-            if (nameFilter != null
-                && !caller.CallingSymbol.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
+            if (!NameFilterMatcher.Matches(caller.CallingSymbol.Name, nameFilter))
                 continue;
 
             if (kindFilter.HasValue && SymbolKindMapper.Map(caller.CallingSymbol) != kindFilter.Value)

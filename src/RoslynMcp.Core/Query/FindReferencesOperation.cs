@@ -167,12 +167,12 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         // trimmed value, ordinal case-insensitive. Namespace-level sites (using aliases, a top-level
         // type's base list, top-level statements, a namespace's own declaration) never match, same as
         // accessibilityFilter. Null when omitted / blank (no name filtering).
-        var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
+        var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
 
         bool MatchesName(ISymbol? siteSymbol) =>
             nameFilter == null
             || (siteSymbol is not null and not INamespaceSymbol
-                && siteSymbol.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase));
+                && NameFilterMatcher.Matches(siteSymbol.Name, nameFilter));
 
         // Optional kindFilter (same values / parsing as search_symbols / get_document_outline /
         // get_symbol_info / find_implementations / get_type_hierarchy / find_callers kindFilter): keep

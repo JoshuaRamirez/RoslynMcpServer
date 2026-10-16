@@ -194,7 +194,7 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
             // find_implementations nameFilter): keep only derived types whose simple Name (as reported
             // in TypeHierarchyEntry.TypeName) contains the trimmed value, ordinal case-insensitive.
             // Null when omitted / blank (no name filtering).
-            var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
+            var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
 
             foreach (var d in derived)
             {
@@ -217,7 +217,7 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
 
                 // Name filter runs with the other symbol filters before maxResults so TotalCount /
                 // Truncated reflect the filtered set. BaseTypes and Interfaces are never filtered.
-                if (nameFilter != null && !d.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
+                if (!NameFilterMatcher.Matches(d.Name, nameFilter))
                     continue;
 
                 if (!filtered)

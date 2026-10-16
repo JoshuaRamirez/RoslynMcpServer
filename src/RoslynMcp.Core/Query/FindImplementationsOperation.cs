@@ -166,7 +166,7 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
         // keep only implementations whose reported Name (ISymbol.Name, as in ImplementationInfo)
         // contains the trimmed value, ordinal case-insensitive. Null when omitted / blank (no name
         // filtering).
-        var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
+        var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
 
         foreach (var impl in implSymbols)
         {
@@ -188,7 +188,7 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
 
             // Name filter runs with the other symbol filters before maxResults so TotalCount /
             // Truncated reflect the filtered set. Matches the Name reported for the implementation.
-            if (nameFilter != null && !impl.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
+            if (!NameFilterMatcher.Matches(impl.Name, nameFilter))
                 continue;
 
             Location? location;

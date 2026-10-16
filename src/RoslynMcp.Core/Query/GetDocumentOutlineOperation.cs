@@ -103,7 +103,7 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
 
         IReadOnlyList<OutlineEntry> returned = entries;
         var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
-        var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
+        var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
         Func<OutlineEntry, bool>? accessibilityMatches = null;
         Func<OutlineEntry, bool>? namespaceMatches = null;
         if (declarations != null)
@@ -246,7 +246,7 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         if (kind.HasValue && !OutlineKindMatches(entry.Kind, kind.Value))
             return false;
 
-        return nameFilter == null || entry.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase);
+        return NameFilterMatcher.Matches(entry.Name, nameFilter);
     }
 
     /// <summary>
