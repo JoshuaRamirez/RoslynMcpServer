@@ -1044,6 +1044,38 @@ public class GetDiagnosticsOperationTests
     }
 
     [SkippableFact]
+    public async Task GetDiagnostics_NameFilter_DelegateSiteMatchesDelegateNameNotInvoke()
+    {
+        // CS0246 on a delegate parameter sits in the synthesized Invoke; DeclaringSiteSymbol resolves
+        // the site to the delegate, so nameFilter matches the delegate's name, never "Invoke".
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class C
+            {
+                public delegate void OrderCallback(MissingType value);
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS0246" };
+
+        var byDelegate = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            NameFilter = "OrderCallback"
+        });
+        var byInvoke = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            NameFilter = "Invoke"
+        });
+
+        Assert.True(byDelegate.Success);
+        Assert.Equal(new[] { "MissingType" }, VariableNames(byDelegate.Data!));
+        Assert.True(byInvoke.Success);
+        Assert.Empty(byInvoke.Data!.Diagnostics);
+        Assert.Equal(0, byInvoke.Data.TotalCount);
+    }
+
+    [SkippableFact]
     public async Task GetDiagnostics_NameFilter_DropsDiagnosticsWithoutSourceLocation()
     {
         await using var workspace = await TempWorkspace.CreateAsync(

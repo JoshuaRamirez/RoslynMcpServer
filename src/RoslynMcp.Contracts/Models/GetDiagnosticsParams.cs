@@ -158,6 +158,11 @@ public sealed class GetDiagnosticsParams
     /// <see cref="KindFilter"/> (a diagnostic must satisfy all that are set), and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the name-filtered set.
     /// No match returns an empty success. Omit, empty, or whitespace for no name filter.
+    /// A diagnostic inside a delegate's synthesized <c>Invoke</c> / <c>BeginInvoke</c> / <c>EndInvoke</c> /
+    /// <c>.ctor</c> site resolves to the delegate itself, so the filter matches the delegate's name and
+    /// filters like <c>Invoke</c> or <c>.ctor</c> never match such a site.
+    /// Matching is a plain ordinal, case-insensitive <c>Contains</c>, so wildcards such as <c>*</c> and
+    /// <c>?</c> are not supported and are matched literally.
     /// </summary>
     public string? NameFilter { get; init; }
 }
