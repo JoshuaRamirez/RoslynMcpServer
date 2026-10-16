@@ -790,6 +790,91 @@ public class GetDiagnosticsOperationTests
         Assert.Equal(1, result.Data.TotalCount);
     }
 
+    // Expression-bodied property / indexer bodies are getter bodies: a diagnostic inside
+    // `int P => Missing;` is an accessor (Method) site exactly like the same diagnostic inside a
+    // block-bodied getter (`get { return Missing; }`) or an arrow-bodied accessor (`get => Missing;`),
+    // while diagnostics on the property declaration itself (its type, or its initializer) stay
+    // Property sites. Names in the CS0103 / CS0246 messages identify sites.
+    private const string ExpressionBodiedKindSource = """
+        namespace App
+        {
+            public class Host
+            {
+                public int ExprProp => missingInExprProp;
+                public int BlockProp { get { return missingInBlockGetter; } }
+                public int ArrowAccessorProp { get => missingInArrowGetter; }
+                public int this[int i] => missingInExprIndexer;
+                public System.Func<int> LambdaProp => () => missingInExprLambda;
+                private int PrivateExprProp => missingInPrivateExprProp;
+                public MissingPropType TypedProp { get; set; }
+                public int InitProp { get; } = missingInInitializer;
+            }
+        }
+        """;
+
+    private static readonly string[] ExpressionBodiedKindIds = { "CS0103", "CS0246" };
+
+    [SkippableTheory]
+    [InlineData("Method", new[]
+    {
+        "missingInArrowGetter", "missingInBlockGetter", "missingInExprIndexer", "missingInExprLambda",
+        "missingInExprProp", "missingInPrivateExprProp"
+    })]
+    [InlineData("Property", new[] { "MissingPropType", "missingInInitializer" })]
+    public async Task GetDiagnostics_KindFilter_ExpressionBodiedPropertyBodyIsAccessorSite(
+        string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ExpressionBodiedKindSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = ExpressionBodiedKindIds,
+            SourceFile = workspace.SourcePath,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success, kindFilter);
+        Assert.Equal(expected, VariableNames(result.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+        Assert.Equal(expected.Length, result.Data!.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_AccessibilityFilter_ExpressionBodiedPropertyBodyKeepsPropertyAccessibility()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ExpressionBodiedKindSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        // The getter of an expression-bodied property has the property's accessibility, so judging the
+        // body as the getter does not change accessibilityFilter results.
+        var privateSites = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = ExpressionBodiedKindIds,
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "private"
+        });
+        Assert.True(privateSites.Success);
+        Assert.Equal(new[] { "missingInPrivateExprProp" }, VariableNames(privateSites.Data!).ToArray());
+
+        var publicSites = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = ExpressionBodiedKindIds,
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "public"
+        });
+        Assert.True(publicSites.Success);
+        Assert.Equal(
+            new[]
+            {
+                "MissingPropType", "missingInArrowGetter", "missingInBlockGetter", "missingInExprIndexer",
+                "missingInExprLambda", "missingInExprProp", "missingInInitializer"
+            },
+            VariableNames(publicSites.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+    }
+
     #endregion
 
 

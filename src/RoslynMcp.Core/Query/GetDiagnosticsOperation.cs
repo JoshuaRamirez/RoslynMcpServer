@@ -92,7 +92,8 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         // Optional kindFilter (same values / parsing as search_symbols / find_references /
         // find_callers kindFilter): keep only diagnostics whose site symbol (the same
         // DeclaringSiteSymbol accessibilityFilter judges) maps to that kind via SymbolKindMapper
-        // (methods / constructors / accessors → Method, fields → Field or Constant, property
+        // (methods / constructors / accessors → Method, including the implicit getter whose body is an
+        // expression-bodied property / indexer's `=> expr`; fields → Field or Constant; property
         // definitions → Property). Namespace-level sites never match a named kind filter. Null when
         // omitted / blank. Invalid values already rejected in ValidateParams.
         var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);

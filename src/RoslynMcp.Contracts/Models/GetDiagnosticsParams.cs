@@ -122,6 +122,9 @@ public sealed class GetDiagnosticsParams
     /// shared kind classification via <c>SymbolKindMapper.Map</c> are returned: methods, constructors,
     /// operators, and property/event accessors are <c>Method</c>; a field (including CS0169 / CS0414 on the
     /// field) is <c>Field</c> (<c>Constant</c> for a const); a property declaration site is <c>Property</c>.
+    /// The body of an expression-bodied property / indexer (<c>int P => Missing;</c>) is its getter, so it is
+    /// <c>Method</c> like a block-bodied or arrow-bodied <c>get</c> accessor; the property's type, name,
+    /// parameters, and initializer stay <c>Property</c>.
     /// Namespace-level sites (unused usings, top-level statements enclosed by the synthesized
     /// <c>&lt;Main&gt;$</c>) never match a named kind filter, including <c>Namespace</c> and <c>Method</c>.
     /// Diagnostics with no in-source location never match. Combined with <see cref="SourceFile"/>,
