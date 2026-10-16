@@ -4,9 +4,11 @@ namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
 /// Normalizes and applies the optional <c>namespaceFilter</c> of <c>search_symbols</c>,
-/// <c>find_implementations</c>, <c>find_references</c>, <c>find_callers</c>, <c>get_type_hierarchy</c>, <c>get_diagnostics</c>, and <c>get_document_outline</c>: a symbol (or reference / call / diagnostic site) matches when
-/// its containing namespace equals the filter or is nested inside it (ordinal); a namespace outline entry matches when
-/// the namespace itself does.
+/// <c>find_implementations</c>, <c>find_references</c>, <c>find_callers</c>, <c>get_type_hierarchy</c>,
+/// <c>get_diagnostics</c>, <c>get_document_outline</c>, and <c>get_symbol_info</c>: a symbol (or
+/// reference / call / diagnostic site / type member) matches when its containing namespace equals the
+/// filter or is nested inside it (ordinal); a namespace outline entry matches when the namespace itself
+/// does.
 /// </summary>
 internal static class NamespaceFilter
 {

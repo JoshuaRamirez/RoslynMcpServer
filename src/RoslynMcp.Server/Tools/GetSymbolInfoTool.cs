@@ -32,7 +32,7 @@ public sealed class GetSymbolInfoTool : IToolHandler
     public string Name => "get_symbol_info";
 
     /// <inheritdoc />
-    public string Description => "Get detailed information about a C# symbol including its type hierarchy, members, modifiers, parameters, return type, and XML documentation. Optional kindFilter (same values as search_symbols / get_document_outline kindFilter, case-insensitive) keeps only Members of that kind on a type, applied before maxResults so totalCount/truncated reflect the filtered set; Local/Parameter/Namespace never match a type member. Optional accessibilityFilter (public, internal, protected, private, protected internal, or private protected; case-insensitive; same values as search_symbols / get_document_outline accessibilityFilter) keeps only Members with exactly that declared accessibility, counting implicit defaults (a class member with no modifier is private); combined with kindFilter and applied before maxResults. Optional nameFilter (same matching as get_document_outline nameFilter: ordinal, case-insensitive substring on the member's simple name) keeps only Members whose name contains it; combined with kindFilter and accessibilityFilter and applied before maxResults. Optional maxResults caps the returned Members list of a type (omit = no cap); result includes TotalCount and Truncated. Interfaces, Parameters and other fields are not filtered or capped, and kindFilter/accessibilityFilter/nameFilter/maxResults have no effect on non-type symbols.";
+    public string Description => "Get detailed information about a C# symbol including its type hierarchy, members, modifiers, parameters, return type, and XML documentation. Optional kindFilter (same values as search_symbols / get_document_outline kindFilter, case-insensitive) keeps only Members of that kind on a type, applied before maxResults so totalCount/truncated reflect the filtered set; Local/Parameter/Namespace never match a type member. Optional accessibilityFilter (public, internal, protected, private, protected internal, or private protected; case-insensitive; same values as search_symbols / get_document_outline accessibilityFilter) keeps only Members with exactly that declared accessibility, counting implicit defaults (a class member with no modifier is private); combined with kindFilter and applied before maxResults. Optional nameFilter (same matching as get_document_outline nameFilter: ordinal, case-insensitive substring on the member's simple name) keeps only Members whose name contains it; combined with kindFilter and accessibilityFilter and applied before maxResults. Optional namespaceFilter (same matching as search_symbols / get_document_outline / find_implementations / get_type_hierarchy / find_references / find_callers / get_diagnostics namespaceFilter: ordinal, case-sensitive; containing namespace equals it or is nested inside it; surrounding whitespace trimmed; leading global:: accepted; bare global:: filters nothing; global-namespace members never match) keeps only Members in that namespace scope; combined with kindFilter, accessibilityFilter, and nameFilter (order: kindFilter → accessibilityFilter → nameFilter → namespaceFilter → maxResults). Members of a type normally share the type's containing namespace (including nested types), so a named filter typically keeps all or none depending on whether the type's namespace matches or is nested under the filter (e.g. App keeps members of a type in App.Services). For metadata types, each member is judged by its own containing namespace. Optional maxResults caps the returned Members list of a type (omit = no cap); result includes TotalCount and Truncated. Interfaces, Parameters and other fields are not filtered or capped, and kindFilter/accessibilityFilter/nameFilter/namespaceFilter/maxResults have no effect on non-type symbols.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -71,7 +71,7 @@ public sealed class GetSymbolInfoTool : IToolHandler
             maxResults = new
             {
                 type = "integer",
-                description = "Maximum number of members to return for a type symbol (optional; omit = no cap). Applied after kindFilter, accessibilityFilter, and nameFilter so totalCount/truncated reflect the filtered set. Does not cap Interfaces or Parameters; no effect on non-type symbols.",
+                description = "Maximum number of members to return for a type symbol (optional; omit = no cap). Applied after kindFilter, accessibilityFilter, nameFilter, and namespaceFilter so totalCount/truncated reflect the filtered set. Does not cap Interfaces or Parameters; no effect on non-type symbols.",
                 minimum = 1
             },
             kindFilter = new
@@ -87,7 +87,12 @@ public sealed class GetSymbolInfoTool : IToolHandler
             nameFilter = new
             {
                 type = "string",
-                description = "Keep only Members of a type symbol whose simple name contains this value (optional; ordinal, case-insensitive substring; surrounding whitespace trimmed). Same matching as get_document_outline nameFilter. Combined with kindFilter and accessibilityFilter (a member must satisfy all that are set) and applied before maxResults so totalCount/truncated reflect the filtered set; omit, empty, or whitespace = all members; no effect on non-type symbols or on Interfaces/Parameters"
+                description = "Keep only Members of a type symbol whose simple name contains this value (optional; ordinal, case-insensitive substring; surrounding whitespace trimmed). Same matching as get_document_outline nameFilter. Combined with kindFilter, accessibilityFilter, and namespaceFilter (a member must satisfy all that are set) and applied before maxResults so totalCount/truncated reflect the filtered set; omit, empty, or whitespace = all members; no effect on non-type symbols or on Interfaces/Parameters"
+            },
+            namespaceFilter = new
+            {
+                type = "string",
+                description = "Keep only Members of a type symbol whose containing namespace equals this value or is nested inside it (optional; ordinal, case-sensitive; surrounding whitespace trimmed; leading global:: accepted; bare global:: filters nothing). Same matching as search_symbols / get_document_outline / find_implementations / get_type_hierarchy / find_references / find_callers / get_diagnostics namespaceFilter. Global-namespace members never match a named filter. Members of a type normally share the type's containing namespace (including nested types), so a named filter typically keeps all or none depending on whether the type's namespace matches or is nested under the filter (e.g. App keeps members of a type in App.Services). For metadata types, each member is judged by its own containing namespace. Combined with kindFilter, accessibilityFilter, and nameFilter (order: kindFilter → accessibilityFilter → nameFilter → namespaceFilter → maxResults) so totalCount/truncated reflect the filtered set; omit, empty, or whitespace = all members; no effect on non-type symbols or on Interfaces/Parameters"
             }
         },
         additionalProperties = false
@@ -117,7 +122,8 @@ public sealed class GetSymbolInfoTool : IToolHandler
                 MaxResults = args.MaxResults,
                 KindFilter = args.KindFilter,
                 AccessibilityFilter = args.AccessibilityFilter,
-                NameFilter = args.NameFilter
+                NameFilter = args.NameFilter,
+                NamespaceFilter = args.NamespaceFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -152,5 +158,6 @@ public sealed class GetSymbolInfoTool : IToolHandler
         public string? KindFilter { get; init; }
         public string? AccessibilityFilter { get; init; }
         public string? NameFilter { get; init; }
+        public string? NamespaceFilter { get; init; }
     }
 }
