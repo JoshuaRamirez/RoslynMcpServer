@@ -70,7 +70,7 @@ public sealed class FindReferencesParams
     /// matching as <c>search_symbols</c> / <c>find_implementations</c> <c>namespaceFilter</c>.
     /// Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
     /// <c>global::</c> is accepted. Combined with <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>,
-    /// <see cref="IncludeDeclaration"/>, <see cref="AccessibilityFilter"/>, and <see cref="NameFilter"/>, and applied before <see cref="MaxResults"/> so
+    /// <see cref="IncludeDeclaration"/>, <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, and <see cref="KindFilter"/>, and applied before <see cref="MaxResults"/> so
     /// <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered set. Sites in the global
     /// namespace (top-level statements, usings outside any namespace) never match a named filter.
     /// Omit, blank, or a bare <c>global::</c> (the root namespace) reports locations in all namespaces.
@@ -97,7 +97,7 @@ public sealed class FindReferencesParams
     /// type is an <c>internal</c> site), or for a local / parameter / local function by the member
     /// declaring it. Combined with
     /// <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
-    /// <see cref="NameFilter"/>, and <see cref="IncludeDeclaration"/>, and applied before
+    /// <see cref="NameFilter"/>, <see cref="KindFilter"/>, and <see cref="IncludeDeclaration"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
     /// accessibility-filtered set. Omit or leave blank
     /// for no accessibility filter. An unrecognized value fails with <c>InvalidVisibility</c>.
@@ -121,10 +121,37 @@ public sealed class FindReferencesParams
     /// member declaring it. Namespace-level sites (using aliases, a top-level type's base list, top-level
     /// statements, a namespace's own declaration) never match. Surrounding whitespace is trimmed; inner whitespace is not collapsed.
     /// Combined with <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
-    /// <see cref="AccessibilityFilter"/>, and <see cref="IncludeDeclaration"/> (a location must satisfy all
+    /// <see cref="AccessibilityFilter"/>, <see cref="KindFilter"/>, and <see cref="IncludeDeclaration"/> (a location must satisfy all
     /// that are set), and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
     /// <c>Truncated</c> reflect the name-filtered set. A value no site name contains returns an empty
     /// success. Omit, empty, or whitespace for no name filter.
     /// </summary>
     public string? NameFilter { get; init; }
+
+    /// <summary>
+    /// Optional symbol kind to restrict reported reference locations to: a single <c>SymbolKind</c> name shared
+    /// with <c>search_symbols</c> / <c>get_document_outline</c> / <c>get_symbol_info</c> /
+    /// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>find_callers</c> <c>kindFilter</c> (Class, Struct,
+    /// Interface, Enum, Record, Delegate, Method, Property, Field, Event, Constant, Local, Parameter,
+    /// Namespace; case-insensitive; surrounding whitespace trimmed; numeric or comma-combined values
+    /// rejected). When set, only locations whose reference site's <strong>enclosing symbol</strong> — the same
+    /// site symbol <see cref="AccessibilityFilter"/> and <see cref="NameFilter"/> judge (the member or type
+    /// enclosing each usage, not the target symbol; lambdas / anonymous methods and local functions are looked
+    /// through to the member declaring them) — has that shared kind classification are returned via
+    /// <c>SymbolKindMapper.Map</c>: methods, constructors, operators, and property/event accessors are
+    /// <c>Method</c>; a field initializer is <c>Field</c> (<c>Constant</c> for a const); a property declaration
+    /// site (definition) is <c>Property</c>. Definition locations (when <see cref="IncludeDeclaration"/> is on)
+    /// are judged by the declared symbol itself, or for a local / parameter / local function by the member
+    /// declaring it. Namespace-level sites never match a named kind filter; top-level statements, enclosed by the
+    /// synthesized <c>&lt;Main&gt;$</c> entry point, are namespace-level sites and never match any kind, including
+    /// <c>Method</c>. A site inside a delegate's synthesized <c>Invoke</c> / <c>BeginInvoke</c> / <c>EndInvoke</c> /
+    /// <c>.ctor</c> is classified as the delegate itself, so it matches <c>Delegate</c>, not <c>Method</c>. Combined with
+    /// <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
+    /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, and <see cref="IncludeDeclaration"/>
+    /// (a location must satisfy all that are set), and applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the kind-filtered set. A kind no site has returns an empty
+    /// success. Omit, empty, or whitespace for no kind filter. An unrecognized value fails with
+    /// <c>InvalidSymbolKind</c>.
+    /// </summary>
+    public string? KindFilter { get; init; }
 }
