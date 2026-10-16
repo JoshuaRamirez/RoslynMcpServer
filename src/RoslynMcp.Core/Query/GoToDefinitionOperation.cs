@@ -47,17 +47,7 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
 
-        if (!string.IsNullOrWhiteSpace(@params.DefinitionFile))
-        {
-            if (!PathResolver.IsAbsolutePath(@params.DefinitionFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "definitionFile must be an absolute path.");
-
-            if (!PathResolver.IsValidCSharpFilePath(@params.DefinitionFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "definitionFile must be a .cs file.");
-
-            if (!File.Exists(@params.DefinitionFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.DefinitionFile}");
-        }
+        ResultFileFilter.Validate(@params.DefinitionFile, "definitionFile");
 
         ProjectPathFilter.Validate(@params.ProjectPath);
     }

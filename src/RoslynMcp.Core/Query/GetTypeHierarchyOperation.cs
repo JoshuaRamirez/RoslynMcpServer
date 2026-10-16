@@ -59,17 +59,7 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (!string.IsNullOrWhiteSpace(@params.DerivedFile))
-        {
-            if (!PathResolver.IsAbsolutePath(@params.DerivedFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "derivedFile must be an absolute path.");
-
-            if (!PathResolver.IsValidCSharpFilePath(@params.DerivedFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "derivedFile must be a .cs file.");
-
-            if (!File.Exists(@params.DerivedFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.DerivedFile}");
-        }
+        ResultFileFilter.Validate(@params.DerivedFile, "derivedFile");
 
         ProjectPathFilter.Validate(@params.ProjectPath);
 
