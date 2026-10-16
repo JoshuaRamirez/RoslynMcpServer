@@ -6,12 +6,89 @@ using RoslynMcp.Contracts.Errors;
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
-/// Shared helpers for <c>make_static</c> / <c>make_non_static</c> planning
-/// and call-site inspection. Same bodies as the prior private / internal
+/// Shared helpers for <c>make_static</c> / <c>make_non_static</c> params
+/// validation, planning, and call-site inspection. Same bodies as the prior private / internal
 /// copies on <c>MakeStaticOperation</c> and <c>MakeNonStaticOperation</c>.
 /// </summary>
 internal static class StaticMethodHelpers
 {
+    /// <summary>
+    /// Shared make_static / make_non_static params gate. Same body as the
+    /// prior identical <c>MakeStaticOperation.Validate</c> /
+    /// <c>MakeNonStaticOperation.Validate</c> copies. AllFiles rejects any
+    /// selection coordinate or <paramref name="symbolName"/>
+    /// (<see cref="ErrorCodes.MissingRequiredParam"/>) and does not
+    /// shape-check the optional <paramref name="sourceFile"/>. Single-site
+    /// requires <paramref name="sourceFile"/> and all four coordinates
+    /// (<see cref="ErrorCodes.MissingRequiredParam"/>), then an absolute
+    /// <c>.cs</c> path, then 1-based coordinates
+    /// (<see cref="ErrorCodes.InvalidLineNumber"/> /
+    /// <see cref="ErrorCodes.InvalidColumnNumber"/>), then end after start
+    /// (<see cref="ErrorCodes.InvalidSelectionRange"/>), then an existing
+    /// file (<see cref="ErrorCodes.SourceFileNotFound"/>).
+    /// </summary>
+    internal static void ValidateParams(
+        bool allFiles,
+        string? sourceFile,
+        int? startLine,
+        int? startColumn,
+        int? endLine,
+        int? endColumn,
+        string? symbolName)
+    {
+        if (allFiles)
+        {
+            if (startLine.HasValue ||
+                startColumn.HasValue ||
+                endLine.HasValue ||
+                endColumn.HasValue ||
+                !string.IsNullOrWhiteSpace(symbolName))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with startLine, startColumn, endLine, endColumn, or symbolName.");
+            }
+
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(sourceFile))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+
+        if (!startLine.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startLine is required.");
+
+        if (!startColumn.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startColumn is required.");
+
+        if (!endLine.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endLine is required.");
+
+        if (!endColumn.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endColumn is required.");
+
+        SourceFilePathHelpers.ValidateSourceFilePath(sourceFile);
+
+        if (startLine.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "startLine must be >= 1.");
+
+        if (startColumn.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "startColumn must be >= 1.");
+
+        if (endLine.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "endLine must be >= 1.");
+
+        if (endColumn.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "endColumn must be >= 1.");
+
+        if (endLine.Value < startLine.Value ||
+            (endLine.Value == startLine.Value && endColumn.Value < startColumn.Value))
+            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
+
+        if (!File.Exists(sourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
+    }
+
     /// <summary>
     /// Finds the <see cref="SimpleNameSyntax"/> covering
     /// <paramref name="span"/> (node itself or nearest ancestor/self whose
