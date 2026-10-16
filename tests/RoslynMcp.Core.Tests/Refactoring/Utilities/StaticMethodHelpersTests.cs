@@ -187,4 +187,115 @@ public class StaticMethodHelpersTests
         Assert.NotNull(type);
         return type!.GetMembers(methodName).OfType<IMethodSymbol>().Single();
     }
+
+    [Fact]
+    public void ValidateParams_AllFiles_NoSelection_DoesNotThrow_AndSkipsSourceFileShapeCheck()
+    {
+        StaticMethodHelpers.ValidateParams(true, null, null, null, null, null, null);
+        StaticMethodHelpers.ValidateParams(true, "Relative.cs", null, null, null, null, "  ");
+    }
+
+    [Theory]
+    [InlineData(1, null, null, null, null)]
+    [InlineData(null, 1, null, null, null)]
+    [InlineData(null, null, 1, null, null)]
+    [InlineData(null, null, null, 1, null)]
+    [InlineData(null, null, null, null, "M")]
+    public void ValidateParams_AllFiles_WithSelectionOrSymbolName_ThrowsMissingRequiredParam(
+        int? startLine,
+        int? startColumn,
+        int? endLine,
+        int? endColumn,
+        string? symbolName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            StaticMethodHelpers.ValidateParams(true, null, startLine, startColumn, endLine, endColumn, symbolName));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal(
+            "allFiles cannot be combined with startLine, startColumn, endLine, endColumn, or symbolName.",
+            ex.Message);
+    }
+
+    [Theory]
+    [InlineData(" ", 1, 1, 1, 1, "sourceFile is required.")]
+    [InlineData("Relative.cs", null, null, null, null, "startLine is required.")]
+    [InlineData("Relative.cs", 1, null, null, null, "startColumn is required.")]
+    [InlineData("Relative.cs", 1, 1, null, null, "endLine is required.")]
+    [InlineData("Relative.cs", 1, 1, 1, null, "endColumn is required.")]
+    public void ValidateParams_SingleSite_MissingRequired_ThrowsBeforePathCheck(
+        string sourceFile,
+        int? startLine,
+        int? startColumn,
+        int? endLine,
+        int? endColumn,
+        string expectedMessage)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            StaticMethodHelpers.ValidateParams(false, sourceFile, startLine, startColumn, endLine, endColumn, null));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal(expectedMessage, ex.Message);
+    }
+
+    [Fact]
+    public void ValidateParams_SingleSite_RelativePath_ThrowsInvalidSourcePath_BeforeCoordinateRangeChecks()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            StaticMethodHelpers.ValidateParams(false, "Relative.cs", 0, 0, 0, 0, null));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData(0, 1, 1, 1, ErrorCodes.InvalidLineNumber, "startLine must be >= 1.")]
+    [InlineData(1, 0, 1, 1, ErrorCodes.InvalidColumnNumber, "startColumn must be >= 1.")]
+    [InlineData(1, 1, 0, 1, ErrorCodes.InvalidLineNumber, "endLine must be >= 1.")]
+    [InlineData(1, 1, 1, 0, ErrorCodes.InvalidColumnNumber, "endColumn must be >= 1.")]
+    [InlineData(2, 1, 1, 5, ErrorCodes.InvalidSelectionRange, "End must be after start.")]
+    [InlineData(1, 5, 1, 4, ErrorCodes.InvalidSelectionRange, "End must be after start.")]
+    public void ValidateParams_SingleSite_InvalidCoordinates_Throw(
+        int startLine,
+        int startColumn,
+        int endLine,
+        int endColumn,
+        string expectedCode,
+        string expectedMessage)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            StaticMethodHelpers.ValidateParams(false, MissingAbsolutePath(), startLine, startColumn, endLine, endColumn, null));
+
+        Assert.Equal(expectedCode, ex.ErrorCode);
+        Assert.Equal(expectedMessage, ex.Message);
+    }
+
+    [Fact]
+    public void ValidateParams_SingleSite_MissingFile_ThrowsSourceFileNotFound_AfterRangeChecks()
+    {
+        var path = MissingAbsolutePath();
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            StaticMethodHelpers.ValidateParams(false, path, 1, 3, 1, 3, "M"));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        Assert.Equal($"Source file not found: {path}", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateParams_SingleSite_ExistingFile_DoesNotThrow()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"RoslynMcpStaticValidate_{Guid.NewGuid():N}.cs");
+        File.WriteAllText(path, "class C { void M() { } }");
+        try
+        {
+            StaticMethodHelpers.ValidateParams(false, path, 1, 1, 2, 1, null);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static string MissingAbsolutePath() =>
+        Path.Combine(Path.GetTempPath(), "RoslynMcpStaticMethodHelpersMissing.cs");
 }
