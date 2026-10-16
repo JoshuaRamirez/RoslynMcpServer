@@ -2529,6 +2529,25 @@ public class HelpGeneratorTests
 
 
     [Fact]
+    public void GenerateToolHelp_GetDiagnostics_ShowsNameFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("nameFilter", tool.Description, StringComparison.Ordinal);
+        Assert.Contains("ISymbol.Name", tool.Description, StringComparison.Ordinal);
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        if (requiredIdx >= 0)
+            Assert.DoesNotContain("--name-filter", help[requiredIdx..optionalIdx]);
+
+        Assert.Contains("--name-filter", help[optionalIdx..]);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GetDiagnostics_ShowsKindFilter()
     {
         var registry = ToolRegistry.BuildDefault();

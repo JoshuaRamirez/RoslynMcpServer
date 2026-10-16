@@ -55,7 +55,7 @@ public sealed class GetDiagnosticsParams
     /// diagnostics with no in-source location never match a named filter. Combined with
     /// <see cref="SourceFile"/>, <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>,
     /// <see cref="DiagnosticIds"/>, <see cref="ExcludeDiagnosticIds"/>, <see cref="AccessibilityFilter"/>,
-    /// <see cref="MessageFilter"/>, and <see cref="KindFilter"/>, and applied before
+    /// <see cref="MessageFilter"/>, <see cref="KindFilter"/>, and <see cref="NameFilter"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered
     /// set. Omit, blank, or a bare <c>global::</c> (the root namespace) returns diagnostics in all
     /// namespaces.
@@ -83,7 +83,7 @@ public sealed class GetDiagnosticsParams
     /// Diagnostics with no in-source location never match. Combined with <see cref="SourceFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>,
     /// <see cref="ExcludeDiagnosticIds"/>, <see cref="NamespaceFilter"/>, <see cref="MessageFilter"/>,
-    /// and <see cref="KindFilter"/>,
+    /// <see cref="KindFilter"/>, and <see cref="NameFilter"/>,
     /// and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the accessibility-filtered
     /// set. Omit or leave blank for no accessibility filter. An unrecognized value fails with
@@ -100,7 +100,7 @@ public sealed class GetDiagnosticsParams
     /// diagnostics with or without an in-source location. Combined with <see cref="SourceFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>,
     /// <see cref="ExcludeDiagnosticIds"/>, <see cref="NamespaceFilter"/>,
-    /// <see cref="AccessibilityFilter"/>, and <see cref="KindFilter"/> (a diagnostic must satisfy all that are set), and applied before
+    /// <see cref="AccessibilityFilter"/>, <see cref="KindFilter"/>, and <see cref="NameFilter"/> (a diagnostic must satisfy all that are set), and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the message-filtered set.
     /// Omit, empty, or whitespace = no message filter.
     /// </summary>
@@ -130,10 +130,34 @@ public sealed class GetDiagnosticsParams
     /// Diagnostics with no in-source location never match. Combined with <see cref="SourceFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>,
     /// <see cref="ExcludeDiagnosticIds"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>,
-    /// and <see cref="MessageFilter"/> (a diagnostic must satisfy all that are set), and applied before
+    /// <see cref="MessageFilter"/>, and <see cref="NameFilter"/> (a diagnostic must satisfy all that are set), and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the kind-filtered set. A kind
     /// no site has returns an empty success. Omit, empty, or whitespace for no kind filter. An unrecognized
     /// value fails with <c>InvalidSymbolKind</c>.
     /// </summary>
     public string? KindFilter { get; init; }
+
+    /// <summary>
+    /// Optional name substring to restrict diagnostics to: same normalization and matching as the
+    /// shared <c>nameFilter</c> of <c>get_document_outline</c> / <c>get_symbol_info</c> /
+    /// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>find_callers</c> /
+    /// <c>find_references</c> (ordinal, case-insensitive substring; surrounding whitespace trimmed; inner
+    /// whitespace not collapsed; free text, never rejected). When set, only diagnostics whose
+    /// <b>diagnostic site</b> — the same site symbol <see cref="AccessibilityFilter"/> and
+    /// <see cref="KindFilter"/> judge (the nearest declared member at a declaration-attached location
+    /// such as CS0169 on a field identifier, otherwise the member / type enclosing the location, with
+    /// lambdas / local functions / locals / params looked through to the declaring member) — has a
+    /// simple <c>ISymbol.Name</c> containing the value are returned, e.g. <c>Handle</c> for diagnostics
+    /// inside <c>HandleOrder</c> or <c>OrderHandler</c>. The name is Roslyn's <c>ISymbol.Name</c>, as in
+    /// <c>find_references</c> <c>nameFilter</c>: accessors read <c>get_X</c> / <c>set_X</c> (including the
+    /// implicit getter of an expression-bodied property / indexer), constructors <c>.ctor</c>.
+    /// Namespace-level sites (unused usings, top-level statements) and diagnostics with no in-source
+    /// location never match. Combined with <see cref="SourceFile"/>, <see cref="ProjectPath"/>,
+    /// <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>, <see cref="ExcludeDiagnosticIds"/>,
+    /// <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>, <see cref="MessageFilter"/>, and
+    /// <see cref="KindFilter"/> (a diagnostic must satisfy all that are set), and applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the name-filtered set.
+    /// No match returns an empty success. Omit, empty, or whitespace for no name filter.
+    /// </summary>
+    public string? NameFilter { get; init; }
 }

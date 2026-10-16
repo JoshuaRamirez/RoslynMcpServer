@@ -386,5 +386,14 @@ public class CliArgsTests
         Assert.Equal("Warning", result.Options["severity-filter"]);
         Assert.Equal("Method", result.Options["kind-filter"]);
     }
+
+    [Fact]
+    public void GetDiagnostics_NameFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Warning", "--name-filter", "Handle"]);
+        Assert.Equal("get-diagnostics", result.ToolName);
+        Assert.Equal("Warning", result.Options["severity-filter"]);
+        Assert.Equal("Handle", result.Options["name-filter"]);
+    }
 }
 
