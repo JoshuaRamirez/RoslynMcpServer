@@ -77,6 +77,7 @@ public class GetDiagnosticsToolTests
         Assert.True(properties.TryGetProperty("namespaceFilter", out _));
         Assert.True(properties.TryGetProperty("accessibilityFilter", out _));
         Assert.True(properties.TryGetProperty("messageFilter", out _));
+        Assert.True(properties.TryGetProperty("kindFilter", out _));
     }
 
     [Fact]
@@ -223,6 +224,62 @@ public class GetDiagnosticsToolTests
         var args = JsonDocument.Parse(@"{
             ""solutionPath"": ""C:/test/test.sln"",
             ""messageFilter"": 42
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+
+    [Fact]
+    public void GetDefinition_KindFilter_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var kindFilter = doc.RootElement.GetProperty("properties").GetProperty("kindFilter");
+
+        Assert.Equal("string", kindFilter.GetProperty("type").GetString());
+        var description = kindFilter.GetProperty("description").GetString();
+        Assert.Contains("SymbolKind", description);
+        Assert.Contains("diagnostic site", description);
+        Assert.Contains("find_references", description);
+        Assert.Contains("before maxResults", description);
+        Assert.Contains("InvalidSymbolKind", description);
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("kindFilter", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("kindFilter", _tool.Description);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_KindFilterString_ParsesAndReachesWorkspace()
+    {
+        // Arrange - well-formed kindFilter parses; the throwing provider proves parsing succeeded
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""kindFilter"": ""Method""
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_KindFilterNonString_ReturnsParseError()
+    {
+        // Arrange - a number is not a string; deserialization fails before workspace creation
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""kindFilter"": 42
         }").RootElement;
 
         // Act
