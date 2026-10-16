@@ -72,7 +72,7 @@ public sealed class GetSymbolInfoParams
 
     /// <summary>
     /// Optional namespace to restrict the <c>Members</c> list of a named type to: keep members whose
-    /// containing namespace equals this value or is nested inside it (ordinal; same matching as
+    /// containing namespace equals this value or is nested inside it (ordinal, case-sensitive; same matching as
     /// <c>search_symbols</c> / <c>get_document_outline</c> / <c>find_implementations</c> /
     /// <c>get_type_hierarchy</c> / <c>find_references</c> / <c>find_callers</c> / <c>get_diagnostics</c>
     /// <c>namespaceFilter</c>). Surrounding whitespace is trimmed and a leading <c>global::</c> is
@@ -81,6 +81,7 @@ public sealed class GetSymbolInfoParams
     /// so a named filter typically keeps all or none of that type's Members depending on whether the
     /// type's namespace matches or is nested under the filter — still valuable for API parity and for
     /// nested-namespace matching (e.g. <c>App</c> keeps members of a type in <c>App.Services</c>).
+    /// For metadata types, each member is judged by its own containing namespace.
     /// Combined with <see cref="KindFilter"/>, <see cref="AccessibilityFilter"/>, and
     /// <see cref="NameFilter"/> (a member must satisfy all that are set); order is kindFilter →
     /// accessibilityFilter → nameFilter → namespaceFilter → maxResults, so <c>TotalCount</c> /

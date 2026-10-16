@@ -1297,6 +1297,26 @@ public class GetSymbolInfoOperationTests
     }
 
     [SkippableFact]
+    public async Task GetSymbolInfo_NamespaceFilterIsCaseSensitive()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespacedWidgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            NamespaceFilter = "app.services"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.Members);
+        Assert.Empty(result.Data.Members);
+        Assert.Equal(0, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
     public async Task GetSymbolInfo_NamespaceFilterDoesNotFilterInterfaces()
     {
         await using var workspace = await TempWorkspace.CreateAsync(NamespacedWidgetSource);
