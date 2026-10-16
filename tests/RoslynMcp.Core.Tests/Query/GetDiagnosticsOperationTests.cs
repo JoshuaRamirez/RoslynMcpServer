@@ -12,7 +12,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
-/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>, <c>diagnosticIds</c>, <c>excludeDiagnosticIds</c>, <c>projectPath</c>, <c>namespaceFilter</c>, <c>accessibilityFilter</c>, <c>messageFilter</c>, and <c>kindFilter</c>
+/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>, <c>diagnosticIds</c>, <c>excludeDiagnosticIds</c>, <c>projectPath</c>, <c>namespaceFilter</c>, <c>accessibilityFilter</c>, <c>messageFilter</c>, <c>kindFilter</c>, and <c>nameFilter</c>
 /// (peer of <see cref="FindReferencesOperation"/> / <see cref="SearchSymbolsOperation"/>).
 /// </summary>
 public class GetDiagnosticsOperationTests
@@ -873,6 +873,334 @@ public class GetDiagnosticsOperationTests
                 "missingInExprLambda", "missingInExprProp", "missingInInitializer"
             },
             VariableNames(publicSites.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+    }
+
+    #endregion
+
+    #region nameFilter
+
+    // Site-name NameFilter: judged on the simple ISymbol.Name of the same declaring site symbol that
+    // accessibilityFilter / kindFilter judge. Unused field → the field's name; unused locals → the
+    // declaring method (lambdas looked through), constructor (.ctor), or accessor (get_X); unused usings
+    // are namespace-level sites and never match. Variable names in the messages identify sites.
+    private const string NameSource = """
+        using System.Text;
+
+        namespace App
+        {
+            using System.Collections.Generic;
+
+            public class OrderService
+            {
+                private int unusedField;
+                public void HandleOrder() { int unusedInHandleOrder; }
+                public void OrderHandler() { System.Action a = () => { int unusedInLambda; }; }
+                private void ReorderItems() { int unusedInReorder; }
+                void Process() { int unusedInProcess; }
+                public OrderService() { int unusedInCtor; }
+                int Total { get { int unusedInGetter; return 0; } }
+            }
+        }
+        """;
+
+    private static readonly string[] NameDiagnosticIds = { "CS0168", "CS0169", "CS8019" };
+
+    [Fact]
+    public void NameFilter_DefaultsToNull()
+    {
+        var @params = new GetDiagnosticsParams();
+        Assert.Null(@params.NameFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t\n")]
+    public async Task GetDiagnostics_NameFilterBlank_ReturnsSameAsOmitted(string nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = NameDiagnosticIds,
+            SourceFile = workspace.SourcePath
+        });
+        var blank = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = NameDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(blank.Success);
+        Assert.Contains(omitted.Data!.Diagnostics, d => d.Id == "CS8019");
+        Assert.Equal(omitted.Data.TotalCount, blank.Data!.TotalCount);
+        Assert.Equal(
+            omitted.Data.Diagnostics.Select(d => d.Id + d.Message + d.Line).OrderBy(x => x, StringComparer.Ordinal),
+            blank.Data.Diagnostics.Select(d => d.Id + d.Message + d.Line).OrderBy(x => x, StringComparer.Ordinal));
+    }
+
+    [SkippableTheory]
+    [InlineData("Handle", new[] { "unusedInHandleOrder", "unusedInLambda" })]
+    [InlineData("handle", new[] { "unusedInHandleOrder", "unusedInLambda" })]
+    [InlineData("  HANDLE  ", new[] { "unusedInHandleOrder", "unusedInLambda" })]
+    [InlineData("Order", new[] { "unusedInHandleOrder", "unusedInLambda", "unusedInReorder" })]
+    [InlineData("Process", new[] { "unusedInProcess" })]
+    [InlineData("unusedField", new[] { "OrderService.unusedField" })]
+    [InlineData(".ctor", new[] { "unusedInCtor" })]
+    [InlineData("get_Total", new[] { "unusedInGetter" })]
+    public async Task GetDiagnostics_NameFilter_SelectsSitesBySiteSymbolName(string nameFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = NameDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success, nameFilter);
+        Assert.Equal(expected, VariableNames(result.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+        Assert.Equal(expected.Length, result.Data!.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NameFilter_NoMatch_ReturnsEmpty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = NameDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            NameFilter = "Invoice"
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Diagnostics);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("App")]
+    [InlineData("System")]
+    [InlineData("Generic")]
+    public async Task GetDiagnostics_NameFilter_NamespaceLevelSitesNeverMatch(string nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = NameDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success, nameFilter);
+        Assert.Empty(result.Data!.Diagnostics);
+        Assert.Equal(0, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NameFilter_TopLevelStatementsNeverMatchSynthesizedEntryPoint()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "int unusedTopLevel;\nnamespace App { public class Program2 { public static void Main2() { int unusedInMain2; } } }\n",
+            outputType: "Exe");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = new[] { "CS0168" },
+            SourceFile = workspace.SourcePath
+        });
+        Assert.True(omitted.Success);
+        Assert.Contains("unusedTopLevel", VariableNames(omitted.Data!));
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = new[] { "CS0168" },
+            SourceFile = workspace.SourcePath,
+            NameFilter = "Main"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "unusedInMain2" }, VariableNames(result.Data!).ToArray());
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NameFilter_DelegateSiteMatchesDelegateNameNotInvoke()
+    {
+        // CS0246 on a delegate parameter sits in the synthesized Invoke; DeclaringSiteSymbol resolves
+        // the site to the delegate, so nameFilter matches the delegate's name, never "Invoke".
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class C
+            {
+                public delegate void OrderCallback(MissingType value);
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+        var ids = new[] { "CS0246" };
+
+        var byDelegate = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            NameFilter = "OrderCallback"
+        });
+        var byInvoke = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            DiagnosticIds = ids,
+            NameFilter = "Invoke"
+        });
+
+        Assert.True(byDelegate.Success);
+        Assert.Equal(new[] { "MissingType" }, VariableNames(byDelegate.Data!));
+        Assert.True(byInvoke.Success);
+        Assert.Empty(byInvoke.Data!.Diagnostics);
+        Assert.Equal(0, byInvoke.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NameFilter_DropsDiagnosticsWithoutSourceLocation()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "namespace App { public class C { public void M() { int unusedInMethod; } } }\n",
+            outputType: "Exe");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { SeverityFilter = "Warning" });
+        Assert.True(omitted.Success);
+        Assert.Contains(omitted.Data!.Diagnostics, d => d.Id == "CS5001" && d.File == null);
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            NameFilter = "M"
+        });
+
+        Assert.True(filtered.Success);
+        Assert.NotEmpty(filtered.Data!.Diagnostics);
+        Assert.All(filtered.Data.Diagnostics, d => Assert.NotNull(d.File));
+        Assert.DoesNotContain(filtered.Data.Diagnostics, d => d.Id == "CS5001");
+        Assert.Contains(filtered.Data.Diagnostics, d => d.Id == "CS0168");
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NameFilterWithMaxResults_CapsAfterFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = NameDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            NameFilter = "Handle"
+        });
+        Assert.True(filtered.Success);
+        Assert.Equal(2, filtered.Data!.TotalCount);
+
+        var capped = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = NameDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            NameFilter = "Handle",
+            MaxResults = 1
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.TotalCount);
+        Assert.Single(capped.Data.Diagnostics);
+        Assert.True(capped.Data.Truncated);
+        Assert.All(VariableNames(capped.Data), n => Assert.Contains(n, VariableNames(filtered.Data)));
+    }
+
+    [SkippableTheory]
+    [InlineData("private", new[] { "unusedInReorder" })]
+    [InlineData("public", new[] { "unusedInHandleOrder", "unusedInLambda" })]
+    [InlineData("internal", new string[0])]
+    public async Task GetDiagnostics_NameFilterWithAccessibilityFilter_BothMustMatch(
+        string accessibilityFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = NameDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            NameFilter = "Order",
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(result.Success, accessibilityFilter);
+        Assert.Equal(expected, VariableNames(result.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+        Assert.Equal(expected.Length, result.Data!.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("Order", "Method", new[] { "unusedInHandleOrder", "unusedInLambda", "unusedInReorder" })]
+    [InlineData("Order", "Class", new string[0])]
+    [InlineData("unused", "Field", new[] { "OrderService.unusedField" })]
+    [InlineData("unused", "Method", new string[0])]
+    public async Task GetDiagnostics_NameFilterWithKindFilter_BothMustMatch(
+        string nameFilter, string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = NameDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            NameFilter = nameFilter,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success, $"{nameFilter}/{kindFilter}");
+        Assert.Equal(expected, VariableNames(result.Data!).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+        Assert.Equal(expected.Length, result.Data!.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_NameFilterWithMessageFilter_BothMustMatch()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = NameDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            NameFilter = "Handle",
+            MessageFilter = "unusedInLambda"
+        });
+
+        Assert.True(result.Success);
+        var diagnostic = Assert.Single(result.Data!.Diagnostics);
+        Assert.Equal("CS0168", diagnostic.Id);
+        Assert.Contains("unusedInLambda", diagnostic.Message, StringComparison.Ordinal);
+        Assert.Equal(1, result.Data.TotalCount);
     }
 
     #endregion
