@@ -716,17 +716,8 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         };
     }
 
-    private static bool NamesMatch(ISymbol left, ISymbol right)
-    {
-        if (string.Equals(left.Name, right.Name, StringComparison.Ordinal))
-            return true;
-
-        return left is IPropertySymbol { IsIndexer: true }
-            && right is IPropertySymbol { IsIndexer: true }
-            && (string.Equals(left.MetadataName, right.MetadataName, StringComparison.Ordinal)
-                || string.Equals(left.MetadataName, "Item", StringComparison.Ordinal)
-                || string.Equals(right.MetadataName, "Item", StringComparison.Ordinal));
-    }
+    private static bool NamesMatch(ISymbol left, ISymbol right) =>
+        MemberSignatureMatchHelpers.NamesMatch(left, right, static symbol => symbol.Name);
 
     internal static bool SignaturesMatch(ISymbol left, ISymbol right) =>
         MemberSignatureMatchHelpers.SignaturesMatch(left, right, static symbol => symbol.Name);
