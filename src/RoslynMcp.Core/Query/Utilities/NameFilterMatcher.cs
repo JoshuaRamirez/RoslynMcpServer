@@ -3,7 +3,8 @@ namespace RoslynMcp.Core.Query.Utilities;
 /// <summary>
 /// Normalizes and applies the optional <c>nameFilter</c> string shared by <c>get_document_outline</c>,
 /// <c>get_symbol_info</c>, <c>find_implementations</c>, <c>get_type_hierarchy</c>, <c>find_callers</c>,
-/// and <c>find_references</c>: an ordinal, case-insensitive substring match on a simple name.
+/// and <c>find_references</c>: an ordinal, case-insensitive substring match on a simple name. Also backs
+/// <c>get_diagnostics</c> <c>messageFilter</c>, which applies the same match to a diagnostic's message.
 /// </summary>
 internal static class NameFilterMatcher
 {

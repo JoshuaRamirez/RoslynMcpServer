@@ -54,8 +54,8 @@ public sealed class GetDiagnosticsParams
     /// trimmed and a leading <c>global::</c> is accepted. Sites in the global namespace and
     /// diagnostics with no in-source location never match a named filter. Combined with
     /// <see cref="SourceFile"/>, <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>,
-    /// <see cref="DiagnosticIds"/>, <see cref="ExcludeDiagnosticIds"/>, and
-    /// <see cref="AccessibilityFilter"/>, and applied before
+    /// <see cref="DiagnosticIds"/>, <see cref="ExcludeDiagnosticIds"/>, <see cref="AccessibilityFilter"/>,
+    /// and <see cref="MessageFilter"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered
     /// set. Omit, blank, or a bare <c>global::</c> (the root namespace) returns diagnostics in all
     /// namespaces.
@@ -82,10 +82,26 @@ public sealed class GetDiagnosticsParams
     /// sites never match (Roslyn reports <c>INamespaceSymbol</c> as <c>Public</c>; rejected explicitly).
     /// Diagnostics with no in-source location never match. Combined with <see cref="SourceFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>,
-    /// <see cref="ExcludeDiagnosticIds"/>, and <see cref="NamespaceFilter"/>, and applied before
+    /// <see cref="ExcludeDiagnosticIds"/>, <see cref="NamespaceFilter"/>, and <see cref="MessageFilter"/>,
+    /// and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the accessibility-filtered
     /// set. Omit or leave blank for no accessibility filter. An unrecognized value fails with
     /// <c>InvalidVisibility</c>.
     /// </summary>
     public string? AccessibilityFilter { get; init; }
+
+    /// <summary>
+    /// Optional message text to restrict diagnostics to: keep only diagnostics whose formatted message
+    /// (<c>Diagnostic.GetMessage()</c>, the same text returned in each result's <c>Message</c>) contains
+    /// this value as an ordinal, case-insensitive substring (same normalization and matching as the
+    /// shared <c>nameFilter</c> of <c>get_document_outline</c> / <c>get_symbol_info</c> /
+    /// <c>find_references</c>; surrounding whitespace is trimmed). Free text, never rejected. Applies to
+    /// diagnostics with or without an in-source location. Combined with <see cref="SourceFile"/>,
+    /// <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>,
+    /// <see cref="ExcludeDiagnosticIds"/>, <see cref="NamespaceFilter"/>, and
+    /// <see cref="AccessibilityFilter"/> (a diagnostic must satisfy all that are set), and applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the message-filtered set.
+    /// Omit, empty, or whitespace = no message filter.
+    /// </summary>
+    public string? MessageFilter { get; init; }
 }

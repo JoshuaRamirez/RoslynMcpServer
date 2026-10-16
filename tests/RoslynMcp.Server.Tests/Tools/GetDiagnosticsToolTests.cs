@@ -76,6 +76,7 @@ public class GetDiagnosticsToolTests
         Assert.True(properties.TryGetProperty("projectPath", out _));
         Assert.True(properties.TryGetProperty("namespaceFilter", out _));
         Assert.True(properties.TryGetProperty("accessibilityFilter", out _));
+        Assert.True(properties.TryGetProperty("messageFilter", out _));
     }
 
     [Fact]
@@ -178,6 +179,59 @@ public class GetDiagnosticsToolTests
         Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
     }
 
+
+    [Fact]
+    public void GetDefinition_MessageFilter_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var messageFilter = doc.RootElement.GetProperty("properties").GetProperty("messageFilter");
+
+        Assert.Equal("string", messageFilter.GetProperty("type").GetString());
+        var description = messageFilter.GetProperty("description").GetString();
+        Assert.Contains("case-insensitive substring", description);
+        Assert.Contains("nameFilter", description);
+        Assert.Contains("before maxResults", description);
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("messageFilter", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("messageFilter", _tool.Description);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MessageFilterString_ParsesAndReachesWorkspace()
+    {
+        // Arrange - well-formed messageFilter parses; the throwing provider proves parsing succeeded
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""messageFilter"": ""never used""
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MessageFilterNonString_ReturnsParseError()
+    {
+        // Arrange - a number is not a string; deserialization fails before workspace creation
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""messageFilter"": 42
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
+    }
 
     [Fact]
     public void GetDefinition_AccessibilityFilter_IsOptionalString()

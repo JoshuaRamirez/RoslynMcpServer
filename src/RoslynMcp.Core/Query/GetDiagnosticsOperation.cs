@@ -15,7 +15,8 @@ namespace RoslynMcp.Core.Query;
 /// Retrieves compiler diagnostics for the solution or a specific file.
 /// Delegates to Roslyn's Compilation.GetDiagnostics(), optionally narrowed to diagnostic sites in one
 /// namespace (<see cref="GetDiagnosticsParams.NamespaceFilter"/>) and/or of one declared accessibility
-/// (<see cref="GetDiagnosticsParams.AccessibilityFilter"/>).
+/// (<see cref="GetDiagnosticsParams.AccessibilityFilter"/>), and/or to messages containing a substring
+/// (<see cref="GetDiagnosticsParams.MessageFilter"/>).
 /// </summary>
 public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsParams, GetDiagnosticsResult>
 {
@@ -65,6 +66,11 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         var severityFilter = ParseSeverityFilter(@params.SeverityFilter);
         var idFilter = BuildIdFilter(@params.DiagnosticIds);
         var excludeIdFilter = BuildIdFilter(@params.ExcludeDiagnosticIds);
+
+        // Optional messageFilter (same normalization / matching as the shared nameFilter): ordinal,
+        // case-insensitive substring on the formatted message returned in DiagnosticInfo.Message. Null
+        // when omitted / blank (no message filtering).
+        var messageFilter = NameFilterMatcher.Normalize(@params.MessageFilter);
         var diagnostics = new List<DiagnosticInfo>();
 
         // Optional accessibilityFilter (same values / parsing as search_symbols / find_references
@@ -140,6 +146,12 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                     continue;
                 }
 
+                // The formatted message is needed for the result anyway; format it once and apply the
+                // message filter before the (more expensive) site-based namespace / accessibility filters.
+                var message = diag.GetMessage();
+                if (!NameFilterMatcher.Matches(message, messageFilter))
+                    continue;
+
                 // Namespace / accessibility filters run after the cheaper filters and before maxResults
                 // so TotalCount / Truncated reflect the filtered set. Diagnostics with no in-source
                 // location have no site and never match a named filter.
@@ -189,7 +201,7 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                 var info = new DiagnosticInfo
                 {
                     Id = diag.Id,
-                    Message = diag.GetMessage(),
+                    Message = message,
                     Severity = diag.Severity.ToString(),
                     Category = diag.Descriptor.Category,
                     File = file,

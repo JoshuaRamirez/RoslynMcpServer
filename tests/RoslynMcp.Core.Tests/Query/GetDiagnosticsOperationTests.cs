@@ -12,7 +12,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
-/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>, <c>diagnosticIds</c>, <c>excludeDiagnosticIds</c>, <c>projectPath</c>, <c>namespaceFilter</c>, and <c>accessibilityFilter</c>
+/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>, <c>diagnosticIds</c>, <c>excludeDiagnosticIds</c>, <c>projectPath</c>, <c>namespaceFilter</c>, <c>accessibilityFilter</c>, and <c>messageFilter</c>
 /// (peer of <see cref="FindReferencesOperation"/> / <see cref="SearchSymbolsOperation"/>).
 /// </summary>
 public class GetDiagnosticsOperationTests
@@ -281,6 +281,209 @@ public class GetDiagnosticsOperationTests
             void M()
             {
                 int unused;
+            }
+        }
+        """;
+
+    #endregion
+
+    #region messageFilter
+
+    // Filters use identifiers / #warning text that appear verbatim in the message in every locale
+    // ('unusedLocal', 'Two'), so the assertions do not depend on the compiler's message language.
+
+    [Fact]
+    public void MessageFilter_DefaultsToNull()
+    {
+        var @params = new GetDiagnosticsParams();
+        Assert.Null(@params.MessageFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t\n")]
+    public async Task GetDiagnostics_MessageFilterBlank_ReturnsSameAsOmitted(string messageFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MessageSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { SeverityFilter = "Warning" });
+        var blank = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            MessageFilter = messageFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(blank.Success);
+        Assert.Equal(omitted.Data!.TotalCount, blank.Data!.TotalCount);
+        Assert.Equal(
+            omitted.Data.Diagnostics.Select(d => d.Id + d.Message),
+            blank.Data.Diagnostics.Select(d => d.Id + d.Message));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_MessageFilter_KeepsOnlyMessagesContainingValue()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MessageSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDiagnosticsParams { SeverityFilter = "Warning" });
+        Assert.True(full.Success);
+        Assert.Contains(full.Data!.Diagnostics, d => d.Id == "CS1030");
+        Assert.Contains(full.Data.Diagnostics, d => d.Id == "CS0168" && d.Message.Contains("unusedLocal", StringComparison.Ordinal));
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            MessageFilter = "unusedLocal"
+        });
+
+        Assert.True(filtered.Success);
+        var diagnostic = Assert.Single(filtered.Data!.Diagnostics);
+        Assert.Equal("CS0168", diagnostic.Id);
+        Assert.Contains("unusedLocal", diagnostic.Message, StringComparison.Ordinal);
+        Assert.Equal(1, filtered.Data.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_MessageFilter_CaseInsensitiveAndTrimmed()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MessageSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var exact = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            MessageFilter = "Two"
+        });
+        var folded = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            MessageFilter = "  tWO \t"
+        });
+
+        Assert.True(exact.Success);
+        Assert.True(folded.Success);
+        var diagnostic = Assert.Single(exact.Data!.Diagnostics);
+        Assert.Equal("CS1030", diagnostic.Id);
+        Assert.Equal(
+            exact.Data.Diagnostics.Select(d => d.Id + d.Message),
+            folded.Data!.Diagnostics.Select(d => d.Id + d.Message));
+        Assert.Equal(1, folded.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_MessageFilter_NoMatch_ReturnsEmpty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MessageSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            MessageFilter = "NoDiagnosticMentionsThis"
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Diagnostics);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_MessageFilterWithDiagnosticIds_BothMustMatch()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MessageSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var disjoint = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            DiagnosticIds = new[] { "CS1030" },
+            MessageFilter = "unusedLocal"
+        });
+        Assert.True(disjoint.Success);
+        Assert.Empty(disjoint.Data!.Diagnostics);
+        Assert.Equal(0, disjoint.Data.TotalCount);
+
+        var overlap = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            DiagnosticIds = new[] { "CS0168" },
+            MessageFilter = "unused"
+        });
+        Assert.True(overlap.Success);
+        Assert.Equal(2, overlap.Data!.TotalCount);
+        Assert.All(overlap.Data.Diagnostics, d =>
+        {
+            Assert.Equal("CS0168", d.Id);
+            Assert.Contains("unused", d.Message, StringComparison.OrdinalIgnoreCase);
+        });
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_MessageFilterWithAccessibilityFilter_BothMustMatch()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MessageSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            AccessibilityFilter = "public",
+            MessageFilter = "unused"
+        });
+
+        Assert.True(result.Success);
+        var diagnostic = Assert.Single(result.Data!.Diagnostics);
+        Assert.Equal("CS0168", diagnostic.Id);
+        Assert.Contains("unusedOther", diagnostic.Message, StringComparison.Ordinal);
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_MessageFilterWithMaxResults_CapsAfterFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MessageSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDiagnosticsParams { SeverityFilter = "Warning" });
+        Assert.True(full.Success);
+        var expected = full.Data!.Diagnostics.Count(d => d.Message.Contains("unused", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(2, expected);
+        Assert.True(full.Data.TotalCount > expected, "Fixture should also report diagnostics the filter drops.");
+
+        var capped = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            MessageFilter = "UNUSED",
+            MaxResults = 1
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(expected, capped.Data!.TotalCount);
+        var diagnostic = Assert.Single(capped.Data.Diagnostics);
+        Assert.Contains("unused", diagnostic.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(capped.Data.Truncated);
+    }
+
+    private const string MessageSource = """
+        #warning One
+        #warning Two
+        #warning Three
+        class C
+        {
+            void M()
+            {
+                int unusedLocal;
+            }
+
+            public void N()
+            {
+                int unusedOther;
             }
         }
         """;

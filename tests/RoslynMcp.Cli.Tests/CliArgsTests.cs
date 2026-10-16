@@ -368,5 +368,14 @@ public class CliArgsTests
         Assert.Equal("Error", result.Options["severity-filter"]);
         Assert.Equal("protected internal", result.Options["accessibility-filter"]);
     }
+
+    [Fact]
+    public void GetDiagnostics_MessageFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Warning", "--message-filter", "never used"]);
+        Assert.Equal("get-diagnostics", result.ToolName);
+        Assert.Equal("Warning", result.Options["severity-filter"]);
+        Assert.Equal("never used", result.Options["message-filter"]);
+    }
 }
 

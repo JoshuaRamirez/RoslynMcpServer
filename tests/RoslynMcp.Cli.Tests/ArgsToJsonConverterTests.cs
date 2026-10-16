@@ -1283,6 +1283,43 @@ public class ArgsToJsonConverterTests
     }
 
     [Fact]
+    public void GetDiagnostics_MessageFilter_RoundTripsToParams()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var dict = new Dictionary<string, string>
+        {
+            ["message-filter"] = "never used",
+            ["max-results"] = "3"
+        };
+        var json = ArgsToJsonConverter.Convert(dict, tool.ParamsType);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("never used", doc.RootElement.GetProperty("messageFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<GetDiagnosticsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("never used", p.MessageFilter);
+        Assert.Equal(3, p.MaxResults);
+    }
+
+    [Fact]
+    public void GetDiagnostics_MessageFilterNumericLooking_StaysString()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["message-filter"] = "1030"
+        }, tool.ParamsType);
+
+        var p = JsonSerializer.Deserialize<GetDiagnosticsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("1030", p.MessageFilter);
+    }
+
+    [Fact]
     public void GetDiagnostics_NamespaceFilterOmitted_DeserializesAsNull()
     {
         var registry = ToolRegistry.BuildDefault();
@@ -1296,6 +1333,7 @@ public class ArgsToJsonConverterTests
             json,
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
         Assert.Null(p.NamespaceFilter);
+        Assert.Null(p.MessageFilter);
     }
 
 
