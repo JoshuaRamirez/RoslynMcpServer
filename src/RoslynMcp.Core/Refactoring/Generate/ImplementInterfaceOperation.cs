@@ -735,23 +735,10 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             _ => []
         };
 
-    private static bool NamesMatch(ISymbol left, ISymbol right)
-    {
-        if (string.Equals(UnqualifiedName(left), UnqualifiedName(right), StringComparison.Ordinal))
-            return true;
-
-        if (ExplicitlyImplementsName(left, UnqualifiedName(right))
-            || ExplicitlyImplementsName(right, UnqualifiedName(left)))
-        {
-            return true;
-        }
-
-        return left is IPropertySymbol { IsIndexer: true }
-            && right is IPropertySymbol { IsIndexer: true }
-            && (string.Equals(left.MetadataName, right.MetadataName, StringComparison.Ordinal)
-                || string.Equals(left.MetadataName, "Item", StringComparison.Ordinal)
-                || string.Equals(right.MetadataName, "Item", StringComparison.Ordinal));
-    }
+    private static bool NamesMatch(ISymbol left, ISymbol right) =>
+        MemberSignatureMatchHelpers.NamesMatch(left, right, UnqualifiedName)
+        || ExplicitlyImplementsName(left, UnqualifiedName(right))
+        || ExplicitlyImplementsName(right, UnqualifiedName(left));
 
     /// <summary>
     /// Explicit interface implementations may report <c>IFoo.M</c> as

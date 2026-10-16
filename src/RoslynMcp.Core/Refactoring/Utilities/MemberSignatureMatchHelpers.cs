@@ -63,6 +63,27 @@ internal static class MemberSignatureMatchHelpers
     }
 
     /// <summary>
+    /// True when <paramref name="left"/> and <paramref name="right"/> occupy
+    /// the same name slot: their names (via <paramref name="nameOf"/>) are
+    /// ordinally equal, or both are indexers whose metadata names agree or
+    /// either uses the default <c>Item</c> metadata name. Shared by
+    /// implement_interface / implement_abstract when collecting same-name
+    /// existing implementations; implement_interface additionally ORs its own
+    /// explicit-implementation name checks.
+    /// </summary>
+    internal static bool NamesMatch(ISymbol left, ISymbol right, Func<ISymbol, string> nameOf)
+    {
+        if (string.Equals(nameOf(left), nameOf(right), StringComparison.Ordinal))
+            return true;
+
+        return left is IPropertySymbol { IsIndexer: true }
+            && right is IPropertySymbol { IsIndexer: true }
+            && (string.Equals(left.MetadataName, right.MetadataName, StringComparison.Ordinal)
+                || string.Equals(left.MetadataName, "Item", StringComparison.Ordinal)
+                || string.Equals(right.MetadataName, "Item", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// Appends <paramref name="member"/> to <paramref name="members"/> unless an
     /// already-collected member satisfies
     /// <paramref name="matches"/>(<c>existing</c>, <paramref name="member"/>).

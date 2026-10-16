@@ -251,6 +251,92 @@ public class MemberSignatureMatchHelpersTests
         Assert.Equal(new ISymbol[] { left, right }, members);
     }
 
+    private const string IndexerNameSource = """
+        using System.Runtime.CompilerServices;
+
+        public class Cell1 { [IndexerName("Cell")] public int this[int i] => 0; public int P => 0; }
+        public class Cell2 { [IndexerName("Cell")] public int this[int i] => 0; }
+        public class Other { [IndexerName("Other")] public int this[int i] => 0; }
+        public class Plain { public int this[int i] => 0; }
+        """;
+
+    // Forces distinct names across types so only the indexer arm can match.
+    private static readonly Func<ISymbol, string> TypeQualified = static symbol =>
+        symbol.ContainingType.Name + "." + symbol.Name;
+
+    [Fact]
+    public void NamesMatch_same_name_via_selector_matches()
+    {
+        var (a, b, _) = Types();
+
+        Assert.True(MemberSignatureMatchHelpers.NamesMatch(Method(a, "M", 0, "int"), Method(b, "M", 0, "int"), PlainName));
+        Assert.True(MemberSignatureMatchHelpers.NamesMatch(Method(a, "M", 0, "long"), Method(b, "M", 0, "int"), PlainName));
+    }
+
+    [Fact]
+    public void NamesMatch_different_non_indexer_names_do_not_match()
+    {
+        var (a, _, _) = Types();
+
+        Assert.False(MemberSignatureMatchHelpers.NamesMatch(Property(a, "P"), Property(a, "Q"), PlainName));
+        Assert.False(MemberSignatureMatchHelpers.NamesMatch(Event(a, "E"), Event(a, "F"), PlainName));
+    }
+
+    [Fact]
+    public void NamesMatch_uses_selector_for_explicit_qualifier()
+    {
+        var (a, _, x) = Types();
+        var explicitP = x.GetMembers().OfType<IPropertySymbol>().Single(p => !p.IsIndexer);
+
+        Assert.False(MemberSignatureMatchHelpers.NamesMatch(explicitP, Property(a, "P"), PlainName));
+        Assert.True(MemberSignatureMatchHelpers.NamesMatch(explicitP, Property(a, "P"), Unqualified));
+    }
+
+    [Fact]
+    public void NamesMatch_explicit_indexer_matches_default_item_indexer_despite_name()
+    {
+        var (a, _, x) = Types();
+        var explicitIndexer = x.GetMembers().OfType<IPropertySymbol>().Single(p => p.IsIndexer);
+
+        Assert.True(MemberSignatureMatchHelpers.NamesMatch(explicitIndexer, Indexer(a, "int"), PlainName));
+    }
+
+    [Fact]
+    public void NamesMatch_indexers_compare_metadata_names_with_item_default()
+    {
+        var cell1 = IndexerOf("Cell1");
+        var cell2 = IndexerOf("Cell2");
+        var other = IndexerOf("Other");
+        var plain = IndexerOf("Plain");
+
+        Assert.True(MemberSignatureMatchHelpers.NamesMatch(cell1, cell2, TypeQualified));
+        Assert.False(MemberSignatureMatchHelpers.NamesMatch(cell1, other, TypeQualified));
+        Assert.True(MemberSignatureMatchHelpers.NamesMatch(cell1, plain, TypeQualified));
+        Assert.True(MemberSignatureMatchHelpers.NamesMatch(plain, other, TypeQualified));
+    }
+
+    [Fact]
+    public void NamesMatch_indexer_and_non_indexer_property_do_not_match()
+    {
+        var cell1 = IndexerOf("Cell1");
+        var property = IndexerCompilation().GetTypeByMetadataName("Cell1")!
+            .GetMembers("P").OfType<IPropertySymbol>().Single();
+
+        Assert.False(MemberSignatureMatchHelpers.NamesMatch(cell1, property, PlainName));
+        Assert.False(MemberSignatureMatchHelpers.NamesMatch(property, cell1, PlainName));
+    }
+
+    private static CSharpCompilation IndexerCompilation() =>
+        CSharpCompilation.Create(
+            "MemberSignatureMatchHelpersIndexerNameTests",
+            [CSharpSyntaxTree.ParseText(IndexerNameSource)],
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+    private static IPropertySymbol IndexerOf(string typeName) =>
+        IndexerCompilation().GetTypeByMetadataName(typeName)!
+            .GetMembers().OfType<IPropertySymbol>().Single(p => p.IsIndexer);
+
     private static (INamedTypeSymbol A, INamedTypeSymbol B, INamedTypeSymbol X) Types()
     {
         var tree = CSharpSyntaxTree.ParseText(Source);
