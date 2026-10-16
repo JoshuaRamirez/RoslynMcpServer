@@ -1580,31 +1580,10 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         SemanticModel semanticModel,
         int insertionPosition)
     {
-        var modifiers = new List<SyntaxToken>();
-
-        switch (visibility.ToLowerInvariant())
-        {
-            case "public":
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.PublicKeyword));
-                break;
-            case "protected":
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-                break;
-            case "internal":
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.InternalKeyword));
-                break;
-            case "protected internal":
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.InternalKeyword));
-                break;
-            case "private protected":
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.PrivateKeyword));
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-                break;
-            default:
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.PrivateKeyword));
-                break;
-        }
+        var modifiers = new List<SyntaxToken>(
+            VisibilityTokenHelpers.ParseVisibilityTokens(
+                visibility,
+                SyntaxKind.PrivateKeyword));
 
         modifiers.Add(SyntaxFactory.Token(SyntaxKind.ConstKeyword));
 

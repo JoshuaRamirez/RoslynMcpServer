@@ -73,4 +73,41 @@ public class VisibilityTokenHelpersTests
     {
         Assert.Equal(expected, VisibilityTokenHelpers.ParseVisibilityKeyword(keyword).Kind());
     }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("unknown")]
+    public void ParseVisibilityTokens_EmptyOrUnknown_PrivateDefault(string visibility)
+    {
+        var tokens = VisibilityTokenHelpers.ParseVisibilityTokens(
+            visibility,
+            SyntaxKind.PrivateKeyword).ToArray();
+        Assert.Single(tokens);
+        Assert.Equal(SyntaxKind.PrivateKeyword, tokens[0].Kind());
+        // No forced Space trivia (extract path); SyntaxFactory may still attach elastic markers.
+        Assert.DoesNotContain(tokens[0].TrailingTrivia, static t => t.ToString() == " ");
+    }
+
+    [Fact]
+    public void ParseVisibilityTokens_TrailingSpace_AppliesToEachToken()
+    {
+        var tokens = VisibilityTokenHelpers.ParseVisibilityTokens(
+            "protected internal",
+            SyntaxKind.PrivateKeyword,
+            trailingSpace: true).ToArray();
+        Assert.Equal(2, tokens.Length);
+        Assert.Equal(SyntaxKind.ProtectedKeyword, tokens[0].Kind());
+        Assert.Equal(SyntaxKind.InternalKeyword, tokens[1].Kind());
+        Assert.Equal(" ", tokens[0].TrailingTrivia.ToString());
+        Assert.Equal(" ", tokens[1].TrailingTrivia.ToString());
+    }
+
+    [Fact]
+    public void ParseVisibilityKeyword_Unknown_UsesCallerDefault()
+    {
+        Assert.Equal(
+            SyntaxKind.PrivateKeyword,
+            VisibilityTokenHelpers.ParseVisibilityKeyword("nope", SyntaxKind.PrivateKeyword).Kind());
+    }
 }
