@@ -61,7 +61,8 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
 
         var symbol = resolved.Symbol;
         var info = BuildDetailedInfo(
-            symbol, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter, @params.NameFilter);
+            symbol, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter,
+            @params.NameFilter, @params.NamespaceFilter);
 
         return QueryResult<DetailedSymbolInfo>.Succeeded(operationId, info);
     }
@@ -71,13 +72,17 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         int? maxResults,
         string? kindFilter,
         string? accessibilityFilter,
-        string? nameFilter)
+        string? nameFilter,
+        string? namespaceFilter)
     {
         var modifiers = GetModifiers(symbol);
         var location = GetLocation(symbol);
         var kindFilterValue = SymbolKindFilterParser.Parse(kindFilter);
         var accessibilityFilterValue = AccessibilityFilterParser.Parse(accessibilityFilter);
         var nameFilterValue = NameFilterMatcher.Normalize(nameFilter);
+        // Same normalization as search_symbols / get_document_outline / find_implementations /
+        // get_type_hierarchy / find_references / find_callers / get_diagnostics namespaceFilter.
+        var namespaceFilterValue = NamespaceFilter.Normalize(namespaceFilter);
 
         // Gather type-specific fields
         string? baseType = null;
@@ -118,12 +123,22 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                     .Where(m => NameFilterMatcher.Matches(m.Name, nameFilterValue));
             }
 
+            if (namespaceFilterValue != null)
+            {
+                // Containing namespace equals filter or nested inside it (ordinal), same as
+                // search_symbols / find_implementations namespaceFilter. Members of a type normally
+                // share the type's containing namespace (including nested types).
+                memberSymbols = memberSymbols
+                    .Where(m => NamespaceFilter.IsInNamespace(m, namespaceFilterValue));
+            }
+
             var allMembers = memberSymbols
                 .Select(m => m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
                 .ToList();
 
-            // kindFilter then accessibilityFilter then nameFilter apply first; maxResults caps only
-            // Members (first N in today's enumeration order); TotalCount stays the filtered member count.
+            // kindFilter → accessibilityFilter → nameFilter → namespaceFilter apply first; maxResults
+            // caps only Members (first N in today's enumeration order); TotalCount stays the filtered
+            // member count.
             totalCount = allMembers.Count;
             if (maxResults.HasValue && allMembers.Count > maxResults.Value)
             {

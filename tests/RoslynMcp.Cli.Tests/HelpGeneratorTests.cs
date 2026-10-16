@@ -2652,6 +2652,27 @@ public class HelpGeneratorTests
         Assert.Contains("--name-filter", optionalSection);
     }
 
+
+    [Fact]
+    public void GenerateToolHelp_GetSymbolInfo_ShowsNamespaceFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-symbol-info")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("namespaceFilter (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.DoesNotContain("--namespace-filter", requiredSection);
+        Assert.Contains("--namespace-filter", optionalSection);
+    }
+
     [Fact]
     public void GenerateToolHelp_GoToDefinition_ShowsDefinitionFile()
     {

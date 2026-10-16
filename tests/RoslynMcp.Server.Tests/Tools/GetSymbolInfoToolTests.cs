@@ -176,6 +176,28 @@ public class GetSymbolInfoToolTests
         Assert.Contains("applied before maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
+
+    [Fact]
+    public void GetDefinition_NamespaceFilter_IsOptionalString()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var namespaceFilter = doc.RootElement.GetProperty("properties").GetProperty("namespaceFilter");
+
+        Assert.Equal("string", namespaceFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("namespaceFilter", required);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsNamespaceFilter()
+    {
+        Assert.Contains("namespaceFilter", _tool.Description, StringComparison.Ordinal);
+        Assert.Contains("applied before maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void GetDefinition_DescriptionMentionsKindFilter()
     {
