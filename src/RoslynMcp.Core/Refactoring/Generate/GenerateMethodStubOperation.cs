@@ -1199,7 +1199,11 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         var parameterList = SyntaxFactory.ParameterList(
             SyntaxFactory.SeparatedList(parameters.Select(CreateParameter)));
 
-        var modifiers = new List<SyntaxToken>(ParseVisibilityTokens(visibility));
+        var modifiers = new List<SyntaxToken>(
+            VisibilityTokenHelpers.ParseVisibilityTokens(
+                visibility,
+                SyntaxKind.PrivateKeyword,
+                trailingSpace: true));
         if (isStatic)
             modifiers.Add(SyntaxFactory.Token(SyntaxKind.StaticKeyword).WithTrailingTrivia(SyntaxFactory.Space));
         if (isAsync)
@@ -1775,28 +1779,6 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
-
-    private static IEnumerable<SyntaxToken> ParseVisibilityTokens(string visibility)
-    {
-        var tokens = visibility
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(ParseVisibilityKeyword)
-            .ToList();
-
-        if (tokens.Count == 0)
-            tokens.Add(SyntaxFactory.Token(SyntaxKind.PrivateKeyword));
-
-        return tokens.Select(t => t.WithTrailingTrivia(SyntaxFactory.Space));
-    }
-
-    private static SyntaxToken ParseVisibilityKeyword(string keyword) => keyword.ToLowerInvariant() switch
-    {
-        "public" => SyntaxFactory.Token(SyntaxKind.PublicKeyword),
-        "private" => SyntaxFactory.Token(SyntaxKind.PrivateKeyword),
-        "protected" => SyntaxFactory.Token(SyntaxKind.ProtectedKeyword),
-        "internal" => SyntaxFactory.Token(SyntaxKind.InternalKeyword),
-        _ => SyntaxFactory.Token(SyntaxKind.PrivateKeyword)
-    };
 
     internal static bool IsValidTypeName(string typeName)
     {

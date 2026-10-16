@@ -1135,33 +1135,10 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         var body = SyntaxFactory.Block(statements);
 
         // Build modifiers - handle multi-word visibility modifiers
-        var modifiers = new List<SyntaxToken>();
-        var visibility = @params.Visibility.ToLowerInvariant();
-
-        switch (visibility)
-        {
-            case "private protected":
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.PrivateKeyword));
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-                break;
-            case "protected internal":
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.InternalKeyword));
-                break;
-            case "internal":
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.InternalKeyword));
-                break;
-            case "protected":
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-                break;
-            case "public":
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.PublicKeyword));
-                break;
-            case "private":
-            default:
-                modifiers.Add(SyntaxFactory.Token(SyntaxKind.PrivateKeyword));
-                break;
-        }
+        var modifiers = new List<SyntaxToken>(
+            VisibilityTokenHelpers.ParseVisibilityTokens(
+                @params.Visibility,
+                SyntaxKind.PrivateKeyword));
 
         // Check if static is needed
         bool makeStatic = @params.MakeStatic ?? false;
