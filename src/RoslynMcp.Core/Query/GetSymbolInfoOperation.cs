@@ -77,7 +77,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         var location = GetLocation(symbol);
         var kindFilterValue = SymbolKindFilterParser.Parse(kindFilter);
         var accessibilityFilterValue = AccessibilityFilterParser.Parse(accessibilityFilter);
-        var nameFilterValue = string.IsNullOrWhiteSpace(nameFilter) ? null : nameFilter.Trim();
+        var nameFilterValue = NameFilterMatcher.Normalize(nameFilter);
 
         // Gather type-specific fields
         string? baseType = null;
@@ -115,7 +115,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                 // Ordinal case-insensitive substring on the simple name, same as
                 // get_document_outline nameFilter.
                 memberSymbols = memberSymbols
-                    .Where(m => m.Name.Contains(nameFilterValue, StringComparison.OrdinalIgnoreCase));
+                    .Where(m => NameFilterMatcher.Matches(m.Name, nameFilterValue));
             }
 
             var allMembers = memberSymbols
