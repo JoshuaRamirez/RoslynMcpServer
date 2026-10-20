@@ -54,17 +54,7 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
         if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
 
-        if (!string.IsNullOrWhiteSpace(@params.ImplementationFile))
-        {
-            if (!PathResolver.IsAbsolutePath(@params.ImplementationFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "implementationFile must be an absolute path.");
-
-            if (!PathResolver.IsValidCSharpFilePath(@params.ImplementationFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "implementationFile must be a .cs file.");
-
-            if (!File.Exists(@params.ImplementationFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.ImplementationFile}");
-        }
+        ResultFileFilter.Validate(@params.ImplementationFile, "implementationFile");
 
         ProjectPathFilter.Validate(@params.ProjectPath);
 
