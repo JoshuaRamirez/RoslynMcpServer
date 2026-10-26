@@ -1453,4 +1453,161 @@ public class GetSymbolInfoOperationTests
             });
         }
     }
+
+    #region staticFilter
+
+    private const string StaticMixSource = """
+        public class Mixer
+        {
+            public const int Limit = 10;
+            public static int Counter;
+            public int Instance;
+            public static string Name { get; set; } = "";
+            public string Label { get; set; } = "";
+            public static void Create() { }
+            public void Run() { }
+            public static event System.EventHandler? Changed;
+            public class Nested { }
+            public static class Helpers { }
+        }
+        """;
+
+    [Fact]
+    public void StaticFilter_DefaultsToNull()
+    {
+        var @params = new GetSymbolInfoParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.StaticFilter);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_OmittedStaticFilter_ReturnsAllMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Mixer"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data?.Members);
+        Assert.Equal(10, result.Data!.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilterTrue_KeepsOnlyStaticMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Mixer",
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        var members = result.Data!.Members!;
+        Assert.Equal(6, members.Count);
+        Assert.Equal(6, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+        Assert.Contains(members, m => m.Contains("Limit", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Counter", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Name", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Create", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Changed", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Helpers", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Instance", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Run", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Nested", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilterFalse_KeepsOnlyInstanceMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Mixer",
+            StaticFilter = false
+        });
+
+        Assert.True(result.Success);
+        var members = result.Data!.Members!;
+        Assert.Equal(4, members.Count);
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.Contains(members, m => m.Contains("Instance", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Label", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Run", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Nested", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Limit", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Create", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilterCombinedWithKindFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Mixer",
+            KindFilter = "Method",
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        var members = result.Data!.Members!;
+        Assert.Single(members);
+        Assert.Contains("Create", members[0], StringComparison.Ordinal);
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilterAppliedBeforeMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Mixer",
+            StaticFilter = true,
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Members!.Count);
+        Assert.Equal(6, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilter_NoEffectOnNonTypeSymbol()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Run",
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Null(result.Data!.Members);
+        Assert.Null(result.Data.TotalCount);
+    }
+
+    #endregion
 }

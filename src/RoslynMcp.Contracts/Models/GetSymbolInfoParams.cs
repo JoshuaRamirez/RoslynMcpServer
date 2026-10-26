@@ -29,7 +29,7 @@ public sealed class GetSymbolInfoParams
     /// Maximum number of members to return for a type symbol. Omit for no cap (return all members).
     /// Only caps <c>Members</c>; Interfaces, Parameters, Modifiers and other fields are not capped,
     /// and it has no effect on non-type symbols. Applied after <see cref="KindFilter"/>,
-    /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, and <see cref="NamespaceFilter"/> so
+    /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, <see cref="NamespaceFilter"/>, and <see cref="StaticFilter"/> so
     /// <c>TotalCount</c> / <c>Truncated</c> reflect the filtered set.
     /// </summary>
     public int? MaxResults { get; init; }
@@ -90,4 +90,13 @@ public sealed class GetSymbolInfoParams
     /// normalized).
     /// </summary>
     public string? NamespaceFilter { get; init; }
+
+    /// <summary>
+    /// Optional static filter for Members of a type symbol. <c>true</c> keeps only members whose
+    /// <c>ISymbol.IsStatic</c> is true (const fields count as static, as Roslyn reports them);
+    /// <c>false</c> keeps only instance members; <c>null</c> keeps all members. Applied after
+    /// <see cref="NamespaceFilter"/> and before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the filtered set. No effect on non-type symbols.
+    /// </summary>
+    public bool? StaticFilter { get; init; }
 }

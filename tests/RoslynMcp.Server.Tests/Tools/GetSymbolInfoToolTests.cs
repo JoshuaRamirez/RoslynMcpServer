@@ -272,4 +272,23 @@ public class GetSymbolInfoToolTests
     }
 
     #endregion
+
+    [Fact]
+    public void GetDefinition_StaticFilter_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var staticFilter = doc.RootElement.GetProperty("properties").GetProperty("staticFilter");
+
+        Assert.Equal("boolean", staticFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("staticFilter", required);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsStaticFilter()
+    {
+        Assert.Contains("staticFilter", _tool.Description, StringComparison.Ordinal);
+    }
 }
