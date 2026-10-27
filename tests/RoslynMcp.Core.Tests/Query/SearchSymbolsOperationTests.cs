@@ -12,7 +12,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// filtering (peer of <see cref="GetDiagnosticsOperation"/>), optional <c>caseSensitive</c>
 /// name matching, optional <c>exactMatch</c> whole-name matching, optional
 /// <c>namespaceFilter</c> namespace scoping, optional <c>projectPath</c> project scoping, and optional
-/// <c>accessibilityFilter</c> declared-accessibility filtering.
+/// <c>accessibilityFilter</c> declared-accessibility filtering, and optional <c>staticFilter</c>
+/// static / instance filtering.
 /// </summary>
 public class SearchSymbolsOperationTests
 {
@@ -1430,6 +1431,362 @@ public class SearchSymbolsOperationTests
 
         Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
         Assert.StartsWith($"Invalid accessibilityFilter '{accessibilityFilter}'. Valid values: ", ex.Message);
+    }
+
+    #endregion
+
+    #region staticFilter
+
+    private const string StaticSource = """
+        namespace GadgetSpace
+        {
+            public static class GadgetUtil
+            {
+                public static int GadgetCount;
+                public const int MaxGadget = 3;
+                public static void MakeGadget() { }
+                public static int GadgetExt(this string s) => s.Length;
+                public static int GadgetProp { get; set; }
+                public static event System.Action? GadgetEvent;
+            }
+
+            public class GadgetHost
+            {
+                public int GadgetField;
+                public void UseGadget() { }
+                public string GadgetName { get; set; } = "";
+                public event System.Action? GadgetChanged;
+                public class NestedGadget { }
+                public static class NestedStaticGadget { }
+            }
+
+            public struct GadgetStruct { }
+            public interface IGadget { }
+            public enum GadgetKind { GadgetA }
+            public delegate void GadgetHandler();
+            public record GadgetRecord;
+        }
+        """;
+
+    private static readonly string[] StaticGadgetNames =
+    [
+        "GadgetSpace.GadgetHost.NestedStaticGadget",
+        "GadgetSpace.GadgetKind.GadgetA",
+        "GadgetSpace.GadgetUtil",
+        "GadgetSpace.GadgetUtil.GadgetCount",
+        "GadgetSpace.GadgetUtil.GadgetEvent",
+        "GadgetSpace.GadgetUtil.GadgetExt(string)",
+        "GadgetSpace.GadgetUtil.GadgetProp",
+        "GadgetSpace.GadgetUtil.MakeGadget()",
+        "GadgetSpace.GadgetUtil.MaxGadget"
+    ];
+
+    private static readonly string[] InstanceGadgetNames =
+    [
+        "GadgetSpace.GadgetHandler",
+        "GadgetSpace.GadgetHost",
+        "GadgetSpace.GadgetHost.GadgetChanged",
+        "GadgetSpace.GadgetHost.GadgetField",
+        "GadgetSpace.GadgetHost.GadgetName",
+        "GadgetSpace.GadgetHost.NestedGadget",
+        "GadgetSpace.GadgetHost.UseGadget()",
+        "GadgetSpace.GadgetKind",
+        "GadgetSpace.GadgetRecord",
+        "GadgetSpace.GadgetStruct",
+        "GadgetSpace.IGadget"
+    ];
+
+    private static string[] Sorted(IEnumerable<string> names) =>
+        names.OrderBy(n => n, StringComparer.Ordinal).ToArray();
+
+    [Fact]
+    public void StaticFilter_DefaultsToNull()
+    {
+        var @params = new SearchSymbolsParams { Query = "Foo" };
+        Assert.Null(@params.StaticFilter);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_OmittedStaticFilter_ReturnsStaticInstanceAndNamespaceSymbols()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Gadget",
+            CaseSensitive = true
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var expected = Sorted(StaticGadgetNames.Concat(InstanceGadgetNames).Append("GadgetSpace"));
+        Assert.Equal(expected, SortedFqns(result.Data));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_StaticFilterTrue_KeepsOnlyStaticSymbols()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Gadget",
+            CaseSensitive = true,
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        // Static classes (top-level and nested), static fields / properties / events / methods,
+        // extension methods, const fields and enum members all report IsStatic; namespaces never match.
+        Assert.Equal(Sorted(StaticGadgetNames), SortedFqns(result.Data));
+        Assert.Equal(StaticGadgetNames.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_StaticFilterFalse_KeepsOnlyInstanceSymbolsAndNonStaticTypes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Gadget",
+            CaseSensitive = true,
+            StaticFilter = false
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        // Instance members and every non-static type; namespaces are neither static nor instance.
+        Assert.Equal(Sorted(InstanceGadgetNames), SortedFqns(result.Data));
+        Assert.Equal(InstanceGadgetNames.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_StaticFilter_NeverMatchesNamespaces(bool staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "GadgetSpace",
+            KindFilter = "Namespace",
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_StaticFilter_CombinesWithKindFilterAndMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var staticMethods = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Gadget",
+            CaseSensitive = true,
+            KindFilter = "Method",
+            StaticFilter = true
+        });
+
+        Assert.True(staticMethods.Success);
+        Assert.NotNull(staticMethods.Data);
+        Assert.Equal(
+            ["GadgetSpace.GadgetUtil.GadgetExt(string)", "GadgetSpace.GadgetUtil.MakeGadget()"],
+            SortedFqns(staticMethods.Data));
+
+        var instanceClasses = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Gadget",
+            CaseSensitive = true,
+            KindFilter = "Class",
+            StaticFilter = false
+        });
+
+        Assert.True(instanceClasses.Success);
+        Assert.NotNull(instanceClasses.Data);
+        Assert.Equal(
+            ["GadgetSpace.GadgetHost", "GadgetSpace.GadgetHost.NestedGadget"],
+            SortedFqns(instanceClasses.Data));
+
+        // maxResults caps the static-filtered set; TotalCount / Truncated reflect it.
+        var capped = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Gadget",
+            CaseSensitive = true,
+            StaticFilter = true,
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(2, capped.Data.Symbols.Count);
+        Assert.Equal(StaticGadgetNames.Length, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+        Assert.All(capped.Data.Symbols, s => Assert.Contains(s.FullyQualifiedName, StaticGadgetNames));
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_StaticFilterWithNoMatch_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        // Interfaces are never static.
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Gadget",
+            CaseSensitive = true,
+            KindFilter = "Interface",
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+
+    private const string NeverReturnedSource = """
+        namespace App
+        {
+            public interface ISpinner
+            {
+                void Spin();
+                int Turns { get; }
+            }
+
+            public interface IMaker<T> where T : IMaker<T>
+            {
+                static abstract T Make();
+            }
+
+            public class Widget : ISpinner, IMaker<Widget>
+            {
+                static Widget() { }
+                public Widget() { }
+                ~Widget() { }
+                public static Widget operator +(Widget a, Widget b) => a;
+                public static implicit operator int(Widget w) => 0;
+                public int this[int i] => i;
+                public int Value { get; set; }
+                void ISpinner.Spin()
+                {
+                    int LocalHelper() => 1;
+                    LocalHelper();
+                }
+                int ISpinner.Turns => 0;
+                static Widget IMaker<Widget>.Make() => new Widget();
+                public class NestedWidgetPlain { }
+                public static class NestedWidgetStatic { }
+                public delegate void NestedWidgetCallback();
+            }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_StaticFilter_NeverReturnsOperatorsConstructorsIndexersAccessorsExplicitImplsOrLocalFunctions(
+        bool? staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NeverReturnedSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        // Queries that match the names (source or metadata) of Widget's operators, conversion operator,
+        // instance / static constructors, indexer, property accessors, explicit interface
+        // implementations (instance and static abstract) and local function.
+        string[] queries =
+        [
+            "op_", "operator", ".ctor", ".cctor", "Widget()", "this[]", "Item",
+            "get_", "set_", "Spin", "Turns", "Make", "LocalHelper"
+        ];
+
+        foreach (var query in queries)
+        {
+            var result = await operation.ExecuteAsync(new SearchSymbolsParams
+            {
+                Query = query,
+                StaticFilter = staticFilter
+            });
+
+            Assert.True(result.Success, query);
+            Assert.NotNull(result.Data);
+            Assert.DoesNotContain(result.Data.Symbols, s => s.FullyQualifiedName.StartsWith("App.Widget", StringComparison.Ordinal));
+            Assert.DoesNotContain(result.Data.Symbols, s => s.Name.Contains("LocalHelper", StringComparison.Ordinal));
+        }
+
+        // The finalizer is not excluded: it is returned as an instance method named Finalize.
+        var finalizer = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Finalize",
+            StaticFilter = staticFilter
+        });
+        string[] expectedFinalizer = staticFilter == true ? [] : ["App.Widget.~Widget()"];
+        Assert.Equal(expectedFinalizer, SortedFqns(finalizer.Data!));
+
+        // A delegate declared inside a type is returned and counts as instance (non-static type).
+        var nestedDelegate = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "NestedWidgetCallback",
+            ExactMatch = true,
+            StaticFilter = staticFilter
+        });
+        string[] expectedDelegate = staticFilter == true ? [] : ["App.Widget.NestedWidgetCallback"];
+        Assert.Equal(expectedDelegate, SortedFqns(nestedDelegate.Data!));
+
+        // The interface's own members are ordinary symbols and still returned (Make is static abstract).
+        var interfaceMembers = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Spin",
+            ExactMatch = true,
+            StaticFilter = staticFilter
+        });
+        string[] expectedSpin = staticFilter == true ? [] : ["App.ISpinner.Spin()"];
+        Assert.Equal(expectedSpin, SortedFqns(interfaceMembers.Data!));
+
+        var staticAbstract = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Make",
+            ExactMatch = true,
+            StaticFilter = staticFilter
+        });
+        string[] expectedMake = staticFilter == false ? [] : ["App.IMaker<T>.Make()"];
+        Assert.Equal(expectedMake, SortedFqns(staticAbstract.Data!));
+
+        // Nested types (including the nested delegate) are returned and judged by IsStatic.
+        var nested = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "NestedWidget",
+            StaticFilter = staticFilter
+        });
+        string[] expectedNested = staticFilter switch
+        {
+            true => ["App.Widget.NestedWidgetStatic"],
+            false => ["App.Widget.NestedWidgetCallback", "App.Widget.NestedWidgetPlain"],
+            null => ["App.Widget.NestedWidgetCallback", "App.Widget.NestedWidgetPlain", "App.Widget.NestedWidgetStatic"]
+        };
+        Assert.Equal(expectedNested, SortedFqns(nested.Data!));
+        Assert.Equal(expectedNested.Length, nested.Data!.TotalCount);
     }
 
     #endregion
