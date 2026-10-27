@@ -86,4 +86,26 @@ public sealed class GetDocumentOutlineParams
     /// declaration).
     /// </summary>
     public string? NamespaceFilter { get; init; }
+
+    /// <summary>
+    /// Optional static filter. <c>true</c> keeps outline entries whose declared symbol has
+    /// <c>ISymbol.IsStatic</c> true (static methods, properties, fields, events, static constructors and
+    /// static classes; <c>const</c> fields and enum members count as static, as Roslyn reports them);
+    /// <c>false</c> keeps entries whose declared symbol is not static (instance members, instance
+    /// constructors, non-static types, delegates); <c>null</c> keeps every entry. Namespaces
+    /// never match either value. A matching type keeps only its matching children; a non-matching type (or
+    /// namespace) is kept only as a container for matching descendants, and subtrees with no match are dropped,
+    /// exactly like <see cref="KindFilter"/>. The outline never lists operators (including conversion
+    /// operators), indexers, finalizers, property/event accessors, local functions, or delegates declared
+    /// inside a type, so <see cref="StaticFilter"/> can never return them (operators are always static).
+    /// Explicit interface implementations are listed and judged by <c>ISymbol.IsStatic</c> (normally instance;
+    /// a static abstract interface implementation counts as static), unlike <c>get_symbol_info</c>
+    /// <c>Members</c>. Combined with <see cref="KindFilter"/> /
+    /// <see cref="NameFilter"/> / <see cref="AccessibilityFilter"/> / <see cref="NamespaceFilter"/>, an entry
+    /// matches only when it satisfies all of them. Applied before <see cref="MaxDepth"/> and
+    /// <see cref="MaxResults"/>, so <c>TotalCount</c> / <c>Truncated</c> reflect the filtered tree; no match
+    /// returns an empty outline. A non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or
+    /// <c>1</c>) is rejected by the <c>get_document_outline</c> tool with <c>INTERNAL_ERROR</c>.
+    /// </summary>
+    public bool? StaticFilter { get; init; }
 }
