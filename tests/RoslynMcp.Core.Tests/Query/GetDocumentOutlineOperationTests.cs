@@ -2220,6 +2220,38 @@ public class GetDocumentOutlineOperationTests
         Assert.False(result.Data.Truncated);
     }
 
+    [SkippableTheory]
+    [InlineData(true, "Static")]
+    [InlineData(false, "Instance")]
+    public async Task Execute_StaticFilter_KeepsEnclosingBlockScopedNamespaces(bool staticFilter, string expectedClass)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace Outer
+            {
+                namespace Inner
+                {
+                    public static class Static { }
+                    public class Instance { }
+                }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        // Block-scoped nested namespaces are sibling roots; Outer syntactically encloses the match.
+        Assert.Equal(
+            new[] { ("Outer", "Namespace"), ("Inner", "Namespace"), (expectedClass, "Class") },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
     #endregion
 
     private static List<(string Name, string Kind, int Line, int Column, string? Accessibility, string? ReturnType, int Depth)> Flatten(

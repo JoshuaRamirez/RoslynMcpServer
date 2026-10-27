@@ -140,7 +140,7 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
                 (accessibilityMatches == null || accessibilityMatches(entry)) &&
                 (namespaceMatches == null || namespaceMatches(entry)) &&
                 (staticMatches == null || staticMatches(entry));
-            if (namespaceMatches != null && declarations != null)
+            if ((namespaceMatches != null || staticMatches != null) && declarations != null)
                 matches = WithEnclosingNamespaceContainers(matches, declarations);
 
             returned = FilterOutlineForest(entries, matches);
@@ -220,8 +220,8 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
     /// Extends <paramref name="matches"/> so a namespace entry whose declaration syntactically encloses a
     /// matching declaration is also kept as a container. Block-scoped nested namespaces
     /// (<c>namespace Outer { namespace Inner { ... } }</c>) are emitted as sibling outline roots rather than
-    /// as children, so without this <c>namespaceFilter</c> <c>Outer.Inner</c> would drop the containing
-    /// <c>Outer</c> entry. Only true syntactic ancestors qualify: a sibling dotted declaration such as
+    /// as children, so without this <c>namespaceFilter</c> <c>Outer.Inner</c> (or a <c>staticFilter</c> match inside
+    /// <c>Inner</c>) would drop the containing <c>Outer</c> entry. Only true syntactic ancestors qualify: a sibling dotted declaration such as
     /// <c>namespace App</c> next to <c>namespace App.Services</c> does not enclose it and is not kept.
     /// Each entry's match is evaluated once up front.
     /// </summary>
