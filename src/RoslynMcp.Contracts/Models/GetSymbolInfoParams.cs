@@ -97,6 +97,14 @@ public sealed class GetSymbolInfoParams
     /// <c>false</c> keeps only instance members; <c>null</c> keeps all members. Applied after
     /// <see cref="NamespaceFilter"/> and before <see cref="MaxResults"/> so <c>TotalCount</c> /
     /// <c>Truncated</c> reflect the filtered set. No effect on non-type symbols.
+    /// Nested types are judged by <c>IsStatic</c> too: a nested <c>static class</c> counts as static;
+    /// any other nested type (class, struct, enum, interface, delegate, record) counts as instance.
+    /// Operators (including conversion operators), constructors (including static constructors),
+    /// indexers, property / event accessors and explicit interface implementations never appear in
+    /// <c>Members</c>, so <c>true</c> cannot return them (a finalizer <c>~T()</c> does appear and counts
+    /// as instance). No match gives empty <c>Members</c>, <c>TotalCount = 0</c>, <c>Truncated = false</c>.
+    /// A non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>) is rejected by the
+    /// <c>get_symbol_info</c> tool with <c>INTERNAL_ERROR</c>.
     /// </summary>
     public bool? StaticFilter { get; init; }
 }
