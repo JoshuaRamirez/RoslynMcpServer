@@ -128,7 +128,8 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
 
         // Optional staticFilter (same ISymbol.IsStatic test as get_symbol_info / get_document_outline /
-        // search_symbols staticFilter): keep only call sites whose calling symbol (the same
+        // search_symbols staticFilter; find_references / get_diagnostics staticFilter judge sites
+        // differently): keep only call sites whose calling symbol (the same
         // CallingSymbol accessibilityFilter / nameFilter / kindFilter judge) is static (true) or
         // instance (false). Null when omitted (no static filtering).
         var staticFilter = @params.StaticFilter;

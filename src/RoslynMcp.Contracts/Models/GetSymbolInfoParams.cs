@@ -102,7 +102,11 @@ public sealed class GetSymbolInfoParams
     /// Operators (including conversion operators), constructors (including static constructors),
     /// indexers, property / event accessors and explicit interface implementations never appear in
     /// <c>Members</c>, so <c>true</c> cannot return them (a finalizer <c>~T()</c> does appear and counts
-    /// as instance). No match gives empty <c>Members</c>, <c>TotalCount = 0</c>, <c>Truncated = false</c>.
+    /// as instance). Like <c>get_document_outline</c> / <c>search_symbols</c> / <c>find_implementations</c>
+    /// <c>staticFilter</c>, this judges each member's own symbol itself, unlike <c>find_references</c> /
+    /// <c>find_callers</c> / <c>get_diagnostics</c> <c>staticFilter</c>, which judge the enclosing site
+    /// symbol of each usage / call / diagnostic.
+    /// No match gives empty <c>Members</c>, <c>TotalCount = 0</c>, <c>Truncated = false</c>.
     /// A non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>) is rejected by the
     /// <c>get_symbol_info</c> tool with <c>INTERNAL_ERROR</c>.
     /// </summary>
