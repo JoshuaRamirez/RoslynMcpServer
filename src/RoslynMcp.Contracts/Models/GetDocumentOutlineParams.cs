@@ -92,7 +92,7 @@ public sealed class GetDocumentOutlineParams
     /// <c>ISymbol.IsStatic</c> true (static methods, properties, fields, events, static constructors and
     /// static classes; <c>const</c> fields and enum members count as static, as Roslyn reports them);
     /// <c>false</c> keeps entries whose declared symbol is not static (instance members, instance
-    /// constructors, finalizers, non-static types, delegates); <c>null</c> keeps every entry. Namespaces
+    /// constructors, non-static types, delegates); <c>null</c> keeps every entry. Namespaces
     /// never match either value. Non-matching ancestors are kept only as containers and subtrees with no
     /// match are dropped, exactly like <see cref="KindFilter"/>. Combined with <see cref="KindFilter"/> /
     /// <see cref="NameFilter"/> / <see cref="AccessibilityFilter"/> / <see cref="NamespaceFilter"/>, an entry
