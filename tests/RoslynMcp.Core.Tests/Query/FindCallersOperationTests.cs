@@ -1886,6 +1886,155 @@ public class FindCallersOperationTests
         Assert.False(result.Data.Truncated);
     }
 
+    // Edge callers for StaticFilter: the StaticSources files plus Edges.cs (local functions, lambdas,
+    // a finalizer, an indexer, custom event accessors, auto-property initializers, nested-type members,
+    // and a const-to-const reference) and Program.cs (top-level statements, enclosed by <Main>$).
+    private static readonly Dictionary<string, string> StaticEdgeSources = new(StaticSources)
+    {
+        ["Edges.cs"] = """
+            namespace App.Edges;
+            public class Edge
+            {
+                public static void StaticWithLocals()
+                {
+                    int InstanceLocal() => App.Target.Run();
+                    static int StaticLocal() => App.Target.Run();
+                    InstanceLocal();
+                    StaticLocal();
+                }
+                public static void StaticWithLambda()
+                {
+                    System.Func<int> f = () => App.Target.Run();
+                    System.Func<int> g = static () => App.Target.Run();
+                }
+                public void InstanceWithLambda()
+                {
+                    System.Func<int> f = () => App.Target.Run();
+                    System.Func<int> g = static () => App.Target.Run();
+                }
+                ~Edge() { App.Target.Run(); }
+                public int this[int i] => App.Target.Run();
+                public event System.Action? Changed { add { App.Target.Run(); } remove { } }
+                public static event System.Action? StaticChanged { add { App.Target.Run(); } remove { } }
+                public static int AutoProp { get; } = App.Target.Run();
+                public int InstanceAutoProp { get; } = App.Target.Run();
+                public class Inner
+                {
+                    public void InnerInstance() { App.Target.Run(); }
+                    public static void InnerStatic() { App.Target.Run(); }
+                }
+            }
+            public static class Limits
+            {
+                public const int Base = 1;
+                public const int Derived = Base + 1;
+            }
+            public class LimitUser
+            {
+                public int UsesBase() => Limits.Base;
+            }
+            """,
+        ["Program.cs"] = """
+            App.Target.Run();
+            """
+    };
+
+    // Static edge callers of Target.Run in Edges.cs (lambda sites report the enclosing member, once per site).
+    private static readonly string[] StaticEdgeCallerNames =
+    [
+        "<AutoProp>k__BackingField", "InnerStatic", "StaticChanged", "StaticLocal",
+        "StaticWithLambda", "StaticWithLambda"
+    ];
+
+    private static readonly string[] InstanceEdgeCallerNames =
+    [
+        "<InstanceAutoProp>k__BackingField", "Changed", "Finalize", "InnerInstance", "InstanceLocal",
+        "InstanceWithLambda", "InstanceWithLambda", "this[]"
+    ];
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FindCallers_StaticFilter_JudgesEdgeCallersOnTheReportedCallingSymbol(bool? staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticEdgeSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            CallerFile = workspace.PathOf("Edges.cs"),
+            StaticFilter = staticFilter
+        });
+
+        // - A non-static local function inside a static method is its own calling symbol (instance);
+        //   a static local function is static.
+        // - Lambdas (static or not) report the enclosing member and are judged on it.
+        // - A finalizer reports Finalize (instance); an indexer reports this[] and is judged on the indexer.
+        // - A custom event accessor reports the event and is judged on it.
+        // - An auto-property initializer reports <P>k__BackingField and is judged on the backing field.
+        // - Nested-type members are judged on their own staticness.
+        Assert.True(result.Success);
+        var expected = SortedNames(staticFilter switch
+        {
+            true => StaticEdgeCallerNames,
+            false => InstanceEdgeCallerNames,
+            null => StaticEdgeCallerNames.Concat(InstanceEdgeCallerNames)
+        });
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData(null, new[] { "Derived", "UsesBase" })]
+    [InlineData(true, new[] { "Derived" })]
+    [InlineData(false, new[] { "UsesBase" })]
+    public async Task FindCallers_StaticFilter_ConstInitializerReferencingConstIsStatic(
+        bool? staticFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticEdgeSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        // Limits.Derived = Base + 1: the referencing site is the const Derived, which Roslyn reports as static.
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Edges.cs"),
+            SymbolName = "Base",
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData(null, new[] { "<Main>$" })]
+    [InlineData(true, new[] { "<Main>$" })]
+    [InlineData(false, new string[0])]
+    public async Task FindCallers_StaticFilter_TopLevelStatementsAreJudgedOnStaticMain(
+        bool? staticFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticEdgeSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        // Top-level statements are enclosed by the synthesized static entry point <Main>$.
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            CallerFile = workspace.PathOf("Program.cs"),
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
     #endregion
 
     // Roslyn does not guarantee caller order across runs, so compare call sites as sorted sets.

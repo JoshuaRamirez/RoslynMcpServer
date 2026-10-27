@@ -138,7 +138,21 @@ public sealed class FindCallersParams
     /// <c>false</c> keeps only call sites whose calling symbol has <c>IsStatic == false</c> (instance
     /// methods, instance constructors, instance properties, and instance field initializers). Same
     /// <c>IsStatic</c> test as <c>get_symbol_info</c> / <c>get_document_outline</c> /
-    /// <c>search_symbols</c> <c>staticFilter</c>; the target symbol's own staticness is irrelevant.
+    /// <c>search_symbols</c> <c>staticFilter</c>, but <c>find_callers</c> can judge callers those tools
+    /// never list (local functions, indexers, event accessors, compiler backing fields, and
+    /// <c>&lt;Main&gt;$</c> appear in none of them; finalizers never appear in
+    /// <c>get_document_outline</c>); the target symbol's own staticness is irrelevant.
+    /// Edge callers: a non-static local function (even inside a static method) is its own calling
+    /// symbol and counts as instance, while a <c>static</c> local function counts as static; lambdas,
+    /// including <c>static</c> lambdas, are reported as and judged on the enclosing member; a finalizer
+    /// is reported as <c>Finalize</c> and counts as instance; an indexer is reported as <c>this[]</c>
+    /// and judged on the indexer; a call in a custom event accessor (<c>add</c> / <c>remove</c>) is
+    /// reported as the event and judged on it; an auto-property initializer is reported as the backing
+    /// field <c>&lt;P&gt;k__BackingField</c> and judged on it (static for a static property); members of
+    /// a nested type are judged on their own staticness, not the containing type's; a <c>const</c>
+    /// initializer that references another <c>const</c> is judged on the referencing <c>const</c>
+    /// (static); top-level statements are reported as the synthesized entry point
+    /// <c>&lt;Main&gt;$</c>, which is static.
     /// Combined with <see cref="CallerFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
     /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, and <see cref="KindFilter"/> (a site
     /// must satisfy all that are set), and applied before <see cref="MaxResults"/> so
