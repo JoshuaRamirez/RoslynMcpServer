@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- `find_callers` now honors optional **`staticFilter`** (#3069): a boolean that keeps only call sites whose **calling symbol** — the same `caller.CallingSymbol` that `accessibilityFilter` / `nameFilter` / `kindFilter` judge — has `ISymbol.IsStatic` equal to the value. `true` keeps calls made from static methods, static constructors, operators, static properties (a call inside a property accessor body is reported as the property itself), and static field and `const` initializers (Roslyn reports `const` as static); `false` keeps calls made from instance methods, instance constructors, instance properties, and instance field initializers. Same `IsStatic` test as `get_symbol_info` (#3008) / `get_document_outline` (#3019) / `search_symbols` (#3035) `staticFilter`; the target symbol's own staticness is irrelevant. Combined with `callerFile` / `projectPath` / `namespaceFilter` / `accessibilityFilter` / `nameFilter` / `kindFilter` (a site must satisfy all that are set) and applied before `maxResults`, so `TotalCount` / `Truncated` reflect the filtered set. No match → empty `Callers`, `TotalCount = 0`, `Truncated = false`. A non-boolean value is rejected with `INTERNAL_ERROR`. Omit = today's behavior. CLI: `--static-filter`. `FindCallersResult` shape unchanged.
+
 ## [0.11.0] - 2026-10-27
 
 ### Added

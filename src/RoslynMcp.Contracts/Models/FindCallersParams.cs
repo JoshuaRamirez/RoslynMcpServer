@@ -127,4 +127,25 @@ public sealed class FindCallersParams
     /// whitespace for no kind filter. An unrecognized value fails with <c>InvalidSymbolKind</c>.
     /// </summary>
     public string? KindFilter { get; init; }
+
+    /// <summary>
+    /// Optional static / instance filter on the <strong>calling symbol</strong> — the same
+    /// <c>caller.CallingSymbol</c> that <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>,
+    /// and <see cref="KindFilter"/> judge. <c>true</c> keeps only call sites whose calling symbol has
+    /// <c>ISymbol.IsStatic == true</c> (static methods, static constructors, operators, static
+    /// properties — a call inside a property accessor body is reported as the property itself —
+    /// static field initializers, and <c>const</c> initializers, which Roslyn reports as static);
+    /// <c>false</c> keeps only call sites whose calling symbol has <c>IsStatic == false</c> (instance
+    /// methods, instance constructors, instance properties, and instance field initializers). Same
+    /// <c>IsStatic</c> test as <c>get_symbol_info</c> / <c>get_document_outline</c> /
+    /// <c>search_symbols</c> <c>staticFilter</c>; the target symbol's own staticness is irrelevant.
+    /// Combined with <see cref="CallerFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
+    /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, and <see cref="KindFilter"/> (a site
+    /// must satisfy all that are set), and applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the static-filtered set. No match gives empty
+    /// <c>Callers</c>, <c>TotalCount = 0</c>, <c>Truncated = false</c>. Omit for no static filter. A
+    /// non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>) is rejected by the
+    /// <c>find_callers</c> tool with <c>INTERNAL_ERROR</c>.
+    /// </summary>
+    public bool? StaticFilter { get; init; }
 }
