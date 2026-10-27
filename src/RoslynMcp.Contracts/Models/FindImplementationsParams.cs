@@ -147,7 +147,23 @@ public sealed class FindImplementationsParams
     /// only instance implementations. Same <c>ISymbol.IsStatic</c> test as <c>get_symbol_info</c> /
     /// <c>get_document_outline</c> / <c>search_symbols</c> <c>staticFilter</c>. Implementing types are
     /// never static (a static class cannot implement an interface or derive from a class), so for type
-    /// targets <c>true</c> returns an empty success and <c>false</c> keeps every implementation.
+    /// targets <c>true</c> returns an empty success while <c>false</c> or <c>null</c> keeps every
+    /// implementing type. Unlike <c>find_references</c> / <c>find_callers</c> <c>staticFilter</c>,
+    /// which judge the enclosing site symbol of each usage / call, this judges each returned
+    /// implementation symbol itself. C# requires an implementing member's staticness to equal its
+    /// target's, so for a member target the filter is all-or-nothing (the target's staticness
+    /// decides). Explicit interface implementations (static or instance) are judged on their own
+    /// <c>IsStatic</c>; a default interface member re-implemented explicitly in a derived interface is
+    /// returned and judged on that re-implementation (the derived interface itself is not returned for
+    /// a type target); records, record structs, structs, nested types, partial members (reported once,
+    /// at the defining declaration), generic implementers, and implementers of a self-referencing
+    /// generic <c>static abstract</c> member (<c>ISelf&lt;TSelf&gt;</c>) are judged like any other.
+    /// Implementations in other projects of the solution are returned and filtered; implementations
+    /// declared only in metadata are never listed (for a metadata target they still count toward
+    /// <c>TotalCount</c>, so <c>Truncated</c> can be <c>true</c>). Current behavior: static-class
+    /// targets, abstract or virtual class targets, and abstract / virtual class members with overrides
+    /// (including a generic base such as <c>GB&lt;T&gt;.GM</c>) return no implementations even without
+    /// a filter.
     /// Combined with <see cref="ImplementationFile"/>, <see cref="ProjectPath"/>,
     /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>,
     /// <see cref="KindFilter"/>, and <see cref="NameFilter"/> (an implementation must satisfy all that
