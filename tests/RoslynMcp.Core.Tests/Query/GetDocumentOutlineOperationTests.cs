@@ -2252,6 +2252,107 @@ public class GetDocumentOutlineOperationTests
         Assert.False(result.Data.Truncated);
     }
 
+
+    private const string NeverListedSource = """
+        namespace App
+        {
+            public interface IShape
+            {
+                void Draw();
+                int Area { get; }
+            }
+
+            public interface IFactory<T> where T : IFactory<T>
+            {
+                static abstract T Create();
+            }
+
+            public class Vec : IShape, IFactory<Vec>
+            {
+                public static Vec operator +(Vec a, Vec b) => a;
+                public static implicit operator int(Vec v) => 0;
+                public int this[int i] => i;
+                ~Vec() { }
+                void IShape.Draw()
+                {
+                    int Local() => 1;
+                    Local();
+                }
+                int IShape.Area => 0;
+                static Vec IFactory<Vec>.Create() => new Vec();
+                public delegate void Callback();
+                public int Value { get; set; }
+                public static int Count;
+            }
+        }
+        """;
+
+    public static TheoryData<bool?, (string Name, string Kind)[]> NeverListedCases => new()
+    {
+        {
+            null,
+            new[]
+            {
+                ("App", "Namespace"), ("IShape", "Interface"), ("Draw", "Method"), ("Area", "Property"),
+                ("IFactory", "Interface"), ("Create", "Method"),
+                ("Vec", "Class"), ("Draw", "Method"), ("Create", "Method"), ("Area", "Property"),
+                ("Value", "Property"), ("Count", "Field")
+            }
+        },
+        {
+            // Only the static abstract interface member, the static explicit interface implementation and the
+            // static field match; the non-static interfaces and class are kept only as containers.
+            true,
+            new[]
+            {
+                ("App", "Namespace"), ("IFactory", "Interface"), ("Create", "Method"),
+                ("Vec", "Class"), ("Create", "Method"), ("Count", "Field")
+            }
+        },
+        {
+            // Instance explicit interface implementations are listed; IFactory matches itself but keeps only its
+            // matching children (none, since its Create is static abstract).
+            false,
+            new[]
+            {
+                ("App", "Namespace"), ("IShape", "Interface"), ("Draw", "Method"), ("Area", "Property"),
+                ("IFactory", "Interface"),
+                ("Vec", "Class"), ("Draw", "Method"), ("Area", "Property"), ("Value", "Property")
+            }
+        }
+    };
+
+    [SkippableTheory]
+    [MemberData(nameof(NeverListedCases))]
+    public async Task Execute_StaticFilter_NeverListsOperatorsIndexersFinalizersAccessorsLocalFunctionsOrNestedDelegates_ListsExplicitInterfaceImplementationsByIsStatic(
+        bool? staticFilter, (string Name, string Kind)[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NeverListedSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        var flat = Flatten(result.Data!.Entries);
+        Assert.Equal(expected, flat.Select(e => (e.Name, e.Kind)));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+
+        // Operators (including the conversion operator), the indexer, the finalizer, property accessors, the
+        // local function and the delegate nested in Vec never appear, whatever the filter value.
+        var neverListedNames = new[]
+        {
+            "op_Addition", "op_Implicit", "operator", "this", "Item", "this[]", "Finalize", "~Vec",
+            "get_Area", "get_Value", "set_Value", "get_Item", "Local", "Callback"
+        };
+        Assert.DoesNotContain(flat, e => neverListedNames.Contains(e.Name));
+        Assert.DoesNotContain(flat, e => e.Kind is "Delegate" or "Operator" or "Indexer" or "Destructor" or "Constructor");
+    }
+
     #endregion
 
     private static List<(string Name, string Kind, int Line, int Column, string? Accessibility, string? ReturnType, int Depth)> Flatten(
