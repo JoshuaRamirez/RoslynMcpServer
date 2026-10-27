@@ -1697,6 +1697,7 @@ public class SearchSymbolsOperationTests
                 static Widget IMaker<Widget>.Make() => new Widget();
                 public class NestedWidgetPlain { }
                 public static class NestedWidgetStatic { }
+                public delegate void NestedWidgetCallback();
             }
         }
         """;
@@ -1743,6 +1744,16 @@ public class SearchSymbolsOperationTests
         string[] expectedFinalizer = staticFilter == true ? [] : ["App.Widget.~Widget()"];
         Assert.Equal(expectedFinalizer, SortedFqns(finalizer.Data!));
 
+        // A delegate declared inside a type is returned and counts as instance (non-static type).
+        var nestedDelegate = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "NestedWidgetCallback",
+            ExactMatch = true,
+            StaticFilter = staticFilter
+        });
+        string[] expectedDelegate = staticFilter == true ? [] : ["App.Widget.NestedWidgetCallback"];
+        Assert.Equal(expectedDelegate, SortedFqns(nestedDelegate.Data!));
+
         // The interface's own members are ordinary symbols and still returned (Make is static abstract).
         var interfaceMembers = await operation.ExecuteAsync(new SearchSymbolsParams
         {
@@ -1762,7 +1773,7 @@ public class SearchSymbolsOperationTests
         string[] expectedMake = staticFilter == false ? [] : ["App.IMaker<T>.Make()"];
         Assert.Equal(expectedMake, SortedFqns(staticAbstract.Data!));
 
-        // Nested types are returned and judged by IsStatic.
+        // Nested types (including the nested delegate) are returned and judged by IsStatic.
         var nested = await operation.ExecuteAsync(new SearchSymbolsParams
         {
             Query = "NestedWidget",
@@ -1771,8 +1782,8 @@ public class SearchSymbolsOperationTests
         string[] expectedNested = staticFilter switch
         {
             true => ["App.Widget.NestedWidgetStatic"],
-            false => ["App.Widget.NestedWidgetPlain"],
-            null => ["App.Widget.NestedWidgetPlain", "App.Widget.NestedWidgetStatic"]
+            false => ["App.Widget.NestedWidgetCallback", "App.Widget.NestedWidgetPlain"],
+            null => ["App.Widget.NestedWidgetCallback", "App.Widget.NestedWidgetPlain", "App.Widget.NestedWidgetStatic"]
         };
         Assert.Equal(expectedNested, SortedFqns(nested.Data!));
         Assert.Equal(expectedNested.Length, nested.Data!.TotalCount);
