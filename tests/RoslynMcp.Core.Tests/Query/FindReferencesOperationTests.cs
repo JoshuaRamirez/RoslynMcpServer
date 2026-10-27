@@ -2758,6 +2758,389 @@ public class FindReferencesOperationTests
     private static bool SamePath(string a, string b) =>
         string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
 
+    #region staticFilter (#3082)
+
+    private static readonly Dictionary<string, string> StaticSources = new()
+    {
+        ["Target.cs"] = """
+            namespace App;
+            public static class Target
+            {
+                public static int Run() => 1;
+            }
+            """,
+        ["Sites.cs"] = """
+            namespace App.Sites;
+            public class Sites
+            {
+                private static int s_seed = App.Target.Run();
+                private int _seed = App.Target.Run();
+                static Sites() { _ = App.Target.Run(); }
+                public Sites() { _ = App.Target.Run(); }
+                public static int S() { System.Func<int> f = () => App.Target.Run(); return f(); }
+                public int I() { return Local(); static int Local() => App.Target.Run(); }
+                public static int P => App.Target.Run();
+                public int Q => App.Target.Run();
+                public static Sites operator +(Sites a, Sites b) { _ = App.Target.Run(); return a; }
+            }
+            public static class Helpers
+            {
+                public static void H() { _ = App.Target.Run(); }
+            }
+            """
+    };
+
+    private static readonly string[] StaticUsageSites =
+        { "Sites.cs:4", "Sites.cs:6", "Sites.cs:8", "Sites.cs:10", "Sites.cs:12", "Sites.cs:16" };
+
+    private static readonly string[] InstanceUsageSites =
+        { "Sites.cs:5", "Sites.cs:7", "Sites.cs:9", "Sites.cs:11" };
+
+    [Fact]
+    public void FindReferencesParams_StaticFilter_DefaultsToNull()
+    {
+        var @params = new FindReferencesParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.StaticFilter);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_StaticFilterOmitted_ReportsEverySite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false
+        });
+
+        Assert.True(result.Success);
+        var expected = StaticUsageSites.Concat(InstanceUsageSites)
+            .OrderBy(site => int.Parse(site.Split(':')[1]))
+            .ToArray();
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FindReferences_StaticFilter_SelectsSitesByEnclosingSymbolStaticness(bool staticFilter)
+    {
+        // Static field initializer, static constructor, a lambda in a static method (judged on the
+        // method), static property, operator, and a member of a static class are static sites; the
+        // instance field initializer, instance constructor, a static local function inside an instance
+        // method (judged on the declaring instance method), and an instance property are instance sites.
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false,
+            StaticFilter = staticFilter
+        });
+
+        var expected = staticFilter ? StaticUsageSites : InstanceUsageSites;
+        Assert.True(result.Success);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_StaticFilterWithMaxResults_CapsAfterStaticFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false,
+            StaticFilter = false,
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.References.Count);
+        Assert.Equal(InstanceUsageSites.Length, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+        Assert.All(Sites(result.Data.References), site => Assert.Contains(site, InstanceUsageSites));
+    }
+
+    [SkippableTheory]
+    [InlineData("Method", true, new[] { "Sites.cs:6", "Sites.cs:8", "Sites.cs:10", "Sites.cs:12", "Sites.cs:16" })]
+    [InlineData("Field", true, new[] { "Sites.cs:4" })]
+    [InlineData("Field", false, new[] { "Sites.cs:5" })]
+    [InlineData("Event", true, new string[0])]
+    public async Task FindReferences_StaticFilterWithKindFilter_AndsTheSiteFilters(
+        string kindFilter, bool staticFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            IncludeDeclaration = false,
+            KindFilter = kindFilter,
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_StaticFilter_IncludeDeclarationJudgesDefinitionByDeclaredSymbol()
+    {
+        // Run is static, so its definition is kept by true and dropped by false.
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var statics = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            StaticFilter = true
+        });
+        var instances = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            StaticFilter = false
+        });
+
+        Assert.True(statics.Success);
+        Assert.Contains(statics.Data!.References, r => r.IsDefinition);
+        Assert.Equal(StaticUsageSites.Length + 1, statics.Data.TotalCount);
+
+        Assert.True(instances.Success);
+        Assert.DoesNotContain(instances.Data!.References, r => r.IsDefinition);
+        Assert.Equal(InstanceUsageSites, Sites(instances.Data.References));
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_StaticFilter_NamespaceLevelSitesNeverMatch_DelegateSiteIsInstance()
+    {
+        // Using aliases and a type's base list are namespace-level sites and never match either value.
+        // A delegate parameter site is judged on the delegate type, which is never static.
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                namespace App;
+                public class Target { }
+                """,
+            ["Consumer.cs"] = """
+                using GlobalAlias = App.Target;
+                namespace App.Consumers
+                {
+                    public class Derived : App.Target { }
+                    public delegate void Del(App.Target t);
+                    public static class Consumer
+                    {
+                        public static void Use() { _ = typeof(App.Target); }
+                    }
+                }
+                """
+        });
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var statics = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false,
+            StaticFilter = true
+        });
+        var instances = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            IncludeDeclaration = false,
+            StaticFilter = false
+        });
+
+        Assert.True(statics.Success);
+        Assert.Equal(new[] { "Consumer.cs:8" }, Sites(statics.Data!.References));
+        Assert.True(instances.Success);
+        Assert.Equal(new[] { "Consumer.cs:5" }, Sites(instances.Data!.References));
+        Assert.Equal(1, instances.Data.TotalCount);
+    }
+
+    // Edge fixture: every reference below names App.T (the target type), one reference per line, so each
+    // line is one reference site. Line numbers are asserted, so keep the layout stable.
+    private static readonly Dictionary<string, string> StaticEdgeSources = new()
+    {
+        ["Target.cs"] = """
+            namespace App;
+            public class T
+            {
+                public const int Base = 1;
+                public static T Make()
+                {
+                    return new T();
+                }
+            }
+            """,
+        ["Edges.cs"] = """
+            using System.ComponentModel;
+            namespace App.Edges;
+            /// <summary>See <see cref="App.T"/>.</summary>
+            [Description(nameof(App.T))]
+            public class Edge<TItem> where TItem : App.T
+            {
+                public static App.T? Field2;
+                public App.T? InstanceField;
+                public static App.T? StaticSig(
+                    App.T? p) => p;
+                [DefaultValue(App.T.Base)]
+                public static int AttrS() => 0;
+                /// <summary>See <see cref="App.T"/>.</summary>
+                public static void CrefS() { }
+                public static string NameOfS() => nameof(App.T);
+                public static int DefaultS(int x = App.T.Base) => x;
+                public static void ConstrainedS<TM>() where TM : App.T { }
+                public static int StaticWithLocal()
+                {
+                    return Local();
+                    int Local() => App.T.Base;
+                }
+                public static System.Func<int> StaticLambda() => static () => App.T.Base;
+                ~Edge() { _ = App.T.Base; }
+                public int this[int i] => App.T.Base;
+                public static event System.Action? StaticChanged { add { _ = App.T.Base; } remove { } }
+                public event System.Action? Changed { add { _ = App.T.Base; } remove { } }
+                public static int AutoS { get; } = App.T.Base;
+                public int AutoI { get; } = App.T.Base;
+                public const int Derived = App.T.Base + 1;
+                public class Nested : App.T
+                {
+                    public static int NestedS() => App.T.Base;
+                    public int NestedI() => App.T.Base;
+                }
+                public static App.T? StaticProp { get; set; }
+                public static event System.Action<App.T>? StaticEvent;
+            }
+            public class TopDerived : App.T { }
+            """,
+        ["Program.cs"] = """
+            _ = App.T.Base;
+            int TopLocal() => App.T.Base;
+            _ = TopLocal();
+            """
+    };
+
+    // Static sites: nameof (15), default parameter value (16), method constraint (17), a non-static local
+    // function in a static method (21, judged on the method), a static lambda (23, judged on the method),
+    // a static event's accessor (26), a static auto-property initializer (28), a const initializer
+    // referencing a const (30), a static member of a nested type (33), and the body of a static method
+    // in a non-static class (Target.cs:7).
+    private static readonly string[] StaticEdgeSites =
+    {
+        "Edges.cs:15", "Edges.cs:16", "Edges.cs:17", "Edges.cs:21", "Edges.cs:23", "Edges.cs:26",
+        "Edges.cs:28", "Edges.cs:30", "Edges.cs:33", "Target.cs:7"
+    };
+
+    // Instance sites: judged on the containing (instance) type: a type's cref (3) and attribute (4);
+    // static- and instance-field types (7, 8); a static method's return (9) and parameter (10) types; an
+    // attribute argument on a static method (11); a cref in a static method's doc comment (13); a nested
+    // type's base list (31, judged on the outer type); a static property's type (36); a static event's
+    // type (37); and the return type of a static method declared in
+    // the non-static target type (Target.cs:5). Judged on an instance member: the finalizer (24), the
+    // indexer (25), an instance event's accessor (27), an instance auto-property initializer (29), and an
+    // instance member of a nested type (34).
+    private static readonly string[] InstanceEdgeSites =
+    {
+        "Edges.cs:3", "Edges.cs:4", "Edges.cs:7", "Edges.cs:8", "Edges.cs:9", "Edges.cs:10", "Edges.cs:11",
+        "Edges.cs:13", "Edges.cs:24", "Edges.cs:25", "Edges.cs:27", "Edges.cs:29", "Edges.cs:31",
+        "Edges.cs:34", "Edges.cs:36", "Edges.cs:37", "Target.cs:5"
+    };
+
+    // Namespace-level sites (never match either value): a top-level type's type-parameter constraint (5),
+    // a top-level type's base list (39), and top-level statements, including a top-level local function
+    // (Program.cs:1, 2).
+    private static readonly string[] NamespaceLevelEdgeSites =
+        { "Edges.cs:5", "Edges.cs:39", "Program.cs:1", "Program.cs:2" };
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FindReferences_StaticFilter_JudgesEdgeSitesOnTheResolvedSiteSymbol(bool? staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticEdgeSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "T",
+            IncludeDeclaration = false,
+            StaticFilter = staticFilter
+        });
+
+        var expected = (staticFilter switch
+        {
+            null => StaticEdgeSites.Concat(InstanceEdgeSites).Concat(NamespaceLevelEdgeSites),
+            true => StaticEdgeSites,
+            false => InstanceEdgeSites
+        })
+            .Select(site => (File: site.Split(':')[0], Line: int.Parse(site.Split(':')[1])))
+            .OrderBy(site => site.File, StringComparer.Ordinal)
+            .ThenBy(site => site.Line)
+            .Select(site => $"{site.File}:{site.Line}")
+            .ToArray();
+        Assert.True(result.Success);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData(true, new[] { "Edges.cs:28" })]
+    [InlineData(false, new[] { "Edges.cs:29" })]
+    public async Task FindReferences_StaticFilter_AutoPropertyInitializerIsJudgedOnTheBackingField(
+        bool staticFilter, string[] expected)
+    {
+        // Same as find_callers: the site of an auto-property initializer is the compiler backing field
+        // <P>k__BackingField (a Field whose name contains k__BackingField), not the property, and it
+        // shares the property's staticness.
+        await using var workspace = await TempWorkspace.CreateAsync(StaticEdgeSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "T",
+            IncludeDeclaration = false,
+            KindFilter = "Field",
+            NameFilter = "k__BackingField",
+            StaticFilter = staticFilter
+        });
+        var asProperty = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "T",
+            IncludeDeclaration = false,
+            KindFilter = "Property",
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.True(asProperty.Success);
+        Assert.Empty(asProperty.Data!.References);
+    }
+
+    #endregion
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }
