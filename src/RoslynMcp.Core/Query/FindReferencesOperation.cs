@@ -180,8 +180,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 && SymbolKindMapper.Map(siteSymbol) == kindFilter.Value);
 
         // Optional staticFilter (same ISymbol.IsStatic test as get_symbol_info / get_document_outline /
-        // search_symbols / find_callers staticFilter): keep only locations whose site symbol (the same
-        // DeclaringSiteSymbol accessibilityFilter / nameFilter / kindFilter judge) is static (true) or
+        // search_symbols / find_callers / find_implementations / get_diagnostics staticFilter): keep only locations whose site
+        // symbol (the same DeclaringSiteSymbol accessibilityFilter / nameFilter / kindFilter judge) is static (true) or
         // instance (false). Namespace-level sites never match either value. Null when omitted.
         var staticFilter = @params.StaticFilter;
 

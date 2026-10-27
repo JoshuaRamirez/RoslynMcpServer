@@ -395,6 +395,72 @@ public class GetDiagnosticsToolTests
     }
 
     [Fact]
+    public void GetDefinition_StaticFilter_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var staticFilter = doc.RootElement.GetProperty("properties").GetProperty("staticFilter");
+
+        Assert.Equal("boolean", staticFilter.GetProperty("type").GetString());
+        var description = staticFilter.GetProperty("description").GetString();
+        Assert.Contains("diagnostic site", description);
+        Assert.Contains("IsStatic", description);
+        Assert.Contains("find_references", description);
+        Assert.Contains("find_callers", description);
+        Assert.Contains("find_implementations", description);
+        Assert.Contains("before maxResults", description);
+        Assert.Contains("INTERNAL_ERROR", description);
+        Assert.Contains("never match either value", description);
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("staticFilter", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("staticFilter", _tool.Description);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    [InlineData("null")]
+    public async Task ExecuteAsync_StaticFilterBoolean_ParsesAndReachesWorkspace(string value)
+    {
+        // Arrange - a JSON boolean (or null) parses; the throwing provider proves parsing succeeded
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""staticFilter"": " + value + @"
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Theory]
+    [InlineData("\"yes\"")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    public async Task ExecuteAsync_StaticFilterNonBoolean_ReturnsInternalError(string value)
+    {
+        // Arrange - a non-boolean fails deserialization before workspace creation
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""staticFilter"": " + value + @"
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        var text = GetResultText(result);
+        Assert.Contains("INTERNAL_ERROR", text);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", text);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_NullArguments_ReturnsError()
     {
         var result = await _tool.ExecuteAsync(null);

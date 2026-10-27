@@ -1405,6 +1405,65 @@ public class ArgsToJsonConverterTests
     }
 
 
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("TRUE", true)]
+    [InlineData("false", false)]
+    [InlineData("False", false)]
+    public void GetDiagnostics_StaticFilterOption_RoundTripsToParams(string value, bool expected)
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["static-filter"] = value,
+            ["max-results"] = "3"
+        }, tool.ParamsType);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal(expected, doc.RootElement.GetProperty("staticFilter").GetBoolean());
+
+        var p = JsonSerializer.Deserialize<GetDiagnosticsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal(expected, p.StaticFilter);
+        Assert.Equal(3, p.MaxResults);
+    }
+
+    // A --static-filter value other than true/false (case-insensitive) is not inferred as a boolean, so
+    // it reaches the bool? StaticFilter as a JSON string and is rejected (the MCP tool reports
+    // INTERNAL_ERROR for the same JSON).
+    [Theory]
+    [InlineData("yes")]
+    [InlineData("1")]
+    [InlineData("maybe")]
+    public void GetDiagnostics_StaticFilterNonBoolean_IsRejected(string value)
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["static-filter"] = value
+        }, typeof(GetDiagnosticsParams));
+        var doc = JsonDocument.Parse(json);
+        Assert.NotEqual(JsonValueKind.True, doc.RootElement.GetProperty("staticFilter").ValueKind);
+        Assert.NotEqual(JsonValueKind.False, doc.RootElement.GetProperty("staticFilter").ValueKind);
+
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<GetDiagnosticsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true }));
+    }
+
+    [Fact]
+    public void GetDiagnostics_StaticFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["severity-filter"] = "All"
+        }, typeof(GetDiagnosticsParams));
+        var p = JsonSerializer.Deserialize<GetDiagnosticsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.StaticFilter);
+    }
+
     [Fact]
     public void GetDiagnostics_KindFilter_RoundTripsToParams()
     {

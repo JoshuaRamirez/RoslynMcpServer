@@ -184,7 +184,8 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
 
             // Static filter runs with the other symbol filters before maxResults so TotalCount /
             // Truncated reflect the filtered set. Same ISymbol.IsStatic test as get_symbol_info /
-            // get_document_outline / search_symbols staticFilter; implementing types are never static.
+            // get_document_outline / search_symbols / find_callers / find_references / get_diagnostics
+            // staticFilter; implementing types are never static.
             if (@params.StaticFilter.HasValue && impl.IsStatic != @params.StaticFilter.Value)
                 continue;
 

@@ -93,7 +93,11 @@ public sealed class SearchSymbolsParams
     /// can never return them (operators and static constructors are static). Finalizers are returned (as
     /// instance methods named <c>Finalize</c>, so only when this is <c>false</c> or omitted). Nested types
     /// and enum members are returned and judged by <c>IsStatic</c> (a nested static class and enum members
-    /// count as static). Applied together with the other filters (a symbol must
+    /// count as static). Like <c>get_symbol_info</c> / <c>get_document_outline</c> /
+    /// <c>find_implementations</c> <c>staticFilter</c>, this judges each returned symbol itself, unlike
+    /// <c>find_references</c> / <c>find_callers</c> / <c>get_diagnostics</c> <c>staticFilter</c>, which
+    /// judge the enclosing site symbol of each usage / call / diagnostic. Applied together with the
+    /// other filters (a symbol must
     /// satisfy all that are set) and before <see cref="MaxResults"/> so <c>TotalCount</c> /
     /// <c>Truncated</c> reflect the static-filtered set. No match gives empty <c>Symbols</c>,
     /// <c>TotalCount = 0</c>, <c>Truncated = false</c>. Omit for no static filter. A non-boolean value

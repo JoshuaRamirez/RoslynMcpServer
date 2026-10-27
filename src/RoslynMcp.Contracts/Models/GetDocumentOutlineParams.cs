@@ -100,7 +100,10 @@ public sealed class GetDocumentOutlineParams
     /// inside a type, so <see cref="StaticFilter"/> can never return them (operators are always static).
     /// Explicit interface implementations are listed and judged by <c>ISymbol.IsStatic</c> (normally instance;
     /// a static abstract interface implementation counts as static), unlike <c>get_symbol_info</c>
-    /// <c>Members</c>. Combined with <see cref="KindFilter"/> /
+    /// <c>Members</c>. Like <c>get_symbol_info</c> / <c>search_symbols</c> / <c>find_implementations</c>
+    /// <c>staticFilter</c>, this judges each entry's declared symbol itself, unlike <c>find_references</c> /
+    /// <c>find_callers</c> / <c>get_diagnostics</c> <c>staticFilter</c>, which judge the enclosing site
+    /// symbol of each usage / call / diagnostic. Combined with <see cref="KindFilter"/> /
     /// <see cref="NameFilter"/> / <see cref="AccessibilityFilter"/> / <see cref="NamespaceFilter"/>, an entry
     /// matches only when it satisfies all of them. Applied before <see cref="MaxDepth"/> and
     /// <see cref="MaxResults"/>, so <c>TotalCount</c> / <c>Truncated</c> reflect the filtered tree; no match

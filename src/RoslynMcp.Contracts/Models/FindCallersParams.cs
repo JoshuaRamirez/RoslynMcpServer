@@ -138,10 +138,14 @@ public sealed class FindCallersParams
     /// <c>false</c> keeps only call sites whose calling symbol has <c>IsStatic == false</c> (instance
     /// methods, instance constructors, instance properties, and instance field initializers). Same
     /// <c>IsStatic</c> test as <c>get_symbol_info</c> / <c>get_document_outline</c> /
-    /// <c>search_symbols</c> <c>staticFilter</c>, but <c>find_callers</c> can judge callers those tools
-    /// never list (local functions, indexers, event accessors, compiler backing fields, and
+    /// <c>search_symbols</c> / <c>find_implementations</c> <c>staticFilter</c>, but <c>find_callers</c> can judge
+    /// callers those tools never list (local functions, indexers, event accessors, compiler backing fields, and
     /// <c>&lt;Main&gt;$</c> appear in none of them; finalizers never appear in
-    /// <c>get_document_outline</c>); the target symbol's own staticness is irrelevant.
+    /// <c>get_document_outline</c>); the target symbol's own staticness is irrelevant. Unlike
+    /// <c>find_references</c> / <c>get_diagnostics</c> <c>staticFilter</c>, which also judge an enclosing
+    /// site but look local functions through to the declaring member and never match top-level
+    /// statements, <c>find_callers</c> judges a local function as its own calling symbol and counts
+    /// top-level statements (<c>&lt;Main&gt;$</c>) as static.
     /// Edge callers: a non-static local function (even inside a static method) is its own calling
     /// symbol and counts as instance, while a <c>static</c> local function counts as static; lambdas,
     /// including <c>static</c> lambdas, are reported as and judged on the enclosing member; a finalizer
