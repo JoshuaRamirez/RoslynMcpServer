@@ -1664,6 +1664,120 @@ public class SearchSymbolsOperationTests
         Assert.False(result.Data.Truncated);
     }
 
+
+    private const string NeverReturnedSource = """
+        namespace App
+        {
+            public interface ISpinner
+            {
+                void Spin();
+                int Turns { get; }
+            }
+
+            public interface IMaker<T> where T : IMaker<T>
+            {
+                static abstract T Make();
+            }
+
+            public class Widget : ISpinner, IMaker<Widget>
+            {
+                static Widget() { }
+                public Widget() { }
+                ~Widget() { }
+                public static Widget operator +(Widget a, Widget b) => a;
+                public static implicit operator int(Widget w) => 0;
+                public int this[int i] => i;
+                public int Value { get; set; }
+                void ISpinner.Spin()
+                {
+                    int LocalHelper() => 1;
+                    LocalHelper();
+                }
+                int ISpinner.Turns => 0;
+                static Widget IMaker<Widget>.Make() => new Widget();
+                public class NestedWidgetPlain { }
+                public static class NestedWidgetStatic { }
+            }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_StaticFilter_NeverReturnsOperatorsConstructorsIndexersAccessorsExplicitImplsOrLocalFunctions(
+        bool? staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NeverReturnedSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        // Queries that match the names (source or metadata) of Widget's operators, conversion operator,
+        // instance / static constructors, indexer, property accessors, explicit interface
+        // implementations (instance and static abstract) and local function.
+        string[] queries =
+        [
+            "op_", "operator", ".ctor", ".cctor", "Widget()", "this[]", "Item",
+            "get_", "set_", "Spin", "Turns", "Make", "LocalHelper"
+        ];
+
+        foreach (var query in queries)
+        {
+            var result = await operation.ExecuteAsync(new SearchSymbolsParams
+            {
+                Query = query,
+                StaticFilter = staticFilter
+            });
+
+            Assert.True(result.Success, query);
+            Assert.NotNull(result.Data);
+            Assert.DoesNotContain(result.Data.Symbols, s => s.FullyQualifiedName.StartsWith("App.Widget", StringComparison.Ordinal));
+            Assert.DoesNotContain(result.Data.Symbols, s => s.Name.Contains("LocalHelper", StringComparison.Ordinal));
+        }
+
+        // The finalizer is not excluded: it is returned as an instance method named Finalize.
+        var finalizer = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Finalize",
+            StaticFilter = staticFilter
+        });
+        string[] expectedFinalizer = staticFilter == true ? [] : ["App.Widget.~Widget()"];
+        Assert.Equal(expectedFinalizer, SortedFqns(finalizer.Data!));
+
+        // The interface's own members are ordinary symbols and still returned (Make is static abstract).
+        var interfaceMembers = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Spin",
+            ExactMatch = true,
+            StaticFilter = staticFilter
+        });
+        string[] expectedSpin = staticFilter == true ? [] : ["App.ISpinner.Spin()"];
+        Assert.Equal(expectedSpin, SortedFqns(interfaceMembers.Data!));
+
+        var staticAbstract = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Make",
+            ExactMatch = true,
+            StaticFilter = staticFilter
+        });
+        string[] expectedMake = staticFilter == false ? [] : ["App.IMaker<T>.Make()"];
+        Assert.Equal(expectedMake, SortedFqns(staticAbstract.Data!));
+
+        // Nested types are returned and judged by IsStatic.
+        var nested = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "NestedWidget",
+            StaticFilter = staticFilter
+        });
+        string[] expectedNested = staticFilter switch
+        {
+            true => ["App.Widget.NestedWidgetStatic"],
+            false => ["App.Widget.NestedWidgetPlain"],
+            null => ["App.Widget.NestedWidgetPlain", "App.Widget.NestedWidgetStatic"]
+        };
+        Assert.Equal(expectedNested, SortedFqns(nested.Data!));
+        Assert.Equal(expectedNested.Length, nested.Data!.TotalCount);
+    }
+
     #endregion
 
 

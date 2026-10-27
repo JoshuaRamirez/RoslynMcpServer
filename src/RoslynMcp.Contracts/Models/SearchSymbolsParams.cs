@@ -86,8 +86,14 @@ public sealed class SearchSymbolsParams
     /// <c>true</c> (static classes, static methods / properties / fields / events, extension methods, and
     /// <c>const</c> fields and enum members, which Roslyn reports as static); <c>false</c> keeps only
     /// symbols whose <c>ISymbol.IsStatic</c> is <c>false</c> (instance members and every non-static type:
-    /// classes, structs, interfaces, enums, delegates, records). Namespaces are neither static nor
-    /// instance and never match either value. Applied together with the other filters (a symbol must
+    /// classes, structs, interfaces, enums, delegates, records). Namespaces are returned when this is
+    /// omitted but dropped when it is set to either value. <c>search_symbols</c> never returns operators
+    /// (including conversion operators), constructors (including static constructors), indexers,
+    /// property/event accessors, explicit interface implementations, or local functions, so this filter
+    /// can never return them (operators and static constructors are static). Finalizers are returned (as
+    /// instance methods named <c>Finalize</c>, so only when this is <c>false</c> or omitted). Nested types
+    /// and enum members are returned and judged by <c>IsStatic</c> (a nested static class and enum members
+    /// count as static). Applied together with the other filters (a symbol must
     /// satisfy all that are set) and before <see cref="MaxResults"/> so <c>TotalCount</c> /
     /// <c>Truncated</c> reflect the static-filtered set. No match gives empty <c>Symbols</c>,
     /// <c>TotalCount = 0</c>, <c>Truncated = false</c>. Omit for no static filter. A non-boolean value
