@@ -18,7 +18,8 @@ namespace RoslynMcp.Core.Query;
 /// namespace (<see cref="GetDiagnosticsParams.NamespaceFilter"/>) and/or of one declared accessibility
 /// (<see cref="GetDiagnosticsParams.AccessibilityFilter"/>), and/or of one symbol kind
 /// (<see cref="GetDiagnosticsParams.KindFilter"/>), and/or whose name contains a substring
-/// (<see cref="GetDiagnosticsParams.NameFilter"/>), and/or to messages containing a substring
+/// (<see cref="GetDiagnosticsParams.NameFilter"/>), and/or to static or instance sites
+/// (<see cref="GetDiagnosticsParams.StaticFilter"/>), and/or to messages containing a substring
 /// (<see cref="GetDiagnosticsParams.MessageFilter"/>).
 /// </summary>
 public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsParams, GetDiagnosticsResult>
@@ -106,8 +107,16 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         // Namespace-level sites never match. Null when omitted / blank (no name filtering).
         var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
 
-        // accessibilityFilter / kindFilter / nameFilter all judge the same declaring site symbol.
-        var filtersBySiteSymbol = accessibilityFilter.HasValue || kindFilter.HasValue || nameFilter != null;
+        // Optional staticFilter (same ISymbol.IsStatic test as get_symbol_info / get_document_outline /
+        // search_symbols / find_callers / find_references / find_implementations staticFilter): keep only
+        // diagnostics whose site symbol (the same DeclaringSiteSymbol accessibilityFilter / kindFilter /
+        // nameFilter judge) is static (true) or instance (false). Namespace-level sites never match either
+        // value. Null when omitted.
+        var staticFilter = @params.StaticFilter;
+
+        // accessibilityFilter / kindFilter / nameFilter / staticFilter all judge the same declaring site symbol.
+        var filtersBySiteSymbol = accessibilityFilter.HasValue || kindFilter.HasValue || nameFilter != null
+            || staticFilter.HasValue;
 
         // Site filters share one resolver so each file is bound at most once when several are set.
         SiteEnclosingSymbolResolver? siteResolver = null;
@@ -121,7 +130,8 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
 
         // Namespaces have no accessibility modifier but Roslyn reports INamespaceSymbol as Public (same
         // guard as find_references / search_symbols), so a namespace-level site (e.g. an unused using
-        // inside a namespace declaration) never matches a named accessibility, kind, or name filter.
+        // inside a namespace declaration) never matches a named accessibility, kind, or name filter, nor
+        // either staticFilter value.
         bool MatchesAccessibility(ISymbol? siteSymbol) =>
             !accessibilityFilter.HasValue
             || (siteSymbol is not null and not INamespaceSymbol
@@ -136,6 +146,11 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
             nameFilter == null
             || (siteSymbol is not null and not INamespaceSymbol
                 && NameFilterMatcher.Matches(siteSymbol.Name, nameFilter));
+
+        bool MatchesStatic(ISymbol? siteSymbol) =>
+            !staticFilter.HasValue
+            || (siteSymbol is not null and not INamespaceSymbol
+                && siteSymbol.IsStatic == staticFilter.Value);
 
         // Occurrence index of each in-source diagnostic among the diagnostics sharing its tree, id, and
         // span, counted in compilation order before any filter runs. Collocated parser diagnostics (two
@@ -188,7 +203,7 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                 if (!NameFilterMatcher.Matches(message, messageFilter))
                     continue;
 
-                // Namespace / accessibility / kind / name filters run after the cheaper filters and before
+                // Namespace / accessibility / kind / name / static filters run after the cheaper filters and before
                 // maxResults so TotalCount / Truncated reflect the filtered set. Diagnostics with no
                 // in-source location have no site and never match a named filter.
                 if (namespaceScope != null)
@@ -219,7 +234,8 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                         occurrence,
                         cancellationToken);
                     var declaringSite = DeclaringSiteSymbol.Resolve(site);
-                    if (!MatchesAccessibility(declaringSite) || !MatchesKind(declaringSite) || !MatchesName(declaringSite))
+                    if (!MatchesAccessibility(declaringSite) || !MatchesKind(declaringSite) || !MatchesName(declaringSite)
+                        || !MatchesStatic(declaringSite))
                         continue;
                 }
 

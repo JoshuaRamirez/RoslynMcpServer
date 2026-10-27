@@ -12,7 +12,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
-/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>, <c>diagnosticIds</c>, <c>excludeDiagnosticIds</c>, <c>projectPath</c>, <c>namespaceFilter</c>, <c>accessibilityFilter</c>, <c>messageFilter</c>, <c>kindFilter</c>, and <c>nameFilter</c>
+/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>, <c>diagnosticIds</c>, <c>excludeDiagnosticIds</c>, <c>projectPath</c>, <c>namespaceFilter</c>, <c>accessibilityFilter</c>, <c>messageFilter</c>, <c>kindFilter</c>, <c>nameFilter</c>, and <c>staticFilter</c>
 /// (peer of <see cref="FindReferencesOperation"/> / <see cref="SearchSymbolsOperation"/>).
 /// </summary>
 public class GetDiagnosticsOperationTests
@@ -1205,6 +1205,492 @@ public class GetDiagnosticsOperationTests
 
     #endregion
 
+
+    #region staticFilter
+
+    // Site StaticFilter: judged on ISymbol.IsStatic of the same declaring site symbol that
+    // accessibilityFilter / kindFilter / nameFilter judge. Declaration-attached diagnostics (a member's
+    // return / parameter types, attributes on a member or type, field / property initializers) are judged
+    // on that member or type; lambdas and local functions (static or not) are looked through to the
+    // declaring member; const fields are static; the delegate type, finalizers, indexers, and nested-type
+    // instance members (even inside a static class) are instance. Unused usings are namespace-level and
+    // never match. The first quoted name in each message identifies the site.
+    private const string StaticSource = """
+        using System;
+        using System.Text;
+
+        namespace App
+        {
+            using System.Collections.Generic;
+
+            [MissingAttrOnInstanceClass]
+            public class Host
+            {
+                private int unusedField;
+                private static int unusedStaticField;
+                const int ConstField = MissingInConst;
+                static int staticInit = MissingInStaticInit;
+                int instanceInit = MissingInInstanceInit;
+                static int StaticAuto { get; } = MissingInStaticAutoInit;
+                int InstanceAuto { get; } = MissingInInstanceAutoInit;
+                static int StaticExprProp => MissingInStaticExprProp;
+                int InstanceExprProp => MissingInInstanceExprProp;
+                public static MissingStaticReturn MakeStatic() => null;
+                public MissingInstanceReturn MakeInstance() => null;
+                public static void StaticParam(MissingStaticParam p) { }
+                [MissingAttrOnStaticMethod] public static void AttributedStatic() { }
+
+                static Host() { int unusedInStaticCtor; }
+                public Host() { int unusedInCtor; }
+                ~Host() { int unusedInFinalizer; }
+
+                static void StaticMethod() { int unusedInStaticMethod; }
+                void InstanceMethod() { int unusedInInstanceMethod; }
+
+                static int StaticProp { get { int unusedInStaticGetter; return 0; } }
+                int InstanceProp { get { int unusedInInstanceGetter; return 0; } }
+                int this[int i] { get { int unusedInIndexer; return i; } }
+
+                public static Host operator +(Host a, Host b) { int unusedInOperator; return a; }
+
+                static event Action StaticEvent { add { int unusedInStaticEventAdd; } remove { } }
+                event Action InstanceEvent { add { int unusedInInstanceEventAdd; } remove { } }
+
+                void InstanceWithStaticLambda() { Action a = static () => { int unusedInStaticLambda; }; }
+                static void StaticWithLambda() { Action a = () => { int unusedInLambdaInStatic; }; }
+                void InstanceWithStaticLocal() { static void L() { int unusedInStaticLocalFn; } }
+                static void StaticWithLocal() { void L() { int unusedInLocalFnInStatic; } }
+
+                public class Nested { void M() { int unusedInNestedInstance; } static void S() { int unusedInNestedStatic; } }
+            }
+
+            [MissingAttrOnStaticClass]
+            public static class Util
+            {
+                public static void Ext(this string s) { int unusedInExtension; }
+                public class NestedInStatic { void M() { int unusedInNestedOfStaticClass; } }
+            }
+
+            public interface IShape
+            {
+                static void StaticMember() { int unusedInInterfaceStatic; }
+                void DefaultMember() { int unusedInInterfaceDefault; }
+            }
+
+            public record Rec { void M() { int unusedInRecord; } static void S() { int unusedInRecordStatic; } }
+            public struct Val { void M() { int unusedInStruct; } static void S() { int unusedInStructStatic; } }
+            public record struct RecVal { void M() { int unusedInRecordStruct; } static void S() { int unusedInRecordStructStatic; } }
+
+            public delegate MissingDelegateReturn Callback();
+        }
+        """;
+
+    private static readonly string[] StaticDiagnosticIds = { "CS0168", "CS0169", "CS0103", "CS0246", "CS8019" };
+
+    private static readonly string[] StaticTrueSites =
+    {
+        "Host.unusedStaticField",
+        "MissingAttrOnStaticClass",
+        "MissingAttrOnStaticClassAttribute",
+        "MissingAttrOnStaticMethod",
+        "MissingAttrOnStaticMethodAttribute",
+        "MissingInConst",
+        "MissingInStaticAutoInit",
+        "MissingInStaticExprProp",
+        "MissingInStaticInit",
+        "MissingStaticParam",
+        "MissingStaticReturn",
+        "unusedInExtension",
+        "unusedInInterfaceStatic",
+        "unusedInLambdaInStatic",
+        "unusedInLocalFnInStatic",
+        "unusedInNestedStatic",
+        "unusedInOperator",
+        "unusedInRecordStatic",
+        "unusedInRecordStructStatic",
+        "unusedInStaticCtor",
+        "unusedInStaticEventAdd",
+        "unusedInStaticGetter",
+        "unusedInStaticMethod",
+        "unusedInStructStatic",
+    };
+
+    private static readonly string[] StaticFalseSites =
+    {
+        "Host.unusedField",
+        "MissingAttrOnInstanceClass",
+        "MissingAttrOnInstanceClassAttribute",
+        "MissingDelegateReturn",
+        "MissingInInstanceAutoInit",
+        "MissingInInstanceExprProp",
+        "MissingInInstanceInit",
+        "MissingInstanceReturn",
+        "unusedInCtor",
+        "unusedInFinalizer",
+        "unusedInIndexer",
+        "unusedInInstanceEventAdd",
+        "unusedInInstanceGetter",
+        "unusedInInstanceMethod",
+        "unusedInInterfaceDefault",
+        "unusedInNestedInstance",
+        "unusedInNestedOfStaticClass",
+        "unusedInRecord",
+        "unusedInRecordStruct",
+        "unusedInStaticLambda",
+        "unusedInStaticLocalFn",
+        "unusedInStruct",
+    };
+
+    private static string[] SortedVariableNames(GetDiagnosticsResult result) =>
+        VariableNames(result).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+
+    private static Task<TempWorkspace> CreateStaticWorkspaceAsync() =>
+        TempWorkspace.CreateAsync(StaticSource, extraProperties: "<LangVersion>latest</LangVersion>");
+
+    [Fact]
+    public void StaticFilter_DefaultsToNull()
+    {
+        var @params = new GetDiagnosticsParams();
+        Assert.Null(@params.StaticFilter);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_StaticFilterNull_ReturnsSameAsOmitted()
+    {
+        await using var workspace = await CreateStaticWorkspaceAsync();
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath
+        });
+        var explicitNull = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = null
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(explicitNull.Success);
+        Assert.Equal(48, omitted.Data!.TotalCount);
+        Assert.Equal(omitted.Data.TotalCount, explicitNull.Data!.TotalCount);
+        Assert.Equal(
+            omitted.Data.Diagnostics.Select(d => d.Id + d.Message + d.Line).OrderBy(x => x, StringComparer.Ordinal),
+            explicitNull.Data.Diagnostics.Select(d => d.Id + d.Message + d.Line).OrderBy(x => x, StringComparer.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_StaticFilterTrue_KeepsStaticSitesOnly()
+    {
+        await using var workspace = await CreateStaticWorkspaceAsync();
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(StaticTrueSites, SortedVariableNames(result.Data!));
+        Assert.Equal(StaticTrueSites.Length, result.Data!.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_StaticFilterFalse_KeepsInstanceSitesOnly()
+    {
+        await using var workspace = await CreateStaticWorkspaceAsync();
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(StaticFalseSites, SortedVariableNames(result.Data!));
+        Assert.Equal(StaticFalseSites.Length, result.Data!.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_StaticFilter_TrueAndFalsePartitionAllButNamespaceLevelSites()
+    {
+        await using var workspace = await CreateStaticWorkspaceAsync();
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath
+        });
+        var staticSites = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = true
+        });
+        var instanceSites = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = false
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(staticSites.Success);
+        Assert.True(instanceSites.Success);
+
+        // Unused usings (CS8019) are namespace-level sites: kept when omitted, never matched by true or false.
+        Assert.Equal(2, omitted.Data!.Diagnostics.Count(d => d.Id == "CS8019"));
+        Assert.DoesNotContain(staticSites.Data!.Diagnostics, d => d.Id == "CS8019");
+        Assert.DoesNotContain(instanceSites.Data!.Diagnostics, d => d.Id == "CS8019");
+
+        static string Key(DiagnosticInfo d) => $"{d.Id}|{d.Line}|{d.Column}|{d.Message}";
+        var expected = omitted.Data.Diagnostics.Where(d => d.Id != "CS8019").Select(Key)
+            .OrderBy(x => x, StringComparer.Ordinal).ToArray();
+        var union = staticSites.Data.Diagnostics.Concat(instanceSites.Data.Diagnostics).Select(Key)
+            .OrderBy(x => x, StringComparer.Ordinal).ToArray();
+        Assert.Equal(expected, union);
+        Assert.Empty(staticSites.Data.Diagnostics.Select(Key).Intersect(instanceSites.Data.Diagnostics.Select(Key)));
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GetDiagnostics_StaticFilter_TopLevelStatementsNeverMatch(bool staticFilter)
+    {
+        // Top-level statements (including a static lambda and a static local function declared there) are
+        // enclosed by the synthesized <Main>$ and are namespace-level sites, as are unused usings.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            using System.Text;
+            int unusedTopLevel;
+            System.Action a = static () => { int unusedInTopLevelLambda; };
+            static void TopLocal() { int unusedInTopLevelLocalFn; }
+            namespace App { public class C { public void M() { int unusedInMethod; } public static void S() { int unusedInStatic; } }
+            }
+            """, outputType: "Exe");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = Cs0168,
+            SourceFile = workspace.SourcePath
+        });
+        Assert.True(omitted.Success);
+        Assert.Contains("unusedTopLevel", VariableNames(omitted.Data!));
+        Assert.Contains("unusedInTopLevelLambda", VariableNames(omitted.Data!));
+        Assert.Contains("unusedInTopLevelLocalFn", VariableNames(omitted.Data!));
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = Cs0168,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(filtered.Success);
+        Assert.Equal(
+            new[] { staticFilter ? "unusedInStatic" : "unusedInMethod" },
+            SortedVariableNames(filtered.Data!));
+        Assert.Equal(1, filtered.Data!.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GetDiagnostics_StaticFilter_DropsDiagnosticsWithoutSourceLocation(bool staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "namespace App { public class C { public void M() { int unusedInMethod; } public static void S() { int unusedInStatic; } } }\n",
+            outputType: "Exe");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { SeverityFilter = "Warning" });
+        Assert.True(omitted.Success);
+        Assert.Contains(omitted.Data!.Diagnostics, d => d.Id == "CS5001" && d.File == null);
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(filtered.Success);
+        Assert.All(filtered.Data!.Diagnostics, d => Assert.NotNull(d.File));
+        Assert.DoesNotContain(filtered.Data.Diagnostics, d => d.Id == "CS5001");
+        var diagnostic = Assert.Single(filtered.Data.Diagnostics);
+        Assert.Equal("CS0168", diagnostic.Id);
+        Assert.Contains(staticFilter ? "unusedInStatic" : "unusedInMethod", diagnostic.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_StaticFilterWithMaxResults_CapsAfterFilter()
+    {
+        await using var workspace = await CreateStaticWorkspaceAsync();
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = true,
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(StaticTrueSites.Length, capped.Data!.TotalCount);
+        Assert.Equal(2, capped.Data.Diagnostics.Count);
+        Assert.True(capped.Data.Truncated);
+        Assert.All(VariableNames(capped.Data), n => Assert.Contains(n, StaticTrueSites));
+    }
+
+    [SkippableTheory]
+    [InlineData(true, "Field", new[] { "Host.unusedStaticField", "MissingInStaticInit" })]
+    [InlineData(false, "Field", new[] { "Host.unusedField", "MissingInInstanceInit" })]
+    [InlineData(true, "Constant", new[] { "MissingInConst" })]
+    [InlineData(false, "Constant", new string[0])]
+    [InlineData(true, "Class", new[] { "MissingAttrOnStaticClass", "MissingAttrOnStaticClassAttribute" })]
+    [InlineData(false, "Delegate", new[] { "MissingDelegateReturn" })]
+    [InlineData(true, "Delegate", new string[0])]
+    public async Task GetDiagnostics_StaticFilterWithKindFilter_BothMustMatch(
+        bool staticFilter, string kindFilter, string[] expected)
+    {
+        await using var workspace = await CreateStaticWorkspaceAsync();
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = staticFilter,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedVariableNames(result.Data!));
+        Assert.Equal(expected.Length, result.Data!.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_StaticFilterWithNameAccessibilityAndMessageFilters_AllMustMatch()
+    {
+        await using var workspace = await CreateStaticWorkspaceAsync();
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        // nameFilter "Method" matches StaticMethod and InstanceMethod; staticFilter picks one.
+        var byName = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = true,
+            NameFilter = "Method"
+        });
+        Assert.True(byName.Success);
+        Assert.Equal(new[] { "unusedInStaticMethod" }, SortedVariableNames(byName.Data!));
+
+        // Public static sites only (extension method, interface static member, operator).
+        var byAccessibility = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = Cs0168,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = true,
+            AccessibilityFilter = "public"
+        });
+        Assert.True(byAccessibility.Success);
+        Assert.Equal(new[] { "unusedInExtension", "unusedInInterfaceStatic", "unusedInOperator" }, SortedVariableNames(byAccessibility.Data!));
+
+        var byMessage = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = StaticDiagnosticIds,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = false,
+            MessageFilter = "Lambda"
+        });
+        Assert.True(byMessage.Success);
+        Assert.Equal(new[] { "unusedInStaticLambda" }, SortedVariableNames(byMessage.Data!));
+    }
+
+    [SkippableTheory]
+    [InlineData(true, new[] { "unusedInStaticMethod" })]
+    [InlineData(false, new[] { "unusedInInstanceMethod" })]
+    public async Task GetDiagnostics_StaticFilterWithNamespaceFilter_BothMustMatch(bool staticFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace App.Core
+            {
+                public class Host
+                {
+                    static void StaticMethod() { int unusedInStaticMethod; }
+                    void InstanceMethod() { int unusedInInstanceMethod; }
+                }
+            }
+            namespace Other
+            {
+                public class Elsewhere
+                {
+                    static void StaticMethod() { int unusedElsewhereStatic; }
+                    void InstanceMethod() { int unusedElsewhereInstance; }
+                }
+            }
+            """);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = Cs0168,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = staticFilter,
+            NamespaceFilter = "App"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedVariableNames(result.Data!));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_StaticFilter_NoMatch_ReturnsEmpty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "namespace App { public class C { public void M() { int unusedInMethod; } } }\n");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            DiagnosticIds = Cs0168,
+            SourceFile = workspace.SourcePath,
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Diagnostics);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    #endregion
 
     #region excludeDiagnosticIds filter
 

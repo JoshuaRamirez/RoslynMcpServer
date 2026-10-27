@@ -421,6 +421,22 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void GetDiagnostics_StaticFilterFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--static-filter"]);
+        Assert.Equal("get-diagnostics", result.ToolName);
+        Assert.Equal("true", result.Options["static-filter"]);
+    }
+
+    [Fact]
+    public void GetDiagnostics_StaticFilterExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--static-filter", "false", "--max-results", "5"]);
+        Assert.Equal("false", result.Options["static-filter"]);
+        Assert.Equal("5", result.Options["max-results"]);
+    }
+
+    [Fact]
     public void GetDiagnostics_NamespaceFilterOption_ParsesValue()
     {
         var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Error", "--namespace-filter", "App.Services"]);

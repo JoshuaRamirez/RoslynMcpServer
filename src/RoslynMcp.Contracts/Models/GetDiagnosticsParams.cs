@@ -55,7 +55,7 @@ public sealed class GetDiagnosticsParams
     /// diagnostics with no in-source location never match a named filter. Combined with
     /// <see cref="SourceFile"/>, <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>,
     /// <see cref="DiagnosticIds"/>, <see cref="ExcludeDiagnosticIds"/>, <see cref="AccessibilityFilter"/>,
-    /// <see cref="MessageFilter"/>, <see cref="KindFilter"/>, and <see cref="NameFilter"/>, and applied before
+    /// <see cref="MessageFilter"/>, <see cref="KindFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered
     /// set. Omit, blank, or a bare <c>global::</c> (the root namespace) returns diagnostics in all
     /// namespaces.
@@ -83,7 +83,7 @@ public sealed class GetDiagnosticsParams
     /// Diagnostics with no in-source location never match. Combined with <see cref="SourceFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>,
     /// <see cref="ExcludeDiagnosticIds"/>, <see cref="NamespaceFilter"/>, <see cref="MessageFilter"/>,
-    /// <see cref="KindFilter"/>, and <see cref="NameFilter"/>,
+    /// <see cref="KindFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/>,
     /// and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the accessibility-filtered
     /// set. Omit or leave blank for no accessibility filter. An unrecognized value fails with
@@ -100,7 +100,7 @@ public sealed class GetDiagnosticsParams
     /// diagnostics with or without an in-source location. Combined with <see cref="SourceFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>,
     /// <see cref="ExcludeDiagnosticIds"/>, <see cref="NamespaceFilter"/>,
-    /// <see cref="AccessibilityFilter"/>, <see cref="KindFilter"/>, and <see cref="NameFilter"/> (a diagnostic must satisfy all that are set), and applied before
+    /// <see cref="AccessibilityFilter"/>, <see cref="KindFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/> (a diagnostic must satisfy all that are set), and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the message-filtered set.
     /// Omit, empty, or whitespace = no message filter.
     /// </summary>
@@ -130,7 +130,7 @@ public sealed class GetDiagnosticsParams
     /// Diagnostics with no in-source location never match. Combined with <see cref="SourceFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>,
     /// <see cref="ExcludeDiagnosticIds"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>,
-    /// <see cref="MessageFilter"/>, and <see cref="NameFilter"/> (a diagnostic must satisfy all that are set), and applied before
+    /// <see cref="MessageFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/> (a diagnostic must satisfy all that are set), and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the kind-filtered set. A kind
     /// no site has returns an empty success. Omit, empty, or whitespace for no kind filter. An unrecognized
     /// value fails with <c>InvalidSymbolKind</c>.
@@ -154,8 +154,8 @@ public sealed class GetDiagnosticsParams
     /// Namespace-level sites (unused usings, top-level statements) and diagnostics with no in-source
     /// location never match. Combined with <see cref="SourceFile"/>, <see cref="ProjectPath"/>,
     /// <see cref="SeverityFilter"/>, <see cref="DiagnosticIds"/>, <see cref="ExcludeDiagnosticIds"/>,
-    /// <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>, <see cref="MessageFilter"/>, and
-    /// <see cref="KindFilter"/> (a diagnostic must satisfy all that are set), and applied before
+    /// <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>, <see cref="MessageFilter"/>,
+    /// <see cref="KindFilter"/>, and <see cref="StaticFilter"/> (a diagnostic must satisfy all that are set), and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the name-filtered set.
     /// No match returns an empty success. Omit, empty, or whitespace for no name filter.
     /// A diagnostic inside a delegate's synthesized <c>Invoke</c> / <c>BeginInvoke</c> / <c>EndInvoke</c> /
@@ -165,4 +165,51 @@ public sealed class GetDiagnosticsParams
     /// <c>?</c> are not supported and are matched literally.
     /// </summary>
     public string? NameFilter { get; init; }
+
+    /// <summary>
+    /// Optional static / instance filter: when <c>true</c>, keep only diagnostics whose <b>diagnostic site</b>
+    /// — the same declaring site symbol <see cref="AccessibilityFilter"/>, <see cref="KindFilter"/>, and
+    /// <see cref="NameFilter"/> judge (the nearest declared member at a declaration-attached location such as
+    /// CS0169 on a field identifier, otherwise the member / type enclosing the location) — has
+    /// <c>ISymbol.IsStatic</c> <c>true</c> (static methods, static constructors, operators, static properties /
+    /// events and their accessors, static and <c>const</c> fields — Roslyn reports <c>const</c> as static —
+    /// static classes, and members of a static class); when <c>false</c>, keep only instance sites. Omit
+    /// (<c>null</c>) for no static filter.
+    /// <para>
+    /// Edge rules: unlike <c>find_references</c>, a declaration-attached diagnostic is judged on the member or
+    /// type it is attached to, not the containing type — a member's return or parameter type, an attribute on
+    /// a member or on a type, and a field, <c>const</c>, or auto-property initializer follow that member's or
+    /// type's own staticness, as does the body of an expression-bodied property (judged on its getter).
+    /// Lambdas and local functions, including <c>static</c> lambdas, <c>static</c> local functions, and a
+    /// non-static local function inside a static method, are looked through to the declaring member and judged
+    /// on its staticness (unlike <c>find_callers</c>, which judges a local function as its own calling symbol).
+    /// A finalizer, an indexer (C# has no static indexers), and a delegate type (including a diagnostic in its
+    /// signature or synthesized <c>Invoke</c> / <c>BeginInvoke</c> / <c>EndInvoke</c> / <c>.ctor</c>) are
+    /// instance; a custom event accessor follows the event; an extension method and a static interface member
+    /// are static, a default interface member is instance; members of a nested type are judged on their own
+    /// staticness, not the containing type's (instance members of a class nested in a static class are kept by
+    /// <c>false</c>); records, record structs, and structs are judged like classes.
+    /// </para>
+    /// <para>
+    /// Namespace-level sites — unused usings and top-level statements, including a <c>static</c> lambda or
+    /// <c>static</c> local function declared at top level (enclosed by the synthesized <c>&lt;Main&gt;$</c>,
+    /// which <c>find_callers</c> counts as static) — never match either value, and diagnostics with no
+    /// in-source location (e.g. CS5001) never match either value, so <c>true</c> and <c>false</c> together
+    /// return every in-source, non-namespace-level diagnostic exactly once.
+    /// </para>
+    /// <para>
+    /// Same <c>ISymbol.IsStatic</c> test as <c>get_symbol_info</c> / <c>get_document_outline</c> /
+    /// <c>search_symbols</c> / <c>find_callers</c> / <c>find_references</c> / <c>find_implementations</c>
+    /// <c>staticFilter</c>; there is no target symbol, so no all-or-nothing rule applies. Combined with
+    /// <see cref="SourceFile"/>, <see cref="ProjectPath"/>, <see cref="SeverityFilter"/>,
+    /// <see cref="DiagnosticIds"/>, <see cref="ExcludeDiagnosticIds"/>, <see cref="NamespaceFilter"/>,
+    /// <see cref="AccessibilityFilter"/>, <see cref="MessageFilter"/>, <see cref="KindFilter"/>, and
+    /// <see cref="NameFilter"/> (a diagnostic must satisfy all that are set), and applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the static-filtered set. No
+    /// match returns an empty success. A non-boolean JSON value (e.g. <c>"yes"</c>, <c>"true"</c>, <c>1</c>)
+    /// fails with <c>INTERNAL_ERROR</c> on the MCP tool; on the CLI, <c>--static-filter</c> alone means
+    /// <c>true</c> and a value other than <c>true</c> / <c>false</c> is rejected.
+    /// </para>
+    /// </summary>
+    public bool? StaticFilter { get; init; }
 }
