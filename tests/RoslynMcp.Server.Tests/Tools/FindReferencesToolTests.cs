@@ -463,6 +463,54 @@ public class FindReferencesToolTests
         Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
     }
 
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public async Task ExecuteAsync_StaticFilterBoolean_ParsesAndReachesWorkspace(string value)
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/Target.cs"",
+            ""symbolName"": ""Run"",
+            ""staticFilter"": " + value + @"
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Theory]
+    [InlineData("\"yes\"")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    public async Task ExecuteAsync_StaticFilterNonBoolean_ReturnsInternalError(string value)
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/Target.cs"",
+            ""symbolName"": ""Run"",
+            ""staticFilter"": " + value + @"
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = GetResultText(result);
+        Assert.Contains("INTERNAL_ERROR", text);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", text);
+    }
+
+    [Fact]
+    public void InputSchema_DeclaresStaticFilterBoolean()
+    {
+        var schema = JsonSerializer.Serialize(_tool.InputSchema);
+        using var doc = JsonDocument.Parse(schema);
+        var staticFilter = doc.RootElement.GetProperty("properties").GetProperty("staticFilter");
+        Assert.Equal("boolean", staticFilter.GetProperty("type").GetString());
+    }
     #endregion
 
     #region Helper Methods

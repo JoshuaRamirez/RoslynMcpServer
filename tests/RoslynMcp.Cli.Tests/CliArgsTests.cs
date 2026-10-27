@@ -181,6 +181,20 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void FindReferences_StaticFilterFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-references", "--source-file", "/src/Target.cs", "--symbol-name", "Run", "--static-filter"]);
+        Assert.Equal("true", result.Options["static-filter"]);
+    }
+
+    [Fact]
+    public void FindReferences_StaticFilterExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-references", "--source-file", "/src/Target.cs", "--symbol-name", "Run", "--static-filter", "false"]);
+        Assert.Equal("false", result.Options["static-filter"]);
+    }
+
+    [Fact]
     public void FindCallers_StaticFilterFlag_ParsesAsTrue()
     {
         var result = CliArgs.Parse(["My.sln", "find-callers", "--source-file", "/src/Target.cs", "--symbol-name", "Run", "--static-filter"]);

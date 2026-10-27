@@ -154,4 +154,29 @@ public sealed class FindReferencesParams
     /// <c>InvalidSymbolKind</c>.
     /// </summary>
     public string? KindFilter { get; init; }
+
+    /// <summary>
+    /// Optional static filter: keep only locations whose reference site (the same enclosing site symbol
+    /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, and <see cref="KindFilter"/> judge;
+    /// a definition location is judged by the declared symbol itself) has <c>ISymbol.IsStatic</c> equal
+    /// to the value. <c>true</c> keeps sites in static methods, static constructors, operators, static
+    /// properties / indexers / events (accessors share the property's staticness), static fields,
+    /// <c>const</c> fields (Roslyn reports them as static), and static types; <c>false</c> keeps sites
+    /// in instance members and non-static types. Same <c>IsStatic</c> test as <c>get_symbol_info</c> /
+    /// <c>get_document_outline</c> / <c>search_symbols</c> / <c>find_callers</c> <c>staticFilter</c>;
+    /// the target symbol's own staticness is irrelevant. Lambdas (including <c>static</c> lambdas) and
+    /// local functions (including <c>static</c> local functions) are judged on the member declaring
+    /// them, the same walk-out the other site filters use (unlike <c>find_callers</c>, where a local
+    /// function is its own calling symbol); a site inside a delegate's synthesized members is judged on
+    /// the delegate type (never static). Namespace-level sites (using aliases, a top-level type's base
+    /// list, top-level statements, a namespace's own declaration) never match either value.
+    /// Combined with <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
+    /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, <see cref="KindFilter"/>, and
+    /// <see cref="IncludeDeclaration"/> (a location must satisfy all that are set), and applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the static-filtered set.
+    /// No match gives empty <c>References</c>, <c>TotalCount = 0</c>, <c>Truncated = false</c>. Omit for
+    /// no static filter. A non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>)
+    /// is rejected by the <c>find_references</c> tool with <c>INTERNAL_ERROR</c>.
+    /// </summary>
+    public bool? StaticFilter { get; init; }
 }

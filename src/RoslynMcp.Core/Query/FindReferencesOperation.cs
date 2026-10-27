@@ -19,8 +19,9 @@ namespace RoslynMcp.Core.Query;
 /// whose enclosing symbol has a given declared accessibility
 /// (<see cref="FindReferencesParams.AccessibilityFilter"/>), optionally to reference sites whose
 /// enclosing symbol's simple name contains a substring (<see cref="FindReferencesParams.NameFilter"/>),
-/// and optionally to reference sites whose enclosing symbol has one symbol kind
-/// (<see cref="FindReferencesParams.KindFilter"/>).
+/// optionally to reference sites whose enclosing symbol has one symbol kind
+/// (<see cref="FindReferencesParams.KindFilter"/>), and optionally to static or instance reference
+/// sites (<see cref="FindReferencesParams.StaticFilter"/>).
 /// Delegates to Roslyn's SymbolFinder.FindReferencesAsync.
 /// </summary>
 public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesParams, FindReferencesResult>
@@ -178,10 +179,23 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
             || (siteSymbol is not null and not INamespaceSymbol
                 && SymbolKindMapper.Map(siteSymbol) == kindFilter.Value);
 
+        // Optional staticFilter (same ISymbol.IsStatic test as get_symbol_info / get_document_outline /
+        // search_symbols / find_callers staticFilter): keep only locations whose site symbol (the same
+        // DeclaringSiteSymbol accessibilityFilter / nameFilter / kindFilter judge) is static (true) or
+        // instance (false). Namespace-level sites never match either value. Null when omitted.
+        var staticFilter = @params.StaticFilter;
+
+        bool MatchesStatic(ISymbol? siteSymbol) =>
+            !staticFilter.HasValue
+            || (siteSymbol is not null and not INamespaceSymbol
+                && siteSymbol.IsStatic == staticFilter.Value);
+
         // All enclosing-symbol filters judge the same site symbol.
         bool MatchesSiteSymbol(ISymbol? siteSymbol) =>
-            MatchesAccessibility(siteSymbol) && MatchesName(siteSymbol) && MatchesKind(siteSymbol);
-        var filtersBySiteSymbol = accessibilityFilter.HasValue || nameFilter != null || kindFilter.HasValue;
+            MatchesAccessibility(siteSymbol) && MatchesName(siteSymbol) && MatchesKind(siteSymbol)
+            && MatchesStatic(siteSymbol);
+        var filtersBySiteSymbol = accessibilityFilter.HasValue || nameFilter != null || kindFilter.HasValue
+            || staticFilter.HasValue;
 
         foreach (var referencedSymbol in referencedSymbols)
         {
@@ -198,7 +212,7 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 var lineSpan = defLocation.GetLineSpan();
 
                 // Optional referenceFile / projectPath / namespaceFilter / accessibilityFilter /
-                // nameFilter / kindFilter filters run before maxResults so TotalCount / Truncated
+                // nameFilter / kindFilter / staticFilter filters run before maxResults so TotalCount / Truncated
                 // reflect the filtered set.
                 if (!IsInReferenceFile(lineSpan.Path)) continue;
                 if (projectScope != null && !IsInProjectScope(Context.Solution.GetDocumentId(defLocation.SourceTree))) continue;
