@@ -376,4 +376,68 @@ public class FindCallersToolTests
         Assert.True(result.IsError);
         Assert.DoesNotContain("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
     }
+
+    [Fact]
+    public void GetDefinition_StaticFilter_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+        var staticFilter = properties.GetProperty("staticFilter");
+
+        Assert.Equal("boolean", staticFilter.GetProperty("type").GetString());
+        var description = staticFilter.GetProperty("description").GetString();
+        Assert.Contains("calling symbol", description);
+        Assert.Contains("IsStatic", description);
+        Assert.Contains("before maxResults", description);
+        Assert.Contains("INTERNAL_ERROR", description);
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("staticFilter", required);
+        Assert.Contains("staticFilter", _tool.Description);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public async Task ExecuteAsync_StaticFilterBoolean_ParsesAndReachesWorkspace(string rawValue)
+    {
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Lib/Target.cs",
+                "symbolName": "Run",
+                "staticFilter": {{rawValue}}
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
+
+    [Theory]
+    [InlineData("\"yes\"")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    public async Task ExecuteAsync_StaticFilterNonBoolean_ReturnsInternalError(string rawValue)
+    {
+        // A non-boolean staticFilter fails deserialization before workspace creation.
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Lib/Target.cs",
+                "symbolName": "Run",
+                "staticFilter": {{rawValue}}
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = result.Content.FirstOrDefault()?.Text ?? "";
+        Assert.Contains("INTERNAL_ERROR", text);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", text);
+    }
 }

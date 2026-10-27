@@ -21,7 +21,9 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <c>find_references</c> / <c>get_document_outline</c> / <c>get_symbol_info</c> /
 /// <c>find_implementations</c> / <c>get_type_hierarchy</c> <c>nameFilter</c>),
 /// and optional <c>kindFilter</c> (restricts by calling symbol kind; peer of
-/// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>search_symbols</c> <c>kindFilter</c>).
+/// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>search_symbols</c> <c>kindFilter</c>),
+/// and optional <c>staticFilter</c> (restricts by calling symbol <c>IsStatic</c>; peer of
+/// <c>get_symbol_info</c> / <c>get_document_outline</c> / <c>search_symbols</c> <c>staticFilter</c>).
 /// </summary>
 public class FindCallersOperationTests
 {
@@ -1686,6 +1688,346 @@ public class FindCallersOperationTests
             SymbolName = "Run",
             NamespaceFilter = namespaceFilter,
             KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    #endregion
+
+    #region StaticFilter
+
+    // Calling-symbol StaticFilter: Target.Run is called from static and instance field initializers,
+    // a static and an instance constructor, static and instance methods, static and instance
+    // expression-bodied properties, and an operator. Judged on CallingSymbol.IsStatic only.
+    private static readonly Dictionary<string, string> StaticSources = new()
+    {
+        ["Target.cs"] = """
+            namespace App;
+            public static class Target
+            {
+                public static int Run() => 0;
+            }
+            """,
+        ["Callers.cs"] = """
+            namespace App.Callers;
+            public class Mixer
+            {
+                private static int s_seed = App.Target.Run();
+                private int _seed = App.Target.Run();
+                static Mixer() { App.Target.Run(); }
+                public Mixer() { App.Target.Run(); }
+                public static void StaticHandle() { App.Target.Run(); }
+                public void Handle() { App.Target.Run(); }
+                public static int StaticTotal => App.Target.Run();
+                public int Total => App.Target.Run();
+                public static Mixer operator +(Mixer a, Mixer b) { App.Target.Run(); return a; }
+            }
+            """
+    };
+
+    private static readonly string[] StaticCallerNames =
+    [
+        ".cctor", "StaticHandle", "StaticTotal", "op_Addition", "s_seed"
+    ];
+
+    private static readonly string[] InstanceCallerNames =
+    [
+        ".ctor", "Handle", "Total", "_seed"
+    ];
+
+    private static string[] SortedNames(IEnumerable<string> names) =>
+        names.OrderBy(n => n, StringComparer.Ordinal).ToArray();
+
+    [Fact]
+    public void StaticFilter_DefaultsToNull()
+    {
+        var @params = new FindCallersParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.StaticFilter);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_OmittedStaticFilter_ReturnsStaticAndInstanceCallers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run"
+        });
+
+        Assert.True(result.Success);
+        var expected = SortedNames(StaticCallerNames.Concat(InstanceCallerNames));
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FindCallers_StaticFilter_SelectsSitesByCallingSymbolIsStatic(bool staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        var expected = SortedNames(staticFilter ? StaticCallerNames : InstanceCallerNames);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData(true, "Method", new[] { ".cctor", "StaticHandle", "op_Addition" })]
+    [InlineData(false, "Method", new[] { ".ctor", "Handle" })]
+    [InlineData(true, "Property", new[] { "StaticTotal" })]
+    [InlineData(false, "Property", new[] { "Total" })]
+    [InlineData(true, "Field", new[] { "s_seed" })]
+    [InlineData(false, "Field", new[] { "_seed" })]
+    public async Task FindCallers_StaticFilterWithKindFilter_AndsTheSiteFilters(
+        bool staticFilter, string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            StaticFilter = staticFilter,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData(true, "private", new[] { ".cctor", "s_seed" })]
+    [InlineData(false, "public", new[] { ".ctor", "Handle", "Total" })]
+    [InlineData(true, "Handle", new[] { "StaticHandle" })]
+    public async Task FindCallers_StaticFilterWithAccessibilityOrNameFilter_AndsTheSiteFilters(
+        bool staticFilter, string filter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindCallersOperation(workspace.Context);
+        var isAccessibility = filter is "private" or "public";
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            StaticFilter = staticFilter,
+            AccessibilityFilter = isAccessibility ? filter : null,
+            NameFilter = isAccessibility ? null : filter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_StaticFilterWithMaxResults_CapsAfterStaticFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            StaticFilter = true,
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Callers.Count);
+        Assert.Equal(StaticCallerNames.Length, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+        Assert.All(result.Data.Callers, c => Assert.Contains(c.CallerName, StaticCallerNames));
+    }
+
+    [SkippableTheory]
+    [InlineData(false, "Static", null)]
+    [InlineData(true, null, "Constant")]
+    public async Task FindCallers_StaticFilterWithNoMatch_ReturnsEmptySuccess(
+        bool staticFilter, string? nameFilter, string? kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        // No instance caller is named *Static*; no static caller is a const.
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            StaticFilter = staticFilter,
+            NameFilter = nameFilter,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Callers);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    // Edge callers for StaticFilter: the StaticSources files plus Edges.cs (local functions, lambdas,
+    // a finalizer, an indexer, custom event accessors, auto-property initializers, nested-type members,
+    // and a const-to-const reference) and Program.cs (top-level statements, enclosed by <Main>$).
+    private static readonly Dictionary<string, string> StaticEdgeSources = new(StaticSources)
+    {
+        ["Edges.cs"] = """
+            namespace App.Edges;
+            public class Edge
+            {
+                public static void StaticWithLocals()
+                {
+                    int InstanceLocal() => App.Target.Run();
+                    static int StaticLocal() => App.Target.Run();
+                    InstanceLocal();
+                    StaticLocal();
+                }
+                public static void StaticWithLambda()
+                {
+                    System.Func<int> f = () => App.Target.Run();
+                    System.Func<int> g = static () => App.Target.Run();
+                }
+                public void InstanceWithLambda()
+                {
+                    System.Func<int> f = () => App.Target.Run();
+                    System.Func<int> g = static () => App.Target.Run();
+                }
+                ~Edge() { App.Target.Run(); }
+                public int this[int i] => App.Target.Run();
+                public event System.Action? Changed { add { App.Target.Run(); } remove { } }
+                public static event System.Action? StaticChanged { add { App.Target.Run(); } remove { } }
+                public static int AutoProp { get; } = App.Target.Run();
+                public int InstanceAutoProp { get; } = App.Target.Run();
+                public class Inner
+                {
+                    public void InnerInstance() { App.Target.Run(); }
+                    public static void InnerStatic() { App.Target.Run(); }
+                }
+            }
+            public static class Limits
+            {
+                public const int Base = 1;
+                public const int Derived = Base + 1;
+            }
+            public class LimitUser
+            {
+                public int UsesBase() => Limits.Base;
+            }
+            """,
+        ["Program.cs"] = """
+            App.Target.Run();
+            """
+    };
+
+    // Static edge callers of Target.Run in Edges.cs (lambda sites report the enclosing member, once per site).
+    private static readonly string[] StaticEdgeCallerNames =
+    [
+        "<AutoProp>k__BackingField", "InnerStatic", "StaticChanged", "StaticLocal",
+        "StaticWithLambda", "StaticWithLambda"
+    ];
+
+    private static readonly string[] InstanceEdgeCallerNames =
+    [
+        "<InstanceAutoProp>k__BackingField", "Changed", "Finalize", "InnerInstance", "InstanceLocal",
+        "InstanceWithLambda", "InstanceWithLambda", "this[]"
+    ];
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FindCallers_StaticFilter_JudgesEdgeCallersOnTheReportedCallingSymbol(bool? staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticEdgeSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            CallerFile = workspace.PathOf("Edges.cs"),
+            StaticFilter = staticFilter
+        });
+
+        // - A non-static local function inside a static method is its own calling symbol (instance);
+        //   a static local function is static.
+        // - Lambdas (static or not) report the enclosing member and are judged on it.
+        // - A finalizer reports Finalize (instance); an indexer reports this[] and is judged on the indexer.
+        // - A custom event accessor reports the event and is judged on it.
+        // - An auto-property initializer reports <P>k__BackingField and is judged on the backing field.
+        // - Nested-type members are judged on their own staticness.
+        Assert.True(result.Success);
+        var expected = SortedNames(staticFilter switch
+        {
+            true => StaticEdgeCallerNames,
+            false => InstanceEdgeCallerNames,
+            null => StaticEdgeCallerNames.Concat(InstanceEdgeCallerNames)
+        });
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData(null, new[] { "Derived", "UsesBase" })]
+    [InlineData(true, new[] { "Derived" })]
+    [InlineData(false, new[] { "UsesBase" })]
+    public async Task FindCallers_StaticFilter_ConstInitializerReferencingConstIsStatic(
+        bool? staticFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticEdgeSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        // Limits.Derived = Base + 1: the referencing site is the const Derived, which Roslyn reports as static.
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Edges.cs"),
+            SymbolName = "Base",
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData(null, new[] { "<Main>$" })]
+    [InlineData(true, new[] { "<Main>$" })]
+    [InlineData(false, new string[0])]
+    public async Task FindCallers_StaticFilter_TopLevelStatementsAreJudgedOnStaticMain(
+        bool? staticFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticEdgeSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        // Top-level statements are enclosed by the synthesized static entry point <Main>$.
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            CallerFile = workspace.PathOf("Program.cs"),
+            StaticFilter = staticFilter
         });
 
         Assert.True(result.Success);

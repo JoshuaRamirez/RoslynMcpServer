@@ -18,8 +18,9 @@ namespace RoslynMcp.Core.Query;
 /// narrowed to call sites in one namespace (<see cref="FindCallersParams.NamespaceFilter"/>),
 /// optionally to calling symbols with a given declared accessibility
 /// (<see cref="FindCallersParams.AccessibilityFilter"/>), optionally to calling symbols whose
-/// simple name contains a substring (<see cref="FindCallersParams.NameFilter"/>), and optionally to
-/// calling symbols of one symbol kind (<see cref="FindCallersParams.KindFilter"/>).
+/// simple name contains a substring (<see cref="FindCallersParams.NameFilter"/>), optionally to
+/// calling symbols of one symbol kind (<see cref="FindCallersParams.KindFilter"/>), and optionally to
+/// static or instance calling symbols (<see cref="FindCallersParams.StaticFilter"/>).
 /// </summary>
 public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams, FindCallersResult>
 {
@@ -126,13 +127,19 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         // Invalid values already rejected in ValidateParams.
         var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
 
+        // Optional staticFilter (same ISymbol.IsStatic test as get_symbol_info / get_document_outline /
+        // search_symbols staticFilter): keep only call sites whose calling symbol (the same
+        // CallingSymbol accessibilityFilter / nameFilter / kindFilter judge) is static (true) or
+        // instance (false). Null when omitted (no static filtering).
+        var staticFilter = @params.StaticFilter;
+
         foreach (var caller in callerResults)
         {
-            // Accessibility / name / kind filters run on the calling symbol before location filters /
+            // Accessibility / name / kind / static filters run on the calling symbol before location filters /
             // maxResults so TotalCount / Truncated reflect the filtered set. Exact
             // DeclaredAccessibility match (implicit defaults count; protected internal ≠
             // protected / internal). Name is ISymbol.Name substring (OrdinalIgnoreCase). Kind is
-            // SymbolKindMapper.Map equality.
+            // SymbolKindMapper.Map equality. Static is ISymbol.IsStatic equality.
             if (accessibilityFilter.HasValue
                 && caller.CallingSymbol.DeclaredAccessibility != accessibilityFilter.Value)
                 continue;
@@ -143,6 +150,9 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
             if (kindFilter.HasValue && SymbolKindMapper.Map(caller.CallingSymbol) != kindFilter.Value)
                 continue;
 
+            if (staticFilter.HasValue && caller.CallingSymbol.IsStatic != staticFilter.Value)
+                continue;
+
             foreach (var location in caller.Locations)
             {
                 if (!location.IsInSource) continue;
@@ -150,7 +160,7 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                 var lineSpan = location.GetLineSpan();
 
                 // Optional callerFile / projectPath / namespaceFilter filters run before maxResults
-                // (accessibilityFilter / nameFilter / kindFilter already applied on the calling symbol above) so
+                // (accessibilityFilter / nameFilter / kindFilter / staticFilter already applied on the calling symbol above) so
                 // TotalCount / Truncated reflect the filtered set.
                 if (callerFileKey != null)
                 {
