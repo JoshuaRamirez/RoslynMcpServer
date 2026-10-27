@@ -181,6 +181,21 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void SearchSymbols_StaticFilterFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Widget", "--static-filter"]);
+        Assert.Equal("search-symbols", result.ToolName);
+        Assert.Equal("true", result.Options["static-filter"]);
+    }
+
+    [Fact]
+    public void SearchSymbols_StaticFilterExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Widget", "--static-filter", "false"]);
+        Assert.Equal("false", result.Options["static-filter"]);
+    }
+
+    [Fact]
     public void GetDocumentOutline_AccessibilityFilterOption_ParsesValue()
     {
         var result = CliArgs.Parse(["My.sln", "get-document-outline", "--source-file", "/src/Widget.cs", "--accessibility-filter", "protected internal"]);

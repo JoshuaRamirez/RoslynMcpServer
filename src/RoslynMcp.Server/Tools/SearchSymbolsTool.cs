@@ -32,7 +32,7 @@ public sealed class SearchSymbolsTool : IToolHandler
     public string Name => "search_symbols";
 
     /// <inheritdoc />
-    public string Description => "Search for C# symbols by name pattern across the solution or a specific file. Supports substring matching and filtering by symbol kind (Class, Method, Property, etc.). Optional sourceFile restricts results to symbols declared in that file. Optional caseSensitive (default false) set to true matches query case-sensitively (ordinal) instead of case-insensitively. Optional exactMatch (default false) set to true returns only symbols whose whole name equals query instead of containing it. Optional namespaceFilter restricts results to symbols declared in that namespace or a namespace nested inside it. Optional projectPath (absolute .csproj path of a project in the loaded solution) searches only that project, so only symbols declared in its sources are returned. Optional accessibilityFilter (public, internal, protected, private, protected internal, or private protected; case-insensitive) returns only symbols with exactly that declared accessibility, counting implicit defaults (a top-level type with no modifier is internal, a class member with no modifier is private).";
+    public string Description => "Search for C# symbols by name pattern across the solution or a specific file. Supports substring matching and filtering by symbol kind (Class, Method, Property, etc.). Optional sourceFile restricts results to symbols declared in that file. Optional caseSensitive (default false) set to true matches query case-sensitively (ordinal) instead of case-insensitively. Optional exactMatch (default false) set to true returns only symbols whose whole name equals query instead of containing it. Optional namespaceFilter restricts results to symbols declared in that namespace or a namespace nested inside it. Optional projectPath (absolute .csproj path of a project in the loaded solution) searches only that project, so only symbols declared in its sources are returned. Optional accessibilityFilter (public, internal, protected, private, protected internal, or private protected; case-insensitive) returns only symbols with exactly that declared accessibility, counting implicit defaults (a top-level type with no modifier is internal, a class member with no modifier is private). Optional staticFilter (boolean) keeps only static symbols when true (ISymbol.IsStatic: static classes, static members, extension methods, const fields and enum members) or only instance symbols and non-static types when false; namespaces are returned when staticFilter is omitted but dropped when it is set to either value; search_symbols never returns operators (including conversion operators), constructors (including static constructors), indexers, property/event accessors, explicit interface implementations, or local functions, so staticFilter can never return them (operators and static constructors are static); finalizers are returned (as instance methods named Finalize, so only when staticFilter is false or omitted); nested types and enum members are returned and judged by IsStatic (a nested static class and enum members count as static); combined with the other filters and applied before maxResults so totalCount/truncated reflect the filtered set; a non-boolean value is rejected with INTERNAL_ERROR.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -91,6 +91,11 @@ public sealed class SearchSymbolsTool : IToolHandler
             {
                 type = "string",
                 description = "Declared accessibility to restrict results to (optional; omit for any accessibility): public, internal, protected, private, protected internal, or private protected (case-insensitive, surrounding whitespace trimmed; internal protected / protected private also accepted). Exact match on the symbol's declared accessibility, so implicit defaults count (a top-level type with no modifier is internal, a class member with no modifier is private, an interface member is public) and protected internal is not matched by protected or internal; namespaces never match; combined with the other filters and applied before maxResults so totalCount/truncated reflect the filtered set; any other value returns an invalid-visibility error"
+            },
+            staticFilter = new
+            {
+                type = "boolean",
+                description = "Keep only static symbols when true (ISymbol.IsStatic: static classes, static methods / properties / fields / events, extension methods, and const fields and enum members, which Roslyn reports as static) or only instance symbols when false (instance members and every non-static type: class, struct, interface, enum, delegate, record) (optional; omit = no static filter). Namespaces are returned when staticFilter is omitted but dropped when it is set to either value. Search_symbols never returns operators (including conversion operators), constructors (including static constructors), indexers, property/event accessors, explicit interface implementations, or local functions, so staticFilter can never return them (operators and static constructors are static); finalizers are returned (as instance methods named Finalize, so only when staticFilter is false or omitted); nested types and enum members are returned and judged by IsStatic (a nested static class and enum members count as static). Combined with the other filters and applied before maxResults so totalCount/truncated reflect the filtered set; no match → empty symbols, totalCount = 0, truncated = false. A non-boolean value (e.g. 'yes', the string 'true', or 1) is rejected with INTERNAL_ERROR."
             }
         },
         additionalProperties = false
@@ -121,7 +126,8 @@ public sealed class SearchSymbolsTool : IToolHandler
                 ExactMatch = args.ExactMatch,
                 NamespaceFilter = args.NamespaceFilter,
                 ProjectPath = args.ProjectPath,
-                AccessibilityFilter = args.AccessibilityFilter
+                AccessibilityFilter = args.AccessibilityFilter,
+                StaticFilter = args.StaticFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -157,5 +163,6 @@ public sealed class SearchSymbolsTool : IToolHandler
         public string? NamespaceFilter { get; init; }
         public string? ProjectPath { get; init; }
         public string? AccessibilityFilter { get; init; }
+        public bool? StaticFilter { get; init; }
     }
 }
