@@ -2344,6 +2344,199 @@ public class FindImplementationsOperationTests
 
     #endregion
 
+    #region StaticFilter (#3095)
+
+    // StaticSources: IShape has a static abstract method (Create), a static virtual property (Label),
+    // and an instance method (Area). Circle (public class) and Square (internal struct) implement
+    // them implicitly; Hexagon implements Create and Area explicitly (private). Implementing types are
+    // never static, so type targets keep everything for false and nothing for true.
+    private static readonly Dictionary<string, string> StaticSources = new()
+    {
+        ["Contracts.cs"] = """
+            namespace App.Shapes
+            {
+                public interface IShape
+                {
+                    static abstract IShape Create();
+                    static virtual string Label => "shape";
+                    double Area();
+                }
+            }
+            """,
+        ["Shapes.cs"] = """
+            namespace App.Shapes.Impl
+            {
+                public class Circle : App.Shapes.IShape
+                {
+                    public static App.Shapes.IShape Create() => new Circle();
+                    public static string Label => "circle";
+                    public double Area() => 3.14;
+                }
+
+                internal struct Square : App.Shapes.IShape
+                {
+                    public static App.Shapes.IShape Create() => new Square();
+                    public double Area() => 1;
+                }
+
+                public class Hexagon : App.Shapes.IShape
+                {
+                    static App.Shapes.IShape App.Shapes.IShape.Create() => new Hexagon();
+                    double App.Shapes.IShape.Area() => 6;
+                }
+            }
+            """
+    };
+
+    private static async Task<FindImplementationsResult> RunStaticFilterAsync(
+        TempWorkspace workspace, FindImplementationsParams @params)
+    {
+        var operation = new FindImplementationsOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(@params);
+        Assert.True(result.Success, $"{@params.SymbolName}/{@params.StaticFilter}");
+        return result.Data!;
+    }
+
+    // Containing type of each reported implementation (types report themselves), sorted.
+    private static List<string> SortedOwners(IEnumerable<ImplementationInfo> implementations) =>
+        implementations
+            .Select(i => i.FullyQualifiedName)
+            .Select(fqn => new[] { "Circle", "Square", "Hexagon" }.Single(t => fqn.Contains("App.Shapes.Impl." + t, StringComparison.Ordinal)))
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+
+    [Fact]
+    public void StaticFilter_DefaultsToNull()
+    {
+        var @params = new FindImplementationsParams { SourceFile = "/tmp/x.cs", SymbolName = "IFoo" };
+        Assert.Null(@params.StaticFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData(false, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData(true, new string[0])]
+    public async Task FindImplementations_StaticFilter_TypeTarget_ImplementingTypesAreNeverStatic(
+        bool? staticFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            StaticFilter = staticFilter
+        });
+
+        Assert.Equal(expected, SortedNames(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+        Assert.False(data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Create", null, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData("Create", true, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData("Create", false, new string[0])]
+    [InlineData("Label", true, new[] { "Circle" })]
+    [InlineData("Label", false, new string[0])]
+    [InlineData("Area", null, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData("Area", false, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData("Area", true, new string[0])]
+    public async Task FindImplementations_StaticFilter_MemberTarget_KeepsOnlyMatchingStaticness(
+        string member, bool? staticFilter, string[] expectedOwners)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = member,
+            StaticFilter = staticFilter
+        });
+
+        Assert.Equal(expectedOwners, SortedOwners(data.Implementations));
+        Assert.Equal(expectedOwners.Length, data.TotalCount);
+        Assert.False(data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("public", new[] { "Circle", "Square" })]
+    [InlineData("private", new[] { "Hexagon" })]
+    public async Task FindImplementations_StaticFilter_CombinesWithAccessibilityFilter(
+        string accessibilityFilter, string[] expectedOwners)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Create",
+            StaticFilter = true,
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.Equal(expectedOwners, SortedOwners(data.Implementations));
+        Assert.Equal(expectedOwners.Length, data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_StaticFilter_AppliedBeforeMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Create",
+            StaticFilter = true,
+            MaxResults = 1
+        });
+
+        Assert.Single(data.Implementations);
+        Assert.Equal(3, data.TotalCount);
+        Assert.True(data.Truncated);
+
+        var instance = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Create",
+            StaticFilter = false,
+            MaxResults = 1
+        });
+
+        Assert.Empty(instance.Implementations);
+        Assert.Equal(0, instance.TotalCount);
+        Assert.False(instance.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_StaticFilter_CombinesWithImplementationFile()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+
+        var inShapes = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Create",
+            StaticFilter = true,
+            ImplementationFile = workspace.PathOf("Shapes.cs")
+        });
+        Assert.Equal(new[] { "Circle", "Hexagon", "Square" }, SortedOwners(inShapes.Implementations));
+        Assert.Equal(3, inShapes.TotalCount);
+
+        var inContracts = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Create",
+            StaticFilter = true,
+            ImplementationFile = workspace.PathOf("Contracts.cs")
+        });
+        Assert.Empty(inContracts.Implementations);
+        Assert.Equal(0, inContracts.TotalCount);
+    }
+
+    #endregion
+
     private static List<string> SortedNames(IEnumerable<ImplementationInfo> implementations) =>
         implementations.Select(i => i.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
 

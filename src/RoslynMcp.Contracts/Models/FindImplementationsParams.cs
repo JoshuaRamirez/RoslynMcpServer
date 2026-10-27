@@ -75,7 +75,7 @@ public sealed class FindImplementationsParams
     /// Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
     /// <c>global::</c> is accepted. Combined with <see cref="ImplementationFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, <see cref="AccessibilityFilter"/>,
-    /// <see cref="KindFilter"/>, and <see cref="NameFilter"/>, and applied before
+    /// <see cref="KindFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered set. Implementations in the global namespace never match a named filter. Omit, blank, or a bare
     /// <c>global::</c> (the root namespace) reports implementations in all namespaces.
     /// <see cref="SourceFile"/> still locates the target symbol and may be in another namespace.
@@ -95,7 +95,7 @@ public sealed class FindImplementationsParams
     /// targets, the implementing member's declared accessibility is used (explicit interface
     /// implementations are <c>private</c>). Combined with <see cref="ImplementationFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, <see cref="NamespaceFilter"/>,
-    /// <see cref="KindFilter"/>, and <see cref="NameFilter"/>, and applied before
+    /// <see cref="KindFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
     /// accessibility-filtered set. Omit or leave blank for no accessibility filter. An unrecognized
     /// value fails with <c>InvalidVisibility</c>.
@@ -112,7 +112,7 @@ public sealed class FindImplementationsParams
     /// <c>Record</c>, not <c>Class</c>) equals it are returned, e.g. <c>Struct</c> for "which structs
     /// implement this interface?". Combined with <see cref="ImplementationFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, <see cref="NamespaceFilter"/>,
-    /// <see cref="AccessibilityFilter"/>, and <see cref="NameFilter"/> (an implementation must satisfy
+    /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/> (an implementation must satisfy
     /// all that are set), and applied
     /// before <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
     /// kind-filtered set. A kind that no implementation has (e.g. <c>Local</c>, <c>Parameter</c>,
@@ -132,11 +132,28 @@ public sealed class FindImplementationsParams
     /// implementations usually share the target's name, and explicit interface implementations report
     /// Roslyn's qualified metadata name (e.g. <c>App.IRunner.Run</c>), so this filter is mainly useful
     /// for type targets. Combined with <see cref="ImplementationFile"/>, <see cref="ProjectPath"/>,
-    /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>, and
-    /// <see cref="KindFilter"/> (an implementation must satisfy all that are set), and applied before
+    /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>,
+    /// <see cref="KindFilter"/>, and <see cref="StaticFilter"/> (an implementation must satisfy all that are set), and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the name-filtered set.
     /// A value no implementation name contains returns an empty success. Omit, empty, or whitespace
     /// for no name filter.
     /// </summary>
     public string? NameFilter { get; init; }
+
+    /// <summary>
+    /// Optional static-ness to restrict reported implementations to: <c>true</c> keeps only
+    /// implementations whose <c>ISymbol.IsStatic</c> is <c>true</c> (e.g. the static implementations
+    /// of a C# 11 <c>static abstract</c> / <c>static virtual</c> interface member), <c>false</c> keeps
+    /// only instance implementations. Same <c>ISymbol.IsStatic</c> test as <c>get_symbol_info</c> /
+    /// <c>get_document_outline</c> / <c>search_symbols</c> <c>staticFilter</c>. Implementing types are
+    /// never static (a static class cannot implement an interface or derive from a class), so for type
+    /// targets <c>true</c> returns an empty success and <c>false</c> keeps every implementation.
+    /// Combined with <see cref="ImplementationFile"/>, <see cref="ProjectPath"/>,
+    /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>,
+    /// <see cref="KindFilter"/>, and <see cref="NameFilter"/> (an implementation must satisfy all that
+    /// are set), and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the static-filtered set. Omit (<c>null</c>) for no static filter. A
+    /// non-boolean JSON value fails the <c>find_implementations</c> tool with <c>INTERNAL_ERROR</c>.
+    /// </summary>
+    public bool? StaticFilter { get; init; }
 }

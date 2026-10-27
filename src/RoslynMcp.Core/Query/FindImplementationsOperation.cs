@@ -21,7 +21,8 @@ namespace RoslynMcp.Core.Query;
 /// declared accessibility when <see cref="FindImplementationsParams.AccessibilityFilter"/> is set;
 /// only implementations of a given kind when <see cref="FindImplementationsParams.KindFilter"/> is set;
 /// only implementations whose name contains a substring when
-/// <see cref="FindImplementationsParams.NameFilter"/> is set).
+/// <see cref="FindImplementationsParams.NameFilter"/> is set; only static or only instance
+/// implementations when <see cref="FindImplementationsParams.StaticFilter"/> is set).
 /// Delegates to Roslyn's SymbolFinder.FindImplementationsAsync.
 /// </summary>
 public sealed class FindImplementationsOperation : QueryOperationBase<FindImplementationsParams, FindImplementationsResult>
@@ -179,6 +180,12 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
             // Name filter runs with the other symbol filters before maxResults so TotalCount /
             // Truncated reflect the filtered set. Matches the Name reported for the implementation.
             if (!NameFilterMatcher.Matches(impl.Name, nameFilter))
+                continue;
+
+            // Static filter runs with the other symbol filters before maxResults so TotalCount /
+            // Truncated reflect the filtered set. Same ISymbol.IsStatic test as get_symbol_info /
+            // get_document_outline / search_symbols staticFilter; implementing types are never static.
+            if (@params.StaticFilter.HasValue && impl.IsStatic != @params.StaticFilter.Value)
                 continue;
 
             Location? location;
