@@ -62,7 +62,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         var symbol = resolved.Symbol;
         var info = BuildDetailedInfo(
             symbol, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter,
-            @params.NameFilter, @params.NamespaceFilter);
+            @params.NameFilter, @params.NamespaceFilter, @params.StaticFilter);
 
         return QueryResult<DetailedSymbolInfo>.Succeeded(operationId, info);
     }
@@ -73,7 +73,8 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         string? kindFilter,
         string? accessibilityFilter,
         string? nameFilter,
-        string? namespaceFilter)
+        string? namespaceFilter,
+        bool? staticFilter)
     {
         var modifiers = GetModifiers(symbol);
         var location = GetLocation(symbol);
@@ -132,11 +133,19 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                     .Where(m => NamespaceFilter.IsInNamespace(m, namespaceFilterValue));
             }
 
+            if (staticFilter.HasValue)
+            {
+                // true keeps static members (Roslyn reports const fields as static); false keeps
+                // instance members.
+                var wantStatic = staticFilter.Value;
+                memberSymbols = memberSymbols.Where(m => m.IsStatic == wantStatic);
+            }
+
             var allMembers = memberSymbols
                 .Select(m => m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
                 .ToList();
 
-            // kindFilter → accessibilityFilter → nameFilter → namespaceFilter apply first; maxResults
+            // kindFilter → accessibilityFilter → nameFilter → namespaceFilter → staticFilter apply first; maxResults
             // caps only Members (first N in today's enumeration order); TotalCount stays the filtered
             // member count.
             totalCount = allMembers.Count;

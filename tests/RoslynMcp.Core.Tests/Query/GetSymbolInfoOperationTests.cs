@@ -1453,4 +1453,258 @@ public class GetSymbolInfoOperationTests
             });
         }
     }
+
+    #region staticFilter
+
+    private const string StaticMixSource = """
+        public class Mixer
+        {
+            public const int Limit = 10;
+            public static int Counter;
+            public int Instance;
+            public static string Name { get; set; } = "";
+            public string Label { get; set; } = "";
+            public static void Create() { }
+            public void Run() { }
+            public static event System.EventHandler? Changed;
+            public class Nested { }
+            public static class Helpers { }
+            public enum Mode { A }
+            public struct Point { }
+        }
+        """;
+
+    [Fact]
+    public void StaticFilter_DefaultsToNull()
+    {
+        var @params = new GetSymbolInfoParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.StaticFilter);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_OmittedStaticFilter_ReturnsAllMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Mixer"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data?.Members);
+        Assert.Equal(12, result.Data!.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilterTrue_KeepsOnlyStaticMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Mixer",
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        var members = result.Data!.Members!;
+        Assert.Equal(6, members.Count);
+        Assert.Equal(6, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+        Assert.Contains(members, m => m.Contains("Limit", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Counter", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Name", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Create", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Changed", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Helpers", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Instance", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Run", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Nested", StringComparison.Ordinal));
+        // Nested types are judged by INamedTypeSymbol.IsStatic: only a nested static class is static.
+        Assert.DoesNotContain(members, m => m.Contains("Mode", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Point", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilterFalse_KeepsOnlyInstanceMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Mixer",
+            StaticFilter = false
+        });
+
+        Assert.True(result.Success);
+        var members = result.Data!.Members!;
+        Assert.Equal(6, members.Count);
+        Assert.Equal(6, result.Data.TotalCount);
+        Assert.Contains(members, m => m.Contains("Instance", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Label", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Run", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Nested", StringComparison.Ordinal));
+        // Any nested type other than a static class (here an enum and a struct) counts as instance.
+        Assert.Contains(members, m => m.Contains("Mode", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Point", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Limit", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Create", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("Helpers", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilterCombinedWithKindFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Mixer",
+            KindFilter = "Method",
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        var members = result.Data!.Members!;
+        Assert.Single(members);
+        Assert.Contains("Create", members[0], StringComparison.Ordinal);
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilterAppliedBeforeMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Mixer",
+            StaticFilter = true,
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Members!.Count);
+        Assert.Equal(6, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilter_NoEffectOnNonTypeSymbol()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Run",
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Null(result.Data!.Members);
+        Assert.Null(result.Data.TotalCount);
+    }
+
+
+    private const string StaticExcludedKindsSource = """
+        public interface IShape { int Area(); int Sides { get; } }
+        public class Shape : IShape
+        {
+            static Shape() { }
+            public Shape() { }
+            ~Shape() { }
+            public static Shape operator +(Shape a, Shape b) => a;
+            public static implicit operator int(Shape s) => 0;
+            public int this[int i] => i;
+            int IShape.Area() => 0;
+            int IShape.Sides => 4;
+            public static int Total { get; set; }
+            public static event System.EventHandler? Changed;
+            public static void Make() { }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilterTrue_NeverReturnsOperatorsConstructorsAccessorsOrExplicitImpls()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticExcludedKindsSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var all = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape"
+        });
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            StaticFilter = true
+        });
+
+        Assert.True(all.Success);
+        Assert.True(result.Success);
+
+        // Members never lists operators (incl. conversions), constructors (incl. the static
+        // constructor), indexers, accessors, or explicit interface implementations, so
+        // staticFilter = true cannot return them. A finalizer is listed and counts as instance.
+        var allMembers = all.Data!.Members!;
+        Assert.Equal(4, allMembers.Count);
+        Assert.Contains(allMembers, m => m.Contains("~Shape", StringComparison.Ordinal));
+        Assert.DoesNotContain(allMembers, m => m.Contains("operator", StringComparison.Ordinal));
+        Assert.DoesNotContain(allMembers, m => m.Contains("Shape()", StringComparison.Ordinal) && !m.Contains('~'));
+        Assert.DoesNotContain(allMembers, m => m.Contains("this[", StringComparison.Ordinal));
+        Assert.DoesNotContain(allMembers, m => m.Contains("IShape.", StringComparison.Ordinal));
+        Assert.DoesNotContain(allMembers, m => m.Contains("get_", StringComparison.Ordinal) || m.Contains("set_", StringComparison.Ordinal));
+        Assert.DoesNotContain(allMembers, m => m.Contains("add_", StringComparison.Ordinal) || m.Contains("remove_", StringComparison.Ordinal));
+
+        var members = result.Data!.Members!;
+        Assert.Equal(3, members.Count);
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.Contains(members, m => m.Contains("Total", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Changed", StringComparison.Ordinal));
+        Assert.Contains(members, m => m.Contains("Make", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("~Shape", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_StaticFilterNoMatch_ReturnsEmptyMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class OnlyInstance
+            {
+                public int Value;
+                public void Run() { }
+            }
+            """);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "OnlyInstance",
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data!.Members);
+        Assert.Empty(result.Data.Members!);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    #endregion
 }
