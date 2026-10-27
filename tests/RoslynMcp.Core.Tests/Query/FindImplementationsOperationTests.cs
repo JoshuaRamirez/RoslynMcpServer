@@ -2344,6 +2344,409 @@ public class FindImplementationsOperationTests
 
     #endregion
 
+    #region StaticFilter (#3095)
+
+    // StaticSources: IShape has a static abstract method (Create), a static virtual property (Label),
+    // and an instance method (Area). Circle (public class) and Square (internal struct) implement
+    // them implicitly; Hexagon implements Create and Area explicitly (private). Implementing types are
+    // never static, so type targets keep everything for false and nothing for true.
+    private static readonly Dictionary<string, string> StaticSources = new()
+    {
+        ["Contracts.cs"] = """
+            namespace App.Shapes
+            {
+                public interface IShape
+                {
+                    static abstract IShape Create();
+                    static virtual string Label => "shape";
+                    double Area();
+                }
+            }
+            """,
+        ["Shapes.cs"] = """
+            namespace App.Shapes.Impl
+            {
+                public class Circle : App.Shapes.IShape
+                {
+                    public static App.Shapes.IShape Create() => new Circle();
+                    public static string Label => "circle";
+                    public double Area() => 3.14;
+                }
+
+                internal struct Square : App.Shapes.IShape
+                {
+                    public static App.Shapes.IShape Create() => new Square();
+                    public double Area() => 1;
+                }
+
+                public class Hexagon : App.Shapes.IShape
+                {
+                    static App.Shapes.IShape App.Shapes.IShape.Create() => new Hexagon();
+                    double App.Shapes.IShape.Area() => 6;
+                }
+            }
+            """
+    };
+
+    private static async Task<FindImplementationsResult> RunStaticFilterAsync(
+        TempWorkspace workspace, FindImplementationsParams @params)
+    {
+        var operation = new FindImplementationsOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(@params);
+        Assert.True(result.Success, $"{@params.SymbolName}/{@params.StaticFilter}");
+        return result.Data!;
+    }
+
+    // Containing type of each reported implementation (types report themselves), sorted.
+    private static List<string> SortedOwners(IEnumerable<ImplementationInfo> implementations) =>
+        implementations
+            .Select(i => i.FullyQualifiedName)
+            .Select(fqn => new[] { "Circle", "Square", "Hexagon" }.Single(t => fqn.Contains("App.Shapes.Impl." + t, StringComparison.Ordinal)))
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+
+    [Fact]
+    public void StaticFilter_DefaultsToNull()
+    {
+        var @params = new FindImplementationsParams { SourceFile = "/tmp/x.cs", SymbolName = "IFoo" };
+        Assert.Null(@params.StaticFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData(false, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData(true, new string[0])]
+    public async Task FindImplementations_StaticFilter_TypeTarget_ImplementingTypesAreNeverStatic(
+        bool? staticFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "IShape",
+            StaticFilter = staticFilter
+        });
+
+        Assert.Equal(expected, SortedNames(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+        Assert.False(data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Create", null, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData("Create", true, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData("Create", false, new string[0])]
+    [InlineData("Label", true, new[] { "Circle" })]
+    [InlineData("Label", false, new string[0])]
+    [InlineData("Area", null, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData("Area", false, new[] { "Circle", "Hexagon", "Square" })]
+    [InlineData("Area", true, new string[0])]
+    public async Task FindImplementations_StaticFilter_MemberTarget_KeepsOnlyMatchingStaticness(
+        string member, bool? staticFilter, string[] expectedOwners)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = member,
+            StaticFilter = staticFilter
+        });
+
+        Assert.Equal(expectedOwners, SortedOwners(data.Implementations));
+        Assert.Equal(expectedOwners.Length, data.TotalCount);
+        Assert.False(data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("public", new[] { "Circle", "Square" })]
+    [InlineData("private", new[] { "Hexagon" })]
+    public async Task FindImplementations_StaticFilter_CombinesWithAccessibilityFilter(
+        string accessibilityFilter, string[] expectedOwners)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Create",
+            StaticFilter = true,
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.Equal(expectedOwners, SortedOwners(data.Implementations));
+        Assert.Equal(expectedOwners.Length, data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_StaticFilter_AppliedBeforeMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Create",
+            StaticFilter = true,
+            MaxResults = 1
+        });
+
+        Assert.Single(data.Implementations);
+        Assert.Equal(3, data.TotalCount);
+        Assert.True(data.Truncated);
+
+        var instance = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Create",
+            StaticFilter = false,
+            MaxResults = 1
+        });
+
+        Assert.Empty(instance.Implementations);
+        Assert.Equal(0, instance.TotalCount);
+        Assert.False(instance.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_StaticFilter_CombinesWithImplementationFile()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+
+        var inShapes = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Create",
+            StaticFilter = true,
+            ImplementationFile = workspace.PathOf("Shapes.cs")
+        });
+        Assert.Equal(new[] { "Circle", "Hexagon", "Square" }, SortedOwners(inShapes.Implementations));
+        Assert.Equal(3, inShapes.TotalCount);
+
+        var inContracts = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Contracts.cs"),
+            SymbolName = "Create",
+            StaticFilter = true,
+            ImplementationFile = workspace.PathOf("Contracts.cs")
+        });
+        Assert.Empty(inContracts.Implementations);
+        Assert.Equal(0, inContracts.TotalCount);
+    }
+
+    private const string StaticEdgeSource = """
+        namespace App.Edges
+        {
+            public interface IBase
+            {
+                static abstract int SCreate();
+                static virtual int SLabel() => 0;
+                int Area();
+                void Dim() { }
+            }
+            public interface IDerived : IBase
+            {
+                static int IBase.SLabel() => 1;
+                void IBase.Dim() { }
+            }
+            public record Rec : IBase { public static int SCreate() => 1; public int Area() => 1; }
+            public record struct RecS : IBase { public static int SCreate() => 2; public int Area() => 2; }
+            public class Outer { public class Nested : IBase { public static int SCreate() => 3; public int Area() => 3; } }
+            public partial class Part : IBase { public static partial int SCreate(); public partial int Area(); }
+            public partial class Part { public static partial int SCreate() => 4; public partial int Area() => 4; }
+            public class Gen<T> : IBase { public static int SCreate() => 5; public int Area() => 5; }
+            public interface ISelf<TSelf> where TSelf : ISelf<TSelf> { static abstract TSelf Make(); TSelf Twin(); }
+            public struct Self : ISelf<Self> { public static Self Make() => default; public Self Twin() => this; }
+            public class GenSelf<T> : ISelf<GenSelf<T>> { public static GenSelf<T> Make() => new(); public GenSelf<T> Twin() => this; }
+            public static class Util { public static void Go() { } }
+            public abstract class Animal { public abstract int Legs(); public virtual int Eyes() => 2; }
+            public class Dog : Animal { public override int Legs() => 4; public override int Eyes() => 2; }
+            public abstract class GB<T> { public abstract T GM(); }
+            public class GD : GB<int> { public override int GM() => 1; }
+        }
+        """;
+
+    // StaticEdgeSource line / column of the first occurrence of token on that 1-based line.
+    private static (int Line, int Column) StaticEdgePosition(int line, string token)
+    {
+        var text = StaticEdgeSource.Split('\n')[line - 1];
+        var index = text.IndexOf(token, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"{token} not on line {line}");
+        return (line, index + 1);
+    }
+
+    // Edge kinds: default interface implementations re-implemented explicitly in a derived interface
+    // (IDerived: static SLabel, instance Dim), records, record structs, nested types, partial members,
+    // generic implementers, and a self-referencing generic static abstract (ISelf<TSelf>). Each
+    // implementation is judged on its own IsStatic, which C# forces to equal the target's, so a member
+    // target is all-or-nothing; implementing types are never static. Derived interfaces are not
+    // returned for a type target. Static-class targets (Util / Util.Go) and abstract / virtual class
+    // targets with overrides (Animal, Animal.Legs / Eyes, GB<T>, GB<T>.GM) return nothing even with no
+    // filter: this pins current behavior (Roslyn FindImplementationsAsync does not report derived
+    // classes or overrides), not the intended contract.
+    [SkippableTheory]
+    [InlineData(3, "IBase", null, new[] { "App.Edges.Gen<T>", "App.Edges.Outer.Nested", "App.Edges.Part", "App.Edges.Rec", "App.Edges.RecS" })]
+    [InlineData(3, "IBase", false, new[] { "App.Edges.Gen<T>", "App.Edges.Outer.Nested", "App.Edges.Part", "App.Edges.Rec", "App.Edges.RecS" })]
+    [InlineData(3, "IBase", true, new string[0])]
+    [InlineData(5, "SCreate", null, new[] { "App.Edges.Gen<T>.SCreate()", "App.Edges.Outer.Nested.SCreate()", "App.Edges.Part.SCreate()", "App.Edges.Rec.SCreate()", "App.Edges.RecS.SCreate()" })]
+    [InlineData(5, "SCreate", true, new[] { "App.Edges.Gen<T>.SCreate()", "App.Edges.Outer.Nested.SCreate()", "App.Edges.Part.SCreate()", "App.Edges.Rec.SCreate()", "App.Edges.RecS.SCreate()" })]
+    [InlineData(5, "SCreate", false, new string[0])]
+    [InlineData(6, "SLabel", null, new[] { "App.Edges.IDerived.App.Edges.IBase.SLabel()" })]
+    [InlineData(6, "SLabel", true, new[] { "App.Edges.IDerived.App.Edges.IBase.SLabel()" })]
+    [InlineData(6, "SLabel", false, new string[0])]
+    [InlineData(7, "Area", null, new[] { "App.Edges.Gen<T>.Area()", "App.Edges.Outer.Nested.Area()", "App.Edges.Part.Area()", "App.Edges.Rec.Area()", "App.Edges.RecS.Area()" })]
+    [InlineData(7, "Area", false, new[] { "App.Edges.Gen<T>.Area()", "App.Edges.Outer.Nested.Area()", "App.Edges.Part.Area()", "App.Edges.Rec.Area()", "App.Edges.RecS.Area()" })]
+    [InlineData(7, "Area", true, new string[0])]
+    [InlineData(8, "Dim", null, new[] { "App.Edges.IDerived.App.Edges.IBase.Dim()" })]
+    [InlineData(8, "Dim", false, new[] { "App.Edges.IDerived.App.Edges.IBase.Dim()" })]
+    [InlineData(8, "Dim", true, new string[0])]
+    [InlineData(21, "ISelf", null, new[] { "App.Edges.GenSelf<T>", "App.Edges.Self" })]
+    [InlineData(21, "ISelf", false, new[] { "App.Edges.GenSelf<T>", "App.Edges.Self" })]
+    [InlineData(21, "ISelf", true, new string[0])]
+    [InlineData(21, "Make", null, new[] { "App.Edges.GenSelf<T>.Make()", "App.Edges.Self.Make()" })]
+    [InlineData(21, "Make", true, new[] { "App.Edges.GenSelf<T>.Make()", "App.Edges.Self.Make()" })]
+    [InlineData(21, "Make", false, new string[0])]
+    [InlineData(21, "Twin", null, new[] { "App.Edges.GenSelf<T>.Twin()", "App.Edges.Self.Twin()" })]
+    [InlineData(21, "Twin", false, new[] { "App.Edges.GenSelf<T>.Twin()", "App.Edges.Self.Twin()" })]
+    [InlineData(21, "Twin", true, new string[0])]
+    [InlineData(24, "Util", null, new string[0])]
+    [InlineData(24, "Util", true, new string[0])]
+    [InlineData(24, "Util", false, new string[0])]
+    [InlineData(24, "Go", null, new string[0])]
+    [InlineData(24, "Go", true, new string[0])]
+    [InlineData(24, "Go", false, new string[0])]
+    [InlineData(25, "Animal", null, new string[0])]
+    [InlineData(25, "Animal", true, new string[0])]
+    [InlineData(25, "Animal", false, new string[0])]
+    [InlineData(25, "Legs", null, new string[0])]
+    [InlineData(25, "Legs", true, new string[0])]
+    [InlineData(25, "Legs", false, new string[0])]
+    [InlineData(25, "Eyes", null, new string[0])]
+    [InlineData(25, "Eyes", true, new string[0])]
+    [InlineData(25, "Eyes", false, new string[0])]
+    [InlineData(27, "GB", null, new string[0])]
+    [InlineData(27, "GB", true, new string[0])]
+    [InlineData(27, "GB", false, new string[0])]
+    [InlineData(27, "GM", null, new string[0])]
+    [InlineData(27, "GM", true, new string[0])]
+    [InlineData(27, "GM", false, new string[0])]
+    public async Task FindImplementations_StaticFilter_EdgeKinds(
+        int line, string token, bool? staticFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            new Dictionary<string, string> { ["Edges.cs"] = StaticEdgeSource });
+        var (targetLine, targetColumn) = StaticEdgePosition(line, token);
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Edges.cs"),
+            Line = targetLine,
+            Column = targetColumn,
+            StaticFilter = staticFilter
+        });
+
+        Assert.Equal(
+            expected.OrderBy(n => n, StringComparer.Ordinal),
+            data.Implementations.Select(i => i.FullyQualifiedName).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(expected.Length, data.TotalCount);
+        Assert.False(data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    public async Task FindImplementations_StaticFilter_PartialMember_ReportedOnceAtDefiningDeclaration(bool? staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            new Dictionary<string, string> { ["Edges.cs"] = StaticEdgeSource });
+        var (targetLine, targetColumn) = StaticEdgePosition(5, "SCreate");
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Edges.cs"),
+            Line = targetLine,
+            Column = targetColumn,
+            StaticFilter = staticFilter
+        });
+
+        var part = Assert.Single(data.Implementations, i => i.FullyQualifiedName == "App.Edges.Part.SCreate()");
+        Assert.Equal(18, part.Line);
+    }
+
+    // Implementations in other projects of the solution are returned and filtered like local ones.
+    [SkippableTheory]
+    [InlineData("IRunner", null, new[] { "L1", "P1", "P2", "P3" })]
+    [InlineData("IRunner", false, new[] { "L1", "P1", "P2", "P3" })]
+    [InlineData("IRunner", true, new string[0])]
+    [InlineData("Run", null, new[] { "L1.Run()", "P1.Run()", "P2.Run()", "P3.Run()" })]
+    [InlineData("Run", false, new[] { "L1.Run()", "P1.Run()", "P2.Run()", "P3.Run()" })]
+    [InlineData("Run", true, new string[0])]
+    public async Task FindImplementations_StaticFilter_OtherProjects_AreReturnedAndFiltered(
+        string symbolName, bool? staticFilter, string[] expected)
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.LibInterfacePath,
+            SymbolName = symbolName,
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            expected,
+            result.Data!.Implementations.Select(i => i.FullyQualifiedName).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    // Implementations declared only in metadata are never listed. For a metadata target (here
+    // System.IDisposable) they are still counted in TotalCount when no location filter applies, so
+    // Truncated is true; staticFilter true drops them all (implementing types are never static).
+    // Pins current behavior.
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FindImplementations_StaticFilter_MetadataImplementations_AreNotListed(bool? staticFilter)
+    {
+        const string source = """
+            namespace App.Meta
+            {
+                public class Disp : System.IDisposable { public void Dispose() { } }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(
+            new Dictionary<string, string> { ["Meta.cs"] = source });
+
+        var data = await RunStaticFilterAsync(workspace, new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Meta.cs"),
+            Line = 3,
+            Column = source.Split('\n')[2].IndexOf("IDisposable", StringComparison.Ordinal) + 1,
+            StaticFilter = staticFilter
+        });
+
+        Assert.Equal("System.IDisposable", data.FullyQualifiedName);
+        if (staticFilter == true)
+        {
+            Assert.Empty(data.Implementations);
+            Assert.Equal(0, data.TotalCount);
+            Assert.False(data.Truncated);
+        }
+        else
+        {
+            var only = Assert.Single(data.Implementations);
+            Assert.Equal("App.Meta.Disp", only.FullyQualifiedName);
+            Assert.True(data.TotalCount > 1);
+            Assert.True(data.Truncated);
+        }
+    }
+
+    #endregion
+
     private static List<string> SortedNames(IEnumerable<ImplementationInfo> implementations) =>
         implementations.Select(i => i.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
 
