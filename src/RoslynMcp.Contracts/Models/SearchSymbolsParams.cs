@@ -80,4 +80,19 @@ public sealed class SearchSymbolsParams
     /// set. Omit or leave blank for no accessibility filter.
     /// </summary>
     public string? AccessibilityFilter { get; init; }
+
+    /// <summary>
+    /// Optional static / instance filter. <c>true</c> keeps only symbols whose <c>ISymbol.IsStatic</c> is
+    /// <c>true</c> (static classes, static methods / properties / fields / events, extension methods, and
+    /// <c>const</c> fields and enum members, which Roslyn reports as static); <c>false</c> keeps only
+    /// symbols whose <c>ISymbol.IsStatic</c> is <c>false</c> (instance members and every non-static type:
+    /// classes, structs, interfaces, enums, delegates, records). Namespaces are neither static nor
+    /// instance and never match either value. Applied together with the other filters (a symbol must
+    /// satisfy all that are set) and before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the static-filtered set. No match gives empty <c>Symbols</c>,
+    /// <c>TotalCount = 0</c>, <c>Truncated = false</c>. Omit for no static filter. A non-boolean value
+    /// (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>) is rejected by the
+    /// <c>search_symbols</c> tool with <c>INTERNAL_ERROR</c>.
+    /// </summary>
+    public bool? StaticFilter { get; init; }
 }

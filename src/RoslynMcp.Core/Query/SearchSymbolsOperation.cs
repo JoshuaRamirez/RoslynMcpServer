@@ -13,7 +13,7 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Searches for symbols by name pattern across all projects in the solution (or one project when
 /// <see cref="SearchSymbolsParams.ProjectPath"/> is set), optionally restricted by kind, file, namespace,
-/// and declared accessibility.
+/// declared accessibility, and static / instance.
 /// Uses Roslyn's Compilation.GetSymbolsWithName for efficient symbol lookup.
 /// </summary>
 public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsParams, SearchSymbolsResult>
@@ -60,6 +60,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
         var exactMatch = @params.ExactMatch == true;
         var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
         var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+        var staticFilter = @params.StaticFilter;
 
         var entries = new List<SymbolSearchEntry>();
         var totalCount = 0;
@@ -112,6 +113,12 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                 // reports them as Public), so they never match a named filter.
                 if (accessibilityFilter.HasValue &&
                     (symbol is INamespaceSymbol || symbol.DeclaredAccessibility != accessibilityFilter.Value))
+                    continue;
+
+                // Apply static filter (ISymbol.IsStatic; const fields and enum members count as static),
+                // also before maxResults. Namespaces are neither static nor instance, so they never match.
+                if (staticFilter.HasValue &&
+                    (symbol is INamespaceSymbol || symbol.IsStatic != staticFilter.Value))
                     continue;
 
                 var fqn = symbol.ToDisplayString();
