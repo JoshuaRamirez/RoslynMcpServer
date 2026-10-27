@@ -2518,7 +2518,9 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToInterfaceProperty(property),
-            IndexerDeclarationSyntax indexer => ToInterfaceIndexer(indexer),
+            IndexerDeclarationSyntax indexer => HierarchyInterfaceMemberHelpers.ToSignatureOnlyInterfaceIndexer(
+                indexer,
+                "Indexer cannot be pushed to an interface because it has no public accessors."),
             EventDeclarationSyntax eventDecl when eventDecl.AccessorList != null => eventDecl
                 .WithModifiers(SyntaxFactory.TokenList())
                 .NormalizeWhitespace(),
@@ -2550,73 +2552,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .NormalizeWhitespace();
         }
 
-        var accessors = new List<AccessorDeclarationSyntax>();
-        if (property.AccessorList != null)
-        {
-            foreach (var accessor in property.AccessorList.Accessors)
-            {
-                accessors.Add(accessor
-                    .WithModifiers(SyntaxFactory.TokenList())
-                    .WithBody(null)
-                    .WithExpressionBody(null)
-                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-            }
-        }
-        else
-        {
-            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-        }
-
-        return property
-            .WithModifiers(SyntaxFactory.TokenList())
-            .WithExpressionBody(null)
-            .WithSemicolonToken(default)
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
-            .NormalizeWhitespace();
-    }
-
-    private static IndexerDeclarationSyntax ToInterfaceIndexer(IndexerDeclarationSyntax indexer)
-    {
-        var accessors = new List<AccessorDeclarationSyntax>();
-        if (indexer.AccessorList != null)
-        {
-            foreach (var accessor in indexer.AccessorList.Accessors)
-            {
-                // Same public-accessor gate as extract_interface
-                // CreateInterfaceIndexer / pull_members_up: a private /
-                // protected / internal setter must not become a public
-                // interface set;.
-                if (AccessibilityModifiers.HasNonPublicAccessibility(accessor))
-                    continue;
-
-                accessors.Add(accessor
-                    .WithModifiers(SyntaxFactory.TokenList())
-                    .WithBody(null)
-                    .WithExpressionBody(null)
-                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-            }
-        }
-        else
-        {
-            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-        }
-
-        if (accessors.Count == 0)
-        {
-            throw new RefactoringException(
-                ErrorCodes.MemberNotInterfaceCompatible,
-                "Indexer cannot be pushed to an interface because it has no public accessors.");
-        }
-
-        return indexer
-            .WithModifiers(SyntaxFactory.TokenList())
-            .WithExplicitInterfaceSpecifier(null)
-            .WithExpressionBody(null)
-            .WithSemicolonToken(default)
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
-            .NormalizeWhitespace();
+        return HierarchyInterfaceMemberHelpers.ToSignatureOnlyInterfaceProperty(property);
     }
 
     private static MemberDeclarationSyntax ConvertToAbstract(MemberDeclarationSyntax member) =>
