@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-10-16
+## [0.11.0] - 2026-10-27
 
 ### Added
 
@@ -26,6 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- Folded ImplementAbstract / ImplementInterface duplicated `NamesMatch` onto shared `MemberSignatureMatchHelpers.NamesMatch` (#2963). No behavior change.
+- Folded MakeStatic / MakeNonStatic duplicated `Validate` onto shared `StaticMethodHelpers.ValidateParams` (#2985). No behavior change.
+- Folded AnalyzeControlFlow / AnalyzeDataFlow duplicated `Validate` onto shared `RegionParamsHelpers.ValidateRegionParams` (#3000). No behavior change.
+- Folded result-file filter validation duplicated across query operations onto shared `ResultFileFilter.Validate` (#3005). No behavior change.
 - Folded FieldCoverage / LocalCoverage duplicated declarator coverage logic onto new shared `DeclaratorCoverage`. No behavior change. (#2947, PR #2948)
 - Folded ExtractMethod / ExtractConstant / GenerateMethodStub private visibility-token parsing onto shared `VisibilityTokenHelpers` (extended with an optional empty/unknown default keyword and optional trailing space trivia); GenerateProperty / GenerateConstructor keep their `public` default. No behavior change. (#2940, PR #2942)
 - Folded the optional `nameFilter` normalization / matching duplicated across six query operations (`find_callers`, `find_implementations`, `find_references`, `get_document_outline`, `get_symbol_info`, `get_type_hierarchy`) onto new shared `NameFilterMatcher` (null/blank → no filter; trimmed; `OrdinalIgnoreCase` substring). No behavior change. (#2923, PR #2928)
