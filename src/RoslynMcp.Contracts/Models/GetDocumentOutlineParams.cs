@@ -86,4 +86,20 @@ public sealed class GetDocumentOutlineParams
     /// declaration).
     /// </summary>
     public string? NamespaceFilter { get; init; }
+
+    /// <summary>
+    /// Optional static filter. <c>true</c> keeps outline entries whose declared symbol has
+    /// <c>ISymbol.IsStatic</c> true (static methods, properties, fields, events, static constructors and
+    /// static classes; <c>const</c> fields and enum members count as static, as Roslyn reports them);
+    /// <c>false</c> keeps entries whose declared symbol is not static (instance members, instance
+    /// constructors, finalizers, non-static types, delegates); <c>null</c> keeps every entry. Namespaces
+    /// never match either value. Non-matching ancestors are kept only as containers and subtrees with no
+    /// match are dropped, exactly like <see cref="KindFilter"/>. Combined with <see cref="KindFilter"/> /
+    /// <see cref="NameFilter"/> / <see cref="AccessibilityFilter"/> / <see cref="NamespaceFilter"/>, an entry
+    /// matches only when it satisfies all of them. Applied before <see cref="MaxDepth"/> and
+    /// <see cref="MaxResults"/>, so <c>TotalCount</c> / <c>Truncated</c> reflect the filtered tree; no match
+    /// returns an empty outline. A non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or
+    /// <c>1</c>) is rejected by the <c>get_document_outline</c> tool with <c>INTERNAL_ERROR</c>.
+    /// </summary>
+    public bool? StaticFilter { get; init; }
 }

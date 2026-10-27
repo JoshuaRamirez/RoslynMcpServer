@@ -14,8 +14,9 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Gets a structured outline of all declarations in a document.
 /// Pure syntax traversal; the semantic model is requested only when
-/// <see cref="GetDocumentOutlineParams.AccessibilityFilter"/> or <see cref="GetDocumentOutlineParams.NamespaceFilter"/>
-/// is set, to resolve declared accessibility / the declared symbol's namespace.
+/// <see cref="GetDocumentOutlineParams.AccessibilityFilter"/>, <see cref="GetDocumentOutlineParams.NamespaceFilter"/>
+/// or <see cref="GetDocumentOutlineParams.StaticFilter"/> is set, to resolve declared accessibility / the declared
+/// symbol's namespace / whether it is static.
 /// </summary>
 public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocumentOutlineParams, GetDocumentOutlineResult>
 {
@@ -68,7 +69,8 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         // resolved semantically.
         var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
         var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
-        var declarations = accessibilityFilter.HasValue || namespaceFilter != null
+        var staticFilter = @params.StaticFilter;
+        var declarations = accessibilityFilter.HasValue || namespaceFilter != null || staticFilter.HasValue
             ? new Dictionary<OutlineEntry, SyntaxNode>(ReferenceEqualityComparer.Instance)
             : null;
 
@@ -106,6 +108,7 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
         Func<OutlineEntry, bool>? accessibilityMatches = null;
         Func<OutlineEntry, bool>? namespaceMatches = null;
+        Func<OutlineEntry, bool>? staticMatches = null;
         if (declarations != null)
         {
             var semanticModel = await document.GetSemanticModelAsync(cancellationToken)
@@ -121,14 +124,22 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
                 namespaceMatches = entry => OutlineNamespaceMatches(
                     entry, namespaceFilter, declarations, semanticModel, cancellationToken);
             }
+
+            if (staticFilter.HasValue)
+            {
+                staticMatches = entry => OutlineStaticMatches(
+                    entry, staticFilter.Value, declarations, semanticModel, cancellationToken);
+            }
         }
 
-        if (kindFilter.HasValue || nameFilter != null || accessibilityMatches != null || namespaceMatches != null)
+        if (kindFilter.HasValue || nameFilter != null || accessibilityMatches != null || namespaceMatches != null ||
+            staticMatches != null)
         {
             Func<OutlineEntry, bool> matches = entry =>
                 OutlineEntryMatches(entry, kindFilter, nameFilter) &&
                 (accessibilityMatches == null || accessibilityMatches(entry)) &&
-                (namespaceMatches == null || namespaceMatches(entry));
+                (namespaceMatches == null || namespaceMatches(entry)) &&
+                (staticMatches == null || staticMatches(entry));
             if (namespaceMatches != null && declarations != null)
                 matches = WithEnclosingNamespaceContainers(matches, declarations);
 
@@ -296,8 +307,27 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
     }
 
     /// <summary>
+    /// Whether an outline entry's declared symbol has <see cref="ISymbol.IsStatic"/> equal to
+    /// <paramref name="wantStatic"/> (Roslyn reports <c>const</c> fields and enum members as static).
+    /// Namespaces and entries without a tracked declaration or a declared symbol never match.
+    /// </summary>
+    private static bool OutlineStaticMatches(
+        OutlineEntry entry,
+        bool wantStatic,
+        IReadOnlyDictionary<OutlineEntry, SyntaxNode> declarations,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (!declarations.TryGetValue(entry, out var node))
+            return false;
+
+        var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+        return symbol is not null and not INamespaceSymbol && symbol.IsStatic == wantStatic;
+    }
+
+    /// <summary>
     /// Records <paramref name="node"/> as the declaration of <paramref name="entry"/> when
-    /// <paramref name="declarations"/> is tracked (accessibilityFilter or namespaceFilter set) and returns the entry.
+    /// <paramref name="declarations"/> is tracked (accessibilityFilter, namespaceFilter or staticFilter set) and returns the entry.
     /// </summary>
     private static OutlineEntry Track(OutlineEntry entry, SyntaxNode node, Dictionary<OutlineEntry, SyntaxNode>? declarations)
     {

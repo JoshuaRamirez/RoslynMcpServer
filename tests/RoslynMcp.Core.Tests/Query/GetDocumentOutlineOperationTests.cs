@@ -2047,6 +2047,181 @@ public class GetDocumentOutlineOperationTests
         return 1 + entries.Max(e => MaxTreeDepth(e.Children));
     }
 
+    #region Execute staticFilter
+
+    private const string StaticSource = """
+        namespace App
+        {
+            public static class Util
+            {
+                public static void Help() { }
+                public const int Max = 1;
+            }
+
+            public class Mixer
+            {
+                static Mixer() { }
+                public Mixer() { }
+                public static int Counter;
+                public int Instance;
+                public static string Name { get; set; } = "";
+                public string Label { get; set; } = "";
+                public static void Create() { }
+                public void Run() { }
+                public static event System.EventHandler? Changed;
+                public enum Mode { A }
+            }
+
+            public delegate void Handler();
+        }
+        """;
+
+    [Fact]
+    public void StaticFilter_DefaultsToNull()
+    {
+        var @params = new GetDocumentOutlineParams { SourceFile = "/tmp/x.cs" };
+        Assert.Null(@params.StaticFilter);
+    }
+
+    [SkippableFact]
+    public async Task Execute_StaticFilterOmitted_ReturnsFullOutline()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams { SourceFile = workspace.SourcePath });
+
+        Assert.True(result.Success);
+        Assert.Equal(17, result.Data!.TotalCount);
+        Assert.Equal(17, Flatten(result.Data.Entries).Count);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task Execute_StaticFilterTrue_KeepsStaticEntriesPlusContainers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        // Static class Util matches itself; non-static Mixer and enum Mode are kept only as containers.
+        // The static constructor, const field and enum member count as static.
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace"), ("Util", "Class"), ("Help", "Method"), ("Max", "Constant"),
+                ("Mixer", "Class"), ("Mixer", "Constructor"), ("Create", "Method"), ("Name", "Property"),
+                ("Counter", "Field"), ("Changed", "Event"), ("Mode", "Enum"), ("A", "EnumMember")
+            },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
+        Assert.Equal(12, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task Execute_StaticFilterFalse_KeepsNonStaticEntriesPlusContainers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            StaticFilter = false
+        });
+
+        Assert.True(result.Success);
+        // Static class Util (and its static members) is dropped; the enum type and the delegate are
+        // non-static, while the enum member is static and dropped.
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace"), ("Mixer", "Class"), ("Mixer", "Constructor"), ("Run", "Method"),
+                ("Label", "Property"), ("Instance", "Field"), ("Mode", "Enum"), ("Handler", "Delegate")
+            },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
+        Assert.Equal(8, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task Execute_StaticFilterCombinedWithKindFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Method",
+            StaticFilter = true
+        });
+
+        Assert.True(result.Success);
+        // Constructors match Method, so the static constructor is kept; the instance one is not.
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace"), ("Util", "Class"), ("Help", "Method"),
+                ("Mixer", "Class"), ("Mixer", "Constructor"), ("Create", "Method")
+            },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
+        Assert.Equal(6, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task Execute_StaticFilterAppliedBeforeMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            StaticFilter = true,
+            MaxResults = 3
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "App", "Util", "Help" }, Flatten(result.Data!.Entries).Select(e => e.Name));
+        Assert.Equal(12, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task Execute_StaticFilterNoMatch_NamespacesNeverMatch_ReturnsEmptyOutline()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace N
+            {
+                public static class S
+                {
+                    public static void M() { }
+                }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            StaticFilter = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Entries);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    #endregion
+
     private static List<(string Name, string Kind, int Line, int Column, string? Accessibility, string? ReturnType, int Depth)> Flatten(
         IReadOnlyList<OutlineEntry> entries, int depth = 1)
     {
