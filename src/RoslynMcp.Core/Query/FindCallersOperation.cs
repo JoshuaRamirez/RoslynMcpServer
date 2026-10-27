@@ -51,17 +51,7 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (!string.IsNullOrWhiteSpace(@params.CallerFile))
-        {
-            if (!PathResolver.IsAbsolutePath(@params.CallerFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "callerFile must be an absolute path.");
-
-            if (!PathResolver.IsValidCSharpFilePath(@params.CallerFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "callerFile must be a .cs file.");
-
-            if (!File.Exists(@params.CallerFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.CallerFile}");
-        }
+        ResultFileFilter.Validate(@params.CallerFile, "callerFile");
 
         ProjectPathFilter.Validate(@params.ProjectPath);
 

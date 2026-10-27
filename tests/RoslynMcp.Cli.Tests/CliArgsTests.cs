@@ -207,6 +207,16 @@ public class CliArgsTests
         Assert.Equal("Handle", result.Options["name-filter"]);
     }
 
+
+    [Fact]
+    public void GetSymbolInfo_NamespaceFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-symbol-info", "--source-file", "/src/Widget.cs", "--symbol-name", "Widget", "--namespace-filter", "App.Services"]);
+        Assert.Equal("get-symbol-info", result.ToolName);
+        Assert.Equal("/src/Widget.cs", result.Options["source-file"]);
+        Assert.Equal("App.Services", result.Options["namespace-filter"]);
+    }
+
     [Fact]
     public void FindImplementations_NamespaceFilterOption_ParsesValue()
     {
@@ -376,6 +386,24 @@ public class CliArgsTests
         Assert.Equal("get-diagnostics", result.ToolName);
         Assert.Equal("Warning", result.Options["severity-filter"]);
         Assert.Equal("never used", result.Options["message-filter"]);
+    }
+
+    [Fact]
+    public void GetDiagnostics_KindFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Warning", "--kind-filter", "Method"]);
+        Assert.Equal("get-diagnostics", result.ToolName);
+        Assert.Equal("Warning", result.Options["severity-filter"]);
+        Assert.Equal("Method", result.Options["kind-filter"]);
+    }
+
+    [Fact]
+    public void GetDiagnostics_NameFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--severity-filter", "Warning", "--name-filter", "Handle"]);
+        Assert.Equal("get-diagnostics", result.ToolName);
+        Assert.Equal("Warning", result.Options["severity-filter"]);
+        Assert.Equal("Handle", result.Options["name-filter"]);
     }
 }
 

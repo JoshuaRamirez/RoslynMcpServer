@@ -53,17 +53,7 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
 
-        if (!string.IsNullOrWhiteSpace(@params.ReferenceFile))
-        {
-            if (!PathResolver.IsAbsolutePath(@params.ReferenceFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "referenceFile must be an absolute path.");
-
-            if (!PathResolver.IsValidCSharpFilePath(@params.ReferenceFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "referenceFile must be a .cs file.");
-
-            if (!File.Exists(@params.ReferenceFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.ReferenceFile}");
-        }
+        ResultFileFilter.Validate(@params.ReferenceFile, "referenceFile");
 
         ProjectPathFilter.Validate(@params.ProjectPath);
 

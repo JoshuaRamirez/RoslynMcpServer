@@ -351,13 +351,23 @@ internal sealed class SiteEnclosingSymbolResolver
     /// Declared symbol for <paramref name="node"/>. A field / event-field declaration declares its
     /// symbols on its variable declarators, so a site on the declaration's type, modifiers, or
     /// attributes resolves through its first declarator (every declarator shares the declaration's
-    /// accessibility) instead of walking out to the containing type.
+    /// accessibility) instead of walking out to the containing type. The expression body of an
+    /// expression-bodied property or indexer (<c>int P => Missing;</c>) is the body of its implicit
+    /// getter, so a site inside it resolves to that getter — the same accessor (Method) site as the
+    /// equivalent diagnostic in a block-bodied <c>get { return Missing; }</c> or arrow-bodied
+    /// <c>get => Missing;</c> accessor, and the getter the semantic model reports as the enclosing
+    /// symbol there. Sites on the declaration itself (its type, name, parameters, or initializer) do
+    /// not pass through the arrow clause and still resolve to the property / indexer.
     /// </summary>
     private static ISymbol? GetDeclaredSymbol(
         SemanticModel semanticModel, SyntaxNode node, CancellationToken cancellationToken)
     {
         if (node is BaseFieldDeclarationSyntax { Declaration.Variables: [var declarator, ..] })
             return semanticModel.GetDeclaredSymbol(declarator, cancellationToken);
+
+        if (node is ArrowExpressionClauseSyntax { Parent: BasePropertyDeclarationSyntax expressionBodied }
+            && expressionBodied is PropertyDeclarationSyntax or IndexerDeclarationSyntax)
+            return (semanticModel.GetDeclaredSymbol(expressionBodied, cancellationToken) as IPropertySymbol)?.GetMethod;
 
         return semanticModel.GetDeclaredSymbol(node, cancellationToken);
     }

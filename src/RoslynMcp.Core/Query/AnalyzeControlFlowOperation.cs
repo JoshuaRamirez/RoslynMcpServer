@@ -31,40 +31,15 @@ public sealed class AnalyzeControlFlowOperation : QueryOperationBase<AnalyzeCont
     /// <summary>
     /// Validates analyze-control-flow parameters. Internal so tests can
     /// exercise input rules without loading a workspace.
+    /// Thin forwarder to <see cref="RegionParamsHelpers.ValidateRegionParams"/>.
     /// </summary>
-    internal static void Validate(AnalyzeControlFlowParams @params)
-    {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
-        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
-
-        if (@params.StartLine < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "startLine must be >= 1.");
-
-        if (@params.EndLine < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "endLine must be >= 1.");
-
-        if (@params.StartLine > @params.EndLine)
-            throw new RefactoringException(ErrorCodes.InvalidRegion, "startLine must be <= endLine.");
-
-        if (@params.StartColumn.HasValue && @params.StartColumn.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "startColumn must be >= 1.");
-
-        if (@params.EndColumn.HasValue && @params.EndColumn.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "endColumn must be >= 1.");
-
-        if (@params.StartLine == @params.EndLine &&
-            @params.StartColumn.HasValue &&
-            @params.EndColumn.HasValue &&
-            @params.StartColumn.Value > @params.EndColumn.Value)
-        {
-            throw new RefactoringException(ErrorCodes.InvalidRegion, "startColumn must be <= endColumn when both are set on the same line.");
-        }
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-    }
+    internal static void Validate(AnalyzeControlFlowParams @params) =>
+        RegionParamsHelpers.ValidateRegionParams(
+            @params.SourceFile,
+            @params.StartLine,
+            @params.EndLine,
+            @params.StartColumn,
+            @params.EndColumn);
 
     /// <inheritdoc />
     protected override async Task<QueryResult<AnalyzeControlFlowResult>> ExecuteCoreAsync(

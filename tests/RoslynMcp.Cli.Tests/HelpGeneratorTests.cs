@@ -2527,6 +2527,46 @@ public class HelpGeneratorTests
         Assert.Contains("--message-filter", help[optionalIdx..]);
     }
 
+
+    [Fact]
+    public void GenerateToolHelp_GetDiagnostics_ShowsNameFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("nameFilter", tool.Description, StringComparison.Ordinal);
+        Assert.Contains("ISymbol.Name", tool.Description, StringComparison.Ordinal);
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        if (requiredIdx >= 0)
+            Assert.DoesNotContain("--name-filter", help[requiredIdx..optionalIdx]);
+
+        Assert.Contains("--name-filter", help[optionalIdx..]);
+    }
+
+    [Fact]
+    public void GenerateToolHelp_GetDiagnostics_ShowsKindFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("kindFilter", tool.Description, StringComparison.Ordinal);
+        Assert.Contains("SymbolKindMapper", tool.Description, StringComparison.Ordinal);
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        if (requiredIdx >= 0)
+            Assert.DoesNotContain("--kind-filter", help[requiredIdx..optionalIdx]);
+
+        Assert.Contains("--kind-filter", help[optionalIdx..]);
+    }
+
+
     [Fact]
     public void GenerateToolHelp_GetSymbolInfo_ShowsMaxResults()
     {
@@ -2610,6 +2650,27 @@ public class HelpGeneratorTests
 
         Assert.DoesNotContain("--name-filter", requiredSection);
         Assert.Contains("--name-filter", optionalSection);
+    }
+
+
+    [Fact]
+    public void GenerateToolHelp_GetSymbolInfo_ShowsNamespaceFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-symbol-info")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("namespaceFilter (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.DoesNotContain("--namespace-filter", requiredSection);
+        Assert.Contains("--namespace-filter", optionalSection);
     }
 
     [Fact]

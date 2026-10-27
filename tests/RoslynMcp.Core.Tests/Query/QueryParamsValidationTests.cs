@@ -1,6 +1,7 @@
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
+using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Refactoring.Extract;
@@ -389,15 +390,7 @@ public class QueryParamsValidationTests
 
     private static void ValidateFindReferencesReferenceFile(FindReferencesParams p)
     {
-        if (!string.IsNullOrWhiteSpace(p.ReferenceFile))
-        {
-            if (!PathResolver.IsAbsolutePath(p.ReferenceFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "referenceFile must be an absolute path.");
-            if (!PathResolver.IsValidCSharpFilePath(p.ReferenceFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "referenceFile must be a .cs file.");
-            if (!File.Exists(p.ReferenceFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.ReferenceFile}");
-        }
+        ResultFileFilter.Validate(p.ReferenceFile, "referenceFile");
     }
 
     private static void ValidateFindReferencesParams(FindReferencesParams p)
@@ -422,15 +415,7 @@ public class QueryParamsValidationTests
 
     private static void ValidateGoToDefinitionDefinitionFile(GoToDefinitionParams p)
     {
-        if (!string.IsNullOrWhiteSpace(p.DefinitionFile))
-        {
-            if (!PathResolver.IsAbsolutePath(p.DefinitionFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "definitionFile must be an absolute path.");
-            if (!PathResolver.IsValidCSharpFilePath(p.DefinitionFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "definitionFile must be a .cs file.");
-            if (!File.Exists(p.DefinitionFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.DefinitionFile}");
-        }
+        ResultFileFilter.Validate(p.DefinitionFile, "definitionFile");
     }
 
     private static void ValidateGoToDefinitionParams(GoToDefinitionParams p)
@@ -467,15 +452,7 @@ public class QueryParamsValidationTests
 
     private static void ValidateFindImplementationsImplementationFile(FindImplementationsParams p)
     {
-        if (!string.IsNullOrWhiteSpace(p.ImplementationFile))
-        {
-            if (!PathResolver.IsAbsolutePath(p.ImplementationFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "implementationFile must be an absolute path.");
-            if (!PathResolver.IsValidCSharpFilePath(p.ImplementationFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "implementationFile must be a .cs file.");
-            if (!File.Exists(p.ImplementationFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.ImplementationFile}");
-        }
+        ResultFileFilter.Validate(p.ImplementationFile, "implementationFile");
     }
 
     private static void ValidateFindImplementationsParams(FindImplementationsParams p)
@@ -1106,15 +1083,7 @@ public class QueryParamsValidationTests
 
     private static void ValidateFindCallersCallerFile(FindCallersParams p)
     {
-        if (!string.IsNullOrWhiteSpace(p.CallerFile))
-        {
-            if (!PathResolver.IsAbsolutePath(p.CallerFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "callerFile must be an absolute path.");
-            if (!PathResolver.IsValidCSharpFilePath(p.CallerFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "callerFile must be a .cs file.");
-            if (!File.Exists(p.CallerFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.CallerFile}");
-        }
+        ResultFileFilter.Validate(p.CallerFile, "callerFile");
     }
 
     private static void ValidateFindCallersParams(FindCallersParams p)
@@ -1139,15 +1108,7 @@ public class QueryParamsValidationTests
 
     private static void ValidateGetTypeHierarchyDerivedFile(GetTypeHierarchyParams p)
     {
-        if (!string.IsNullOrWhiteSpace(p.DerivedFile))
-        {
-            if (!PathResolver.IsAbsolutePath(p.DerivedFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "derivedFile must be an absolute path.");
-            if (!PathResolver.IsValidCSharpFilePath(p.DerivedFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "derivedFile must be a .cs file.");
-            if (!File.Exists(p.DerivedFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.DerivedFile}");
-        }
+        ResultFileFilter.Validate(p.DerivedFile, "derivedFile");
     }
 
     private static void ValidateGetTypeHierarchyParams(GetTypeHierarchyParams p)

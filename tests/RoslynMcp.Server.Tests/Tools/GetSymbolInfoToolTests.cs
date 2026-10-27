@@ -176,6 +176,28 @@ public class GetSymbolInfoToolTests
         Assert.Contains("applied before maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
+
+    [Fact]
+    public void GetDefinition_NamespaceFilter_IsOptionalString()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var namespaceFilter = doc.RootElement.GetProperty("properties").GetProperty("namespaceFilter");
+
+        Assert.Equal("string", namespaceFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("namespaceFilter", required);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsNamespaceFilter()
+    {
+        Assert.Contains("namespaceFilter", _tool.Description, StringComparison.Ordinal);
+        Assert.Contains("applied before maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void GetDefinition_DescriptionMentionsKindFilter()
     {
@@ -250,4 +272,66 @@ public class GetSymbolInfoToolTests
     }
 
     #endregion
+
+    [Fact]
+    public void GetDefinition_StaticFilter_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var staticFilter = doc.RootElement.GetProperty("properties").GetProperty("staticFilter");
+
+        Assert.Equal("boolean", staticFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("staticFilter", required);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsStaticFilter()
+    {
+        Assert.Contains("staticFilter", _tool.Description, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("\"yes\"")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    public async Task ExecuteAsync_StaticFilterNonBoolean_ReturnsInternalError(string rawValue)
+    {
+        // A non-boolean staticFilter fails deserialization before workspace creation.
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Foo.cs",
+                "symbolName": "Foo",
+                "staticFilter": {{rawValue}}
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = GetResultText(result);
+        Assert.Contains("INTERNAL_ERROR", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_StaticFilterBoolean_ParsesAndReachesWorkspace()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Foo.cs",
+                "symbolName": "Foo",
+                "staticFilter": false
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = GetResultText(result);
+        Assert.Contains("Workspace creation should not have been attempted", text, StringComparison.Ordinal);
+    }
 }

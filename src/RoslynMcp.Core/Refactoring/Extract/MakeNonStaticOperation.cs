@@ -38,60 +38,15 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
     /// Validates make-non-static parameters. Internal so tests can exercise
     /// input rules without loading a workspace.
     /// </summary>
-    internal static void Validate(MakeNonStaticParams @params)
-    {
-        if (@params.AllFiles)
-        {
-            if (@params.StartLine.HasValue ||
-                @params.StartColumn.HasValue ||
-                @params.EndLine.HasValue ||
-                @params.EndColumn.HasValue ||
-                !string.IsNullOrWhiteSpace(@params.SymbolName))
-            {
-                throw new RefactoringException(
-                    ErrorCodes.MissingRequiredParam,
-                    "allFiles cannot be combined with startLine, startColumn, endLine, endColumn, or symbolName.");
-            }
-
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
-        if (!@params.StartLine.HasValue)
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startLine is required.");
-
-        if (!@params.StartColumn.HasValue)
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startColumn is required.");
-
-        if (!@params.EndLine.HasValue)
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endLine is required.");
-
-        if (!@params.EndColumn.HasValue)
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endColumn is required.");
-
-        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
-
-        if (@params.StartLine.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "startLine must be >= 1.");
-
-        if (@params.StartColumn.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "startColumn must be >= 1.");
-
-        if (@params.EndLine.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "endLine must be >= 1.");
-
-        if (@params.EndColumn.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "endColumn must be >= 1.");
-
-        if (@params.EndLine.Value < @params.StartLine.Value ||
-            (@params.EndLine.Value == @params.StartLine.Value && @params.EndColumn.Value < @params.StartColumn.Value))
-            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-    }
+    internal static void Validate(MakeNonStaticParams @params) =>
+        StaticMethodHelpers.ValidateParams(
+            @params.AllFiles,
+            @params.SourceFile,
+            @params.StartLine,
+            @params.StartColumn,
+            @params.EndLine,
+            @params.EndColumn,
+            @params.SymbolName);
 
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
