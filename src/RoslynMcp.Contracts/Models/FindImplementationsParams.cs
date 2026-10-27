@@ -145,7 +145,8 @@ public sealed class FindImplementationsParams
     /// implementations whose <c>ISymbol.IsStatic</c> is <c>true</c> (e.g. the static implementations
     /// of a C# 11 <c>static abstract</c> / <c>static virtual</c> interface member), <c>false</c> keeps
     /// only instance implementations. Same <c>ISymbol.IsStatic</c> test as <c>get_symbol_info</c> /
-    /// <c>get_document_outline</c> / <c>search_symbols</c> <c>staticFilter</c>. Implementing types are
+    /// <c>get_document_outline</c> / <c>search_symbols</c> / <c>find_callers</c> / <c>find_references</c> /
+    /// <c>get_diagnostics</c> <c>staticFilter</c>. Implementing types are
     /// never static (a static class cannot implement an interface or derive from a class), so for type
     /// targets <c>true</c> returns an empty success while <c>false</c> or <c>null</c> keeps every
     /// implementing type. Unlike <c>find_references</c> / <c>find_callers</c> / <c>get_diagnostics</c>

@@ -180,6 +180,12 @@ public sealed class GetDiagnosticsParams
     /// type it is attached to, not the containing type — a member's return or parameter type, an attribute on
     /// a member or on a type, and a field, <c>const</c>, or auto-property initializer follow that member's or
     /// type's own staticness, as does the body of an expression-bodied property (judged on its getter).
+    /// Likewise unlike <c>find_references</c>, a top-level type's base list (<c>class B1 : MissingBase</c> is
+    /// kept by <c>false</c>) and its type-parameter constraints are judged on the type (<c>find_references</c>
+    /// treats both as namespace-level and never matches them), a method's type-parameter constraints are judged
+    /// on the method, and doc-comment diagnostics (<c>CS1574</c> unresolved <c>cref</c>, <c>CS1591</c> missing
+    /// XML comment) are judged on the documented member or type (<c>find_references</c> judges a member's
+    /// <c>cref</c> on the containing type).
     /// Lambdas and local functions, including <c>static</c> lambdas, <c>static</c> local functions, and a
     /// non-static local function inside a static method, are looked through to the declaring member and judged
     /// on its staticness (unlike <c>find_callers</c>, which judges a local function as its own calling symbol).
@@ -189,9 +195,22 @@ public sealed class GetDiagnosticsParams
     /// are static, a default interface member is instance; members of a nested type are judged on their own
     /// staticness, not the containing type's (instance members of a class nested in a static class are kept by
     /// <c>false</c>); records, record structs, and structs are judged like classes.
+    /// Parser / missing-token errors are judged on the declaration containing the missing token (<c>CS1002</c>
+    /// on the <c>}</c> of <c>static void M() { int x = 1 }</c> is kept by <c>true</c>). Enum members are
+    /// static: a diagnostic on an enum member or its initializer (e.g. <c>CS1591</c> on <c>E.A</c>, or
+    /// <c>B = Missing</c>) is kept by <c>true</c>, while one on the enum type itself is kept by <c>false</c>. Explicit
+    /// implementations of instance interface members are instance, while an explicit implementation of a static
+    /// abstract / static virtual member is static, as are static abstract / static virtual interface members
+    /// themselves. Class and record primary-constructor parameters (and a primary constructor's base-type
+    /// arguments) follow the instance constructor / type, so they are kept by <c>false</c>; a
+    /// <c>: this(Missing)</c> initializer follows its constructor; default parameter values follow their member;
+    /// field-like event initializers follow the event. A <c>#warning</c> / <c>#error</c> directive between
+    /// members of a type is judged on that type, and one inside a member body on that member.
     /// </para>
     /// <para>
-    /// Namespace-level sites — unused usings and top-level statements, including a <c>static</c> lambda or
+    /// Namespace-level sites — unused usings, <c>[assembly: X]</c> attributes, <c>#warning</c> / <c>#error</c>
+    /// directives between namespace-level declarations (outside any type), and top-level statements, including
+    /// a <c>static</c> lambda or
     /// <c>static</c> local function declared at top level (enclosed by the synthesized <c>&lt;Main&gt;$</c>,
     /// which <c>find_callers</c> counts as static) — never match either value, and diagnostics with no
     /// in-source location (e.g. CS5001) never match either value, so <c>true</c> and <c>false</c> together

@@ -1690,6 +1690,218 @@ public class GetDiagnosticsOperationTests
         Assert.False(result.Data.Truncated);
     }
 
+    // Edge sites for staticFilter, keyed "line:column id" (Column tells apart diagnostics on one line;
+    // duplicates such as the two CS0535 on ExplImpl are counted). GenerateDocumentationFile is on so
+    // CS1574 (cref) and CS1591 (missing XML comment) are reported.
+    // - [assembly: X] attributes and #warning / #error directives between namespace-level declarations
+    //   are namespace-level and never match; a directive between members of a type follows that type
+    //   (H is an instance class, so false), and a directive inside a member body follows that member.
+    // - Parser / missing-token errors (CS1002 in `static void M() { int x = 1 }`) follow the declaration
+    //   containing the missing token.
+    // - Enum members and enum-member initializers are static; the enum type itself is instance.
+    // - A top-level type's base list and type-parameter constraints follow the type (SG<T> is a static
+    //   class, so true); method constraints follow the method; CS1574 / CS1591 follow the documented
+    //   member / type.
+    // - Explicit implementations of instance members are instance, explicit implementations of static
+    //   abstract members are static; primary-constructor parameters and a primary constructor's base
+    //   arguments follow the (instance) type; `: this(Missing)` follows its constructor; default parameter
+    //   values follow their member; field-like event initializers follow the event; static abstract /
+    //   static virtual interface members are static.
+    private const string StaticEdgeSource = """
+        using System;
+        [assembly: MissingAsmAttr]
+        #warning before_namespace
+        namespace App
+        {
+        #warning between_types
+            /// <summary>B1</summary>
+            public class B1 : MissingBase { }
+            /// <summary>G</summary>
+            public class G<T> where T : MissingConstraint { }
+            /// <summary>SG</summary>
+            public static class SG<T> where T : MissingStaticConstraint { }
+            /// <summary>H</summary>
+            public class H
+            {
+        #warning between_members
+                /// <summary>M</summary>
+                public static void M() { int x = 1 }
+                /// <summary>I</summary>
+                public void I() { int y = 2 }
+                /// <summary>SM</summary>
+                public static void SM<T>() where T : MissingSMConstraint { }
+                /// <summary>IM</summary>
+                public void IM<T>() where T : MissingIMConstraint { }
+                static void WarnInStatic()
+                {
+        #warning inside_static_member
+                }
+                void WarnInInstance()
+                {
+        #warning inside_instance_member
+                }
+                /// <see cref="NopeStatic"/>
+                public static void CrefStatic() { }
+                /// <see cref="NopeInstance"/>
+                public void CrefInstance() { }
+                public static void NoDocStatic() { }
+                public void NoDocInstance() { }
+                /// <summary>D</summary>
+                public static void DefStatic(int p = MissingDefStatic) { }
+                /// <summary>D</summary>
+                public void DefInstance(int p = MissingDefInstance) { }
+                /// <summary>E</summary>
+                public static event Action StaticEv = MissingEvStatic;
+                /// <summary>E</summary>
+                public event Action InstEv = MissingEvInst;
+                /// <summary>C</summary>
+                public H() : this(MissingThis) { }
+                /// <summary>C</summary>
+                public H(int a) { }
+                /// <summary>C</summary>
+                static H() { }
+            }
+        #error between_types_error
+            public enum E { A, B = MissingEnumInit }
+            /// <summary>IS</summary>
+            public interface IS
+            {
+                /// <summary>x</summary>
+                static abstract void SA(MissingSA p);
+                /// <summary>x</summary>
+                static virtual void SV(MissingSV p) { }
+                /// <summary>x</summary>
+                void Inst(MissingInst p);
+            }
+            /// <summary>X</summary>
+            public class ExplImpl : IS
+            {
+                static void IS.SA(MissingSA2 p) { }
+                void IS.Inst(MissingInst2 p) { }
+            }
+            /// <summary>PC</summary>
+            public class PC(MissingPcType p) { }
+            /// <summary>PR</summary>
+            public record PR(MissingPrType X);
+            /// <summary>PB</summary>
+            public class PB(int q) : B1Base(MissingPbArg) { }
+            /// <summary>B1Base</summary>
+            public class B1Base { /// <summary>c</summary>
+            public B1Base(int z) { } }
+        }
+        """;
+
+
+    private static readonly string[] StaticEdgeTrueSites =
+    {
+        "12:41 CS0246",
+        "18:38 CS0219",
+        "18:44 CS1002",
+        "22:46 CS0246",
+        "27:10 CS1030",
+        "33:24 CS1574",
+        "37:28 CS1591",
+        "40:46 CS0103",
+        "44:47 CS0103",
+        "55:21 CS1591",
+        "55:24 CS1591",
+        "55:28 CS0103",
+        "60:33 CS0246",
+        "62:32 CS0246",
+        "69:24 CS0539",
+        "69:27 CS0246",
+    };
+
+    private static readonly string[] StaticEdgeFalseSites =
+    {
+        "8:23 CS0246",
+        "10:33 CS0246",
+        "16:10 CS1030",
+        "20:31 CS0219",
+        "20:37 CS1002",
+        "24:39 CS0246",
+        "31:10 CS1030",
+        "35:24 CS1574",
+        "38:21 CS1591",
+        "42:41 CS0103",
+        "46:38 CS0103",
+        "48:27 CS0103",
+        "55:17 CS1591",
+        "64:19 CS0246",
+        "67:29 CS0535",
+        "67:29 CS0535",
+        "70:17 CS0539",
+        "70:22 CS0246",
+        "73:21 CS0246",
+        "73:35 CS9113",
+        "75:22 CS0246",
+        "77:25 CS9113",
+        "77:37 CS0103",
+    };
+
+    private static readonly string[] StaticEdgeNeverSites =
+    {
+        "2:12 CS0246",
+        "2:12 CS0246",
+        "3:10 CS1030",
+        "6:10 CS1030",
+        "54:8 CS1029",
+    };
+
+    private static async Task<List<string>> StaticEdgeKeysAsync(
+        GetDiagnosticsOperation operation, TempWorkspace workspace, bool? staticFilter)
+    {
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "All",
+            SourceFile = workspace.SourcePath,
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(result.Data!.Diagnostics.Count, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+        return result.Data.Diagnostics.Select(d => $"{d.Line}:{d.Column} {d.Id}").ToList();
+    }
+
+    private static string[] SortedKeys(IEnumerable<string> keys) =>
+        keys.OrderBy(k => k, StringComparer.Ordinal).ToArray();
+
+    [SkippableTheory]
+    [InlineData("true")]
+    [InlineData("false")]
+    [InlineData("partition")]
+    public async Task GetDiagnostics_StaticFilter_EdgeSites(string mode)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            StaticEdgeSource,
+            extraProperties: "<LangVersion>latest</LangVersion><GenerateDocumentationFile>true</GenerateDocumentationFile>");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        switch (mode)
+        {
+            case "true":
+                Assert.Equal(SortedKeys(StaticEdgeTrueSites), SortedKeys(await StaticEdgeKeysAsync(operation, workspace, true)));
+                break;
+            case "false":
+                Assert.Equal(SortedKeys(StaticEdgeFalseSites), SortedKeys(await StaticEdgeKeysAsync(operation, workspace, false)));
+                break;
+            default:
+                // true and false are disjoint and together cover every diagnostic except the namespace-level ones.
+                var all = await StaticEdgeKeysAsync(operation, workspace, null);
+                var staticKeys = await StaticEdgeKeysAsync(operation, workspace, true);
+                var instanceKeys = await StaticEdgeKeysAsync(operation, workspace, false);
+                Assert.Equal(
+                    SortedKeys(StaticEdgeTrueSites.Concat(StaticEdgeFalseSites).Concat(StaticEdgeNeverSites)),
+                    SortedKeys(all));
+                Assert.Empty(staticKeys.Intersect(instanceKeys));
+                Assert.Equal(
+                    SortedKeys(staticKeys.Concat(instanceKeys).Concat(StaticEdgeNeverSites)),
+                    SortedKeys(all));
+                break;
+        }
+    }
+
     #endregion
 
     #region excludeDiagnosticIds filter

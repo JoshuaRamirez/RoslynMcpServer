@@ -183,8 +183,8 @@ public sealed class FindReferencesParams
     /// members is judged on the delegate type (never static); top-level statements, including top-level
     /// local functions, are namespace-level and never match either value, as are using aliases and a
     /// namespace's own declaration. Same <c>IsStatic</c> test as <c>get_symbol_info</c> /
-    /// <c>get_document_outline</c> / <c>search_symbols</c> / <c>find_callers</c> / <c>get_diagnostics</c>
-    /// <c>staticFilter</c>, but the sites differ from <c>find_callers</c>: <c>find_callers</c> counts top-level statements
+    /// <c>get_document_outline</c> / <c>search_symbols</c> / <c>find_callers</c> / <c>find_implementations</c> /
+    /// <c>get_diagnostics</c> <c>staticFilter</c>, but the sites differ from <c>find_callers</c>: <c>find_callers</c> counts top-level statements
     /// as static (<c>&lt;Main&gt;$</c> is kept by <c>true</c>) while <c>find_references</c> never
     /// matches them; <c>find_callers</c> judges a local function as its own calling symbol while
     /// <c>find_references</c> judges it on the declaring member; both judge an auto-property
@@ -192,8 +192,10 @@ public sealed class FindReferencesParams
     /// <c>cref</c>, constraint, and base-list sites have no <c>find_callers</c> counterpart (they are
     /// not calls). <c>get_diagnostics</c> also looks local functions and lambdas through to the
     /// declaring member and never matches top-level statements, but judges a declaration-attached site
-    /// (a member's return or parameter type, or an attribute on a member) on that member, not the
-    /// containing type. The target symbol's own staticness is irrelevant.
+    /// (a member's return or parameter type, an attribute on a member, or a doc-comment <c>cref</c>) on
+    /// that member, not the containing type, and judges a top-level type's base list and type-parameter
+    /// constraints on that type rather than as namespace-level. The target symbol's own staticness is
+    /// irrelevant.
     /// Combined with <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
     /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, <see cref="KindFilter"/>, and
     /// <see cref="IncludeDeclaration"/> (a location must satisfy all that are set), and applied before
