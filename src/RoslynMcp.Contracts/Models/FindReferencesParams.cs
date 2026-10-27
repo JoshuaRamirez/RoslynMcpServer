@@ -160,16 +160,37 @@ public sealed class FindReferencesParams
     /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, and <see cref="KindFilter"/> judge;
     /// a definition location is judged by the declared symbol itself) has <c>ISymbol.IsStatic</c> equal
     /// to the value. <c>true</c> keeps sites in static methods, static constructors, operators, static
-    /// properties / indexers / events (accessors share the property's staticness), static fields,
+    /// properties / events (accessors share the property's or event's staticness), static fields,
     /// <c>const</c> fields (Roslyn reports them as static), and static types; <c>false</c> keeps sites
-    /// in instance members and non-static types. Same <c>IsStatic</c> test as <c>get_symbol_info</c> /
-    /// <c>get_document_outline</c> / <c>search_symbols</c> / <c>find_callers</c> <c>staticFilter</c>;
-    /// the target symbol's own staticness is irrelevant. Lambdas (including <c>static</c> lambdas) and
-    /// local functions (including <c>static</c> local functions) are judged on the member declaring
-    /// them, the same walk-out the other site filters use (unlike <c>find_callers</c>, where a local
-    /// function is its own calling symbol); a site inside a delegate's synthesized members is judged on
-    /// the delegate type (never static). Namespace-level sites (using aliases, a top-level type's base
-    /// list, top-level statements, a namespace's own declaration) never match either value.
+    /// in instance members and non-static types. Edge rules: a site in a member's signature (a field's,
+    /// property's, or event's type, or a method's return or parameter types) is judged on the
+    /// containing type, not the member, so <c>public static App.T Field2;</c> in an instance class, or
+    /// the return type of <c>public static T Make()</c> in a non-static class, is kept by <c>false</c>,
+    /// and <c>true</c> misses static-member signatures; attributes and attribute arguments on a member
+    /// (e.g. <c>[DefaultValue(T.Base)]</c> on a static method) and a <c>cref</c> in a member's doc
+    /// comment are likewise judged on the containing type; an attribute, attribute argument, or
+    /// <c>cref</c> on a type declaration is judged on that type; a nested type's base list is judged on
+    /// the outer type; a method's type-parameter constraint is judged on the method, while a top-level
+    /// type's type-parameter constraint and a top-level type's base list are namespace-level and never
+    /// match; <c>nameof</c> and default parameter values are judged on the method; local functions
+    /// (static or not, including a non-static local function in a static method) and lambdas (including
+    /// <c>static</c> lambdas) are judged on the member declaring them; a finalizer is instance; an
+    /// indexer is instance (C# has no static indexers); a site in a custom event accessor follows the
+    /// event's staticness; an auto-property initializer is judged on the compiler backing field
+    /// <c>&lt;P&gt;k__BackingField</c>, which shares the property's staticness; a <c>const</c>
+    /// initializer that references another <c>const</c> is static; members of a nested type are judged
+    /// on their own staticness, not the containing type's; a site inside a delegate's synthesized
+    /// members is judged on the delegate type (never static); top-level statements, including top-level
+    /// local functions, are namespace-level and never match either value, as are using aliases and a
+    /// namespace's own declaration. Same <c>IsStatic</c> test as <c>get_symbol_info</c> /
+    /// <c>get_document_outline</c> / <c>search_symbols</c> / <c>find_callers</c> <c>staticFilter</c>,
+    /// but the sites differ from <c>find_callers</c>: <c>find_callers</c> counts top-level statements
+    /// as static (<c>&lt;Main&gt;$</c> is kept by <c>true</c>) while <c>find_references</c> never
+    /// matches them; <c>find_callers</c> judges a local function as its own calling symbol while
+    /// <c>find_references</c> judges it on the declaring member; both judge an auto-property
+    /// initializer on the backing field <c>&lt;P&gt;k__BackingField</c>; signature, attribute,
+    /// <c>cref</c>, constraint, and base-list sites have no <c>find_callers</c> counterpart (they are
+    /// not calls). The target symbol's own staticness is irrelevant.
     /// Combined with <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>, <see cref="NamespaceFilter"/>,
     /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, <see cref="KindFilter"/>, and
     /// <see cref="IncludeDeclaration"/> (a location must satisfy all that are set), and applied before
