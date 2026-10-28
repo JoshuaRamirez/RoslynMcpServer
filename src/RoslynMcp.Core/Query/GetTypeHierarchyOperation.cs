@@ -162,59 +162,28 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
 
             var filtered = derivedFileKey != null || projectScope != null;
 
-            // Optional namespaceFilter (same normalization / matching as search_symbols /
-            // find_implementations namespaceFilter): a derived type matches when its containing
-            // namespace equals the filter or is nested inside it. Null when omitted, blank, or a bare
-            // global:: (no namespace filtering).
-            var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
-
-            // Optional accessibilityFilter (same values / parsing as search_symbols /
-            // find_implementations accessibilityFilter): keep only derived types whose
-            // DeclaredAccessibility equals the filter exactly. Null when omitted / blank (no
-            // accessibility filtering). Invalid values already rejected in ValidateParams.
-            var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
-
-            // Optional kindFilter (same values / parsing as search_symbols / find_implementations
-            // kindFilter): keep only derived types whose shared SymbolKind classification
-            // (SymbolKindMapper.Map, as find_implementations reports; records are Record, not Class)
-            // equals the filter. Null when omitted / blank (no kind filtering). Invalid values already
-            // rejected in ValidateParams.
-            var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
-
-            // Optional nameFilter (same matching as get_document_outline / get_symbol_info /
-            // find_implementations nameFilter): keep only derived types whose simple Name (as reported
-            // in TypeHierarchyEntry.TypeName) contains the trimmed value, ordinal case-insensitive.
-            // Null when omitted / blank (no name filtering).
-            var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
+            // Optional namespaceFilter / accessibilityFilter / kindFilter / nameFilter / abstractFilter
+            // (same values / parsing as search_symbols / find_implementations), judged on each derived
+            // type: containing namespace equal to or nested in the filter, exact DeclaredAccessibility,
+            // shared SymbolKind classification (SymbolKindMapper.Map; records are Record, not Class),
+            // simple Name as reported in TypeHierarchyEntry.TypeName (ordinal case-insensitive contains)
+            // and ISymbol.IsAbstract (true keeps abstract derived types, false keeps concrete ones).
+            // get_type_hierarchy has no staticFilter. Omitted / blank values impose no filter; invalid
+            // values already rejected in ValidateParams.
+            var symbolFilter = ResultSymbolFilter.Create(
+                @params.NamespaceFilter,
+                @params.AccessibilityFilter,
+                @params.KindFilter,
+                @params.NameFilter,
+                staticFilter: null,
+                @params.AbstractFilter);
 
             foreach (var d in derived)
             {
-                // Applied before maxResults (and before the location filters below) so TotalCount /
-                // Truncated reflect the namespace-filtered set. BaseTypes and Interfaces are never
+                // Symbol filters run before maxResults (and before the location filters below) so
+                // TotalCount / Truncated reflect the filtered set. BaseTypes and Interfaces are never
                 // filtered.
-                if (namespaceFilter != null && !NamespaceFilter.IsInNamespace(d, namespaceFilter))
-                    continue;
-
-                // Accessibility filter runs with the other symbol filters before maxResults so
-                // TotalCount / Truncated reflect the filtered set. Exact DeclaredAccessibility match
-                // (implicit defaults count; protected internal ≠ protected / internal).
-                if (accessibilityFilter.HasValue && d.DeclaredAccessibility != accessibilityFilter.Value)
-                    continue;
-
-                // Kind filter runs with the other symbol filters before maxResults so TotalCount /
-                // Truncated reflect the filtered set. BaseTypes and Interfaces are never filtered.
-                if (kindFilter.HasValue && SymbolKindMapper.Map(d) != kindFilter.Value)
-                    continue;
-
-                // Name filter runs with the other symbol filters before maxResults so TotalCount /
-                // Truncated reflect the filtered set. BaseTypes and Interfaces are never filtered.
-                if (!NameFilterMatcher.Matches(d.Name, nameFilter))
-                    continue;
-
-                // Abstract filter runs with the other symbol filters before maxResults so TotalCount /
-                // Truncated reflect the filtered set: true keeps abstract derived types, false keeps
-                // concrete (instantiable) ones. BaseTypes and Interfaces are never filtered.
-                if (@params.AbstractFilter.HasValue && d.IsAbstract != @params.AbstractFilter.Value)
+                if (!symbolFilter.Matches(d))
                     continue;
 
                 if (!filtered)
