@@ -2104,6 +2104,186 @@ public class SearchSymbolsOperationTests
         Assert.False(result.Data.Truncated);
     }
 
+    // Edge kinds: a generic definition (no constructed PzGen<int> is ever returned, even though PzHolder
+    // uses one), a sealed override, an abstract event beside a field-like event, static virtual / private /
+    // static abstract interface members, an abstract class with no abstract members, a nested abstract
+    // type, and record struct / readonly struct. The abstract indexer and the static abstract operator are
+    // never returned (CanBeReferencedByName is false).
+    private const string AbstractEdgeSource = """
+        namespace PzSpace
+        {
+            public abstract class PzGen<T>
+            {
+                public abstract void PzGenRun(T t);
+                public virtual void PzGenVirt() { }
+                public abstract int this[int i] { get; }
+            }
+
+            public class PzGenMid : PzGen<int>
+            {
+                public override void PzGenRun(int t) { }
+                public sealed override void PzGenVirt() { }
+                public override int this[int i] => i;
+            }
+
+            public abstract class PzEvents
+            {
+                public abstract event System.Action PzAbsEvent;
+                public event System.Action? PzFieldEvent;
+            }
+
+            public interface IPzOps<TSelf> where TSelf : IPzOps<TSelf>
+            {
+                static abstract TSelf operator +(TSelf a, TSelf b);
+                static virtual void PzStaticVirt() { }
+                private void PzPrivate() { }
+                static abstract int PzStaticAbsProp { get; }
+            }
+
+            public abstract class PzEmptyAbs { }
+            public class PzOuter { public abstract class PzNestedAbs { } }
+            public record struct PzRecStruct;
+            public readonly struct PzReadonly { }
+            public class PzHolder { public PzGen<int>? PzField; }
+        }
+        """;
+
+    private static readonly string[] AbstractEdgeNames =
+    [
+        "PzSpace.IPzOps<TSelf>",
+        "PzSpace.IPzOps<TSelf>.PzStaticAbsProp",
+        "PzSpace.PzEmptyAbs",
+        "PzSpace.PzEvents",
+        "PzSpace.PzEvents.PzAbsEvent",
+        "PzSpace.PzGen<T>",
+        "PzSpace.PzGen<T>.PzGenRun(T)",
+        "PzSpace.PzOuter.PzNestedAbs"
+    ];
+
+    private static readonly string[] NonAbstractEdgeNames =
+    [
+        "PzSpace.IPzOps<TSelf>.PzPrivate()",
+        "PzSpace.IPzOps<TSelf>.PzStaticVirt()",
+        "PzSpace.PzEvents.PzFieldEvent",
+        "PzSpace.PzGen<T>.PzGenVirt()",
+        "PzSpace.PzGenMid",
+        "PzSpace.PzGenMid.PzGenRun(int)",
+        "PzSpace.PzGenMid.PzGenVirt()",
+        "PzSpace.PzHolder",
+        "PzSpace.PzHolder.PzField",
+        "PzSpace.PzOuter",
+        "PzSpace.PzReadonly",
+        "PzSpace.PzRecStruct"
+    ];
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_AbstractFilter_EdgeKinds_JudgedOnEachSymbol(bool? abstractFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Pz",
+            CaseSensitive = true,
+            AbstractFilter = abstractFilter,
+            MaxResults = 100
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var expected = abstractFilter switch
+        {
+            true => Sorted(AbstractEdgeNames),
+            false => Sorted(NonAbstractEdgeNames),
+            null => Sorted(AbstractEdgeNames.Concat(NonAbstractEdgeNames).Append("PzSpace"))
+        };
+        Assert.Equal(expected, SortedFqns(result.Data));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+        Assert.DoesNotContain(result.Data.Symbols, s => s.FullyQualifiedName.Contains("PzGen<int>", StringComparison.Ordinal));
+    }
+
+    [SkippableTheory]
+    [InlineData(null, new[] { "PzSpace.IPzOps<TSelf>.PzStaticAbsProp", "PzSpace.IPzOps<TSelf>.PzStaticVirt()" })]
+    [InlineData(true, new[] { "PzSpace.IPzOps<TSelf>.PzStaticAbsProp" })]
+    [InlineData(false, new[] { "PzSpace.IPzOps<TSelf>.PzStaticVirt()" })]
+    public async Task SearchSymbols_AbstractFilter_StaticAbstractProperty_MatchesWithStaticFilterTrue(
+        bool? abstractFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Pz",
+            CaseSensitive = true,
+            StaticFilter = true,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(expected, SortedFqns(result.Data));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    // Indexers (named this[]) and operators (op_Addition) fail CanBeReferencedByName, so neither the
+    // abstract indexer nor the static abstract operator is ever returned, whatever the filters.
+    [SkippableTheory]
+    [InlineData("this", null, null)]
+    [InlineData("this", true, null)]
+    [InlineData("this", false, null)]
+    [InlineData("op_", null, null)]
+    [InlineData("op_", true, null)]
+    [InlineData("op_", false, null)]
+    [InlineData("op_", true, true)]
+    public async Task SearchSymbols_AbstractFilter_NeverReturnsAbstractIndexerOrStaticAbstractOperator(
+        string query, bool? abstractFilter, bool? staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = query,
+            AbstractFilter = abstractFilter,
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+    }
+
+    // Source only: a metadata type such as System.IDisposable is never returned, so abstractFilter true
+    // (an interface is abstract) still gives an empty success.
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_AbstractFilter_NeverReturnsMetadataSymbols(bool? abstractFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "IDisposable",
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
     #endregion
 
 

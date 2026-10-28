@@ -504,6 +504,27 @@ public class SearchSymbolsToolTests
         Assert.Contains("abstractFilter", _tool.Description, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void GetDefinition_AbstractFilter_DocumentsSourceOnlyPeerDifferencesAndCliRules()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var schemaText = doc.RootElement.GetProperty("properties").GetProperty("abstractFilter")
+            .GetProperty("description").GetString();
+        Assert.NotNull(schemaText);
+
+        foreach (var text in new[] { schemaText, _tool.Description })
+        {
+            Assert.Contains("search_symbols never returns metadata symbols", text, StringComparison.Ordinal);
+            Assert.Contains("get_type_hierarchy judges only derived types", text, StringComparison.Ordinal);
+            Assert.Contains("find_implementations judges only implementers", text, StringComparison.Ordinal);
+            Assert.Contains("a static class is static but not abstract", text, StringComparison.Ordinal);
+            Assert.Contains("abstract indexers and static abstract operators are never returned", text, StringComparison.Ordinal);
+            Assert.Contains("CLI: bare --abstract-filter = true", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("Same IsAbstract test", text, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     [Theory]
     [InlineData("\"yes\"")]
     [InlineData("\"true\"")]
