@@ -601,6 +601,8 @@ public class FindImplementationsToolTests
         Assert.Contains("get_type_hierarchy abstractFilter", description);
         Assert.Contains("No pruning", description);
         Assert.Contains("derived interfaces are never returned", description);
+        Assert.Contains("derived-interface target", description);
+        Assert.DoesNotContain("derived-interface targets return nothing", description);
         Assert.Contains("abstract re-abstraction", description);
         Assert.Contains("static abstract", description);
         Assert.Contains("metadata", description);

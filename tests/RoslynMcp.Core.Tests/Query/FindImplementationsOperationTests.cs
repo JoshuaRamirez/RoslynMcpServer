@@ -2973,10 +2973,13 @@ public class FindImplementationsOperationTests
         Assert.Equal(expected.Length, data.TotalCount);
     }
 
-    // Abstract / virtual class targets, abstract members with overrides, an abstract class
-    // implementing an interface (BaseRunner and BaseRunner.Run), and derived-interface targets return
-    // no implementations even without a filter (Roslyn FindImplementationsAsync does not report
-    // derived classes or overrides). Pins current behavior, not the intended contract.
+    // Abstract / virtual class targets, abstract members with overrides, and an abstract class
+    // implementing an interface (BaseRunner and BaseRunner.Run) return no implementations even without
+    // a filter (Roslyn FindImplementationsAsync does not report derived classes or overrides). Pins
+    // current behavior, not the intended contract. The derived-interface targets IReAbs and IDim are
+    // empty only because AbstractSource declares no type implementing them, not because derived
+    // interfaces are unsupported: see
+    // FindImplementations_AbstractFilter_DerivedInterfaceTarget_JudgesItsImplementers.
     [SkippableTheory]
     [InlineData(20, "Animal")]
     [InlineData(20, "Legs")]
@@ -2985,7 +2988,7 @@ public class FindImplementationsOperationTests
     [InlineData(14, "Run(")]
     [InlineData(12, "IReAbs")]
     [InlineData(13, "IDim")]
-    public async Task FindImplementations_AbstractFilter_ClassAndDerivedInterfaceTargets_AreEmpty(int line, string token)
+    public async Task FindImplementations_AbstractFilter_ClassAndUnimplementedDerivedInterfaceTargets_AreEmpty(int line, string token)
     {
         await using var workspace = await CreateAbstractWorkspaceAsync();
 
@@ -2996,6 +2999,47 @@ public class FindImplementationsOperationTests
             Assert.Equal(0, data.TotalCount);
             Assert.False(data.Truncated);
         }
+    }
+
+    // A derived-interface target is an interface target like any other: IFast : IRunner is
+    // implemented by an abstract class (AbsFast), a concrete class (Turbo), and a concrete subclass of
+    // the abstract implementer (ConcFast), each judged on its own IsAbstract. The derived interface
+    // itself is never returned, and the base-interface implementer Plain is not an IFast implementer.
+    [SkippableTheory]
+    [InlineData(null, new[] { "App.Der.AbsFast", "App.Der.ConcFast", "App.Der.Turbo" })]
+    [InlineData(true, new[] { "App.Der.AbsFast" })]
+    [InlineData(false, new[] { "App.Der.ConcFast", "App.Der.Turbo" })]
+    public async Task FindImplementations_AbstractFilter_DerivedInterfaceTarget_JudgesItsImplementers(
+        bool? abstractFilter, string[] expected)
+    {
+        const string source = """
+            namespace App.Der
+            {
+                public interface IRunner { void Run(); }
+                public interface IFast : IRunner { }
+                public abstract class AbsFast : IFast { public abstract void Run(); }
+                public class ConcFast : AbsFast { public override void Run() { } }
+                public class Turbo : IFast { public void Run() { } }
+                public class Plain : IRunner { public void Run() { } }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(
+            new Dictionary<string, string> { ["Der.cs"] = source });
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Der.cs"),
+            Line = 4,
+            Column = source.Split('\n')[3].IndexOf("IFast", StringComparison.Ordinal) + 1,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal("App.Der.IFast", result.Data!.FullyQualifiedName);
+        Assert.Equal(expected, SortedFqns(result.Data.Implementations));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
     }
 
     [SkippableFact]

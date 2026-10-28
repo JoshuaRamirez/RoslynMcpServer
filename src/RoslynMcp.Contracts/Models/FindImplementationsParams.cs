@@ -199,9 +199,10 @@ public sealed class FindImplementationsParams
     /// Implementations in other projects of the solution are returned and filtered; implementations
     /// declared only in metadata are never listed (for a metadata target such as
     /// <c>System.IDisposable</c> they are still judged and counted toward <c>TotalCount</c>, so
-    /// <c>Truncated</c> can be <c>true</c>). Current behavior: abstract or virtual class targets,
-    /// abstract / virtual class members with overrides, and derived-interface targets return no
-    /// implementations even without a filter.
+    /// <c>Truncated</c> can be <c>true</c>). Current behavior: abstract or virtual class targets and
+    /// abstract / virtual class members with overrides return no implementations even without a
+    /// filter. A derived-interface target (e.g. <c>IFastRunner : IRunner</c>) is an interface target
+    /// like any other: its implementing types are returned and judged the same way.
     /// Combined with <see cref="ImplementationFile"/>, <see cref="ProjectPath"/>,
     /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>,
     /// <see cref="KindFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/> (an
