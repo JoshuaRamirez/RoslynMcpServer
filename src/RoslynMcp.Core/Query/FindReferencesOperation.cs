@@ -126,14 +126,6 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         bool IsInProjectScope(DocumentId? documentId) =>
             projectScope == null || (documentId != null && projectScope.Contains(documentId.ProjectId));
 
-        // Optional accessibilityFilter (same values / parsing as search_symbols / find_callers
-        // accessibilityFilter): keep only locations whose site symbol has a DeclaredAccessibility equal
-        // to the filter exactly. For a usage that is the member / type / namespace enclosing it (the
-        // same enclosing-symbol notion namespaceFilter uses, not the target symbol); for a definition
-        // location it is the declared symbol itself (see <see cref="DeclaringSiteSymbol"/>). Null when omitted /
-        // blank (no accessibility filtering). Invalid values already rejected in ValidateParams.
-        var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
-
         // All site filters share one resolver so each file is bound at most once.
         var siteResolver = new SiteEnclosingSymbolResolver(Context);
 
@@ -144,58 +136,19 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         // reference). Null when no filter applies.
         var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter, siteResolver);
 
-        // Namespaces have no accessibility modifier but Roslyn reports INamespaceSymbol as Public (same
-        // guard as search_symbols), so a namespace-level site (e.g. a using alias, or a namespace's own
-        // declaration) never matches a named filter.
-        bool MatchesAccessibility(ISymbol? siteSymbol) =>
-            !accessibilityFilter.HasValue
-            || (siteSymbol is not null and not INamespaceSymbol
-                && siteSymbol.DeclaredAccessibility == accessibilityFilter.Value);
-
-        // Optional nameFilter (same matching as get_document_outline / get_symbol_info /
-        // find_implementations / get_type_hierarchy nameFilter): keep only locations whose site symbol
-        // (the same DeclaringSiteSymbol accessibilityFilter judges) has a simple Name containing the
-        // trimmed value, ordinal case-insensitive. Namespace-level sites (using aliases, a top-level
-        // type's base list, top-level statements, a namespace's own declaration) never match, same as
-        // accessibilityFilter. Null when omitted / blank (no name filtering).
-        var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
-
-        bool MatchesName(ISymbol? siteSymbol) =>
-            nameFilter == null
-            || (siteSymbol is not null and not INamespaceSymbol
-                && NameFilterMatcher.Matches(siteSymbol.Name, nameFilter));
-
-        // Optional kindFilter (same values / parsing as search_symbols / get_document_outline /
-        // get_symbol_info / find_implementations / get_type_hierarchy / find_callers kindFilter): keep
-        // only locations whose site symbol (the same DeclaringSiteSymbol accessibilityFilter /
-        // nameFilter judge) maps to that kind via SymbolKindMapper (methods / constructors /
-        // accessors → Method, field initializers → Field or Constant, property definitions → Property).
-        // Namespace-level sites never match a named kind filter. Null when omitted / blank.
-        // Invalid values already rejected in ValidateParams.
-        var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
-
-        bool MatchesKind(ISymbol? siteSymbol) =>
-            !kindFilter.HasValue
-            || (siteSymbol is not null and not INamespaceSymbol
-                && SymbolKindMapper.Map(siteSymbol) == kindFilter.Value);
-
-        // Optional staticFilter (same ISymbol.IsStatic test as get_symbol_info / get_document_outline /
-        // search_symbols / find_callers / find_implementations / get_diagnostics staticFilter): keep only locations whose site
-        // symbol (the same DeclaringSiteSymbol accessibilityFilter / nameFilter / kindFilter judge) is static (true) or
-        // instance (false). Namespace-level sites never match either value. Null when omitted.
-        var staticFilter = @params.StaticFilter;
-
-        bool MatchesStatic(ISymbol? siteSymbol) =>
-            !staticFilter.HasValue
-            || (siteSymbol is not null and not INamespaceSymbol
-                && siteSymbol.IsStatic == staticFilter.Value);
-
-        // All enclosing-symbol filters judge the same site symbol.
-        bool MatchesSiteSymbol(ISymbol? siteSymbol) =>
-            MatchesAccessibility(siteSymbol) && MatchesName(siteSymbol) && MatchesKind(siteSymbol)
-            && MatchesStatic(siteSymbol);
-        var filtersBySiteSymbol = accessibilityFilter.HasValue || nameFilter != null || kindFilter.HasValue
-            || staticFilter.HasValue;
+        // Optional accessibilityFilter / nameFilter / kindFilter / staticFilter (same values / parsing as
+        // search_symbols / find_callers / get_diagnostics): keep only locations whose site symbol matches
+        // every set filter (exact DeclaredAccessibility; simple Name containing the trimmed value, ordinal
+        // case-insensitive; SymbolKindMapper kind — methods / constructors / accessors → Method, field
+        // initializers → Field or Constant, property definitions → Property; IsStatic). For a usage the
+        // site is the member / type / namespace enclosing it (the same enclosing-symbol notion
+        // namespaceFilter uses, not the target symbol); for a definition location it is the declared
+        // symbol itself (see <see cref="DeclaringSiteSymbol"/>). Namespace-level sites (using aliases, a
+        // top-level type's base list, top-level statements, a namespace's own declaration) never match a
+        // set filter. Omitted / blank values impose no filter. Invalid values already rejected in
+        // ValidateParams.
+        var siteSymbolFilter = SiteSymbolFilter.Create(
+            @params.AccessibilityFilter, @params.NameFilter, @params.KindFilter, @params.StaticFilter);
 
         foreach (var referencedSymbol in referencedSymbols)
         {
@@ -221,7 +174,7 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                         defLocation.SourceTree, Context.Solution.GetDocument(defLocation.SourceTree), defLocation.SourceSpan.Start,
                         cancellationToken))
                     continue;
-                if (!MatchesSiteSymbol(definitionSiteSymbol)) continue;
+                if (!siteSymbolFilter.Matches(definitionSiteSymbol)) continue;
 
                 totalCount++;
                 if (locations.Count < maxResults)
@@ -257,8 +210,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                         refLocation.Location.SourceTree, refLocation.Document, refLocation.Location.SourceSpan.Start,
                         cancellationToken))
                     continue;
-                if (filtersBySiteSymbol
-                    && !MatchesSiteSymbol(DeclaringSiteSymbol.Resolve(await siteResolver.GetEnclosingSymbolAsync(
+                if (siteSymbolFilter.IsActive
+                    && !siteSymbolFilter.Matches(DeclaringSiteSymbol.Resolve(await siteResolver.GetEnclosingSymbolAsync(
                         refLocation.Location.SourceTree, refLocation.Document, refLocation.Location.SourceSpan.Start,
                         cancellationToken))))
                     continue;
