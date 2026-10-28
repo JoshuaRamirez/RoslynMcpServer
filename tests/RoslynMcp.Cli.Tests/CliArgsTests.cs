@@ -210,6 +210,21 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void FindImplementations_AbstractFilterFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-implementations", "--source-file", "/src/IShape.cs", "--symbol-name", "Create", "--abstract-filter"]);
+        Assert.Equal("find-implementations", result.ToolName);
+        Assert.Equal("true", result.Options["abstract-filter"]);
+    }
+
+    [Fact]
+    public void FindImplementations_AbstractFilterExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-implementations", "--source-file", "/src/IShape.cs", "--symbol-name", "Create", "--abstract-filter", "false"]);
+        Assert.Equal("false", result.Options["abstract-filter"]);
+    }
+
+    [Fact]
     public void FindCallers_StaticFilterFlag_ParsesAsTrue()
     {
         var result = CliArgs.Parse(["My.sln", "find-callers", "--source-file", "/src/Target.cs", "--symbol-name", "Run", "--static-filter"]);
