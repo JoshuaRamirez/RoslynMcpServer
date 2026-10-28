@@ -489,4 +489,81 @@ public class SearchSymbolsToolTests
         Assert.True(result.IsError);
         Assert.Contains("Workspace creation should not have been attempted", GetResultText(result), StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void GetDefinition_AbstractFilter_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var abstractFilter = doc.RootElement.GetProperty("properties").GetProperty("abstractFilter");
+
+        Assert.Equal("boolean", abstractFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("abstractFilter", required);
+        Assert.Contains("abstractFilter", _tool.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetDefinition_AbstractFilter_DocumentsSourceOnlyPeerDifferencesAndCliRules()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var schemaText = doc.RootElement.GetProperty("properties").GetProperty("abstractFilter")
+            .GetProperty("description").GetString();
+        Assert.NotNull(schemaText);
+
+        foreach (var text in new[] { schemaText, _tool.Description })
+        {
+            Assert.Contains("search_symbols never returns metadata symbols", text, StringComparison.Ordinal);
+            Assert.Contains("get_type_hierarchy judges only derived types", text, StringComparison.Ordinal);
+            Assert.Contains("find_implementations judges only implementers", text, StringComparison.Ordinal);
+            Assert.Contains("a static class is static but not abstract", text, StringComparison.Ordinal);
+            Assert.Contains("abstract indexers and static abstract operators are never returned", text, StringComparison.Ordinal);
+            Assert.Contains("CLI: bare --abstract-filter = true", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("Same IsAbstract test", text, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Theory]
+    [InlineData("\"yes\"")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    public async Task ExecuteAsync_AbstractFilterNonBoolean_ReturnsInternalError(string rawValue)
+    {
+        // A non-boolean abstractFilter fails deserialization before workspace creation.
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "query": "Widget",
+                "abstractFilter": {{rawValue}}
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = GetResultText(result);
+        Assert.Contains("INTERNAL_ERROR", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", text, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public async Task ExecuteAsync_AbstractFilterBoolean_ParsesAndReachesWorkspace(string rawValue)
+    {
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "query": "Widget",
+                "abstractFilter": {{rawValue}}
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result), StringComparison.Ordinal);
+    }
 }

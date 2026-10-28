@@ -255,6 +255,22 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void SearchSymbols_AbstractFilterFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Widget", "--abstract-filter"]);
+        Assert.Equal("search-symbols", result.ToolName);
+        Assert.Equal("true", result.Options["abstract-filter"]);
+    }
+
+    [Fact]
+    public void SearchSymbols_AbstractFilterExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Widget", "--abstract-filter", "false", "--static-filter"]);
+        Assert.Equal("false", result.Options["abstract-filter"]);
+        Assert.Equal("true", result.Options["static-filter"]);
+    }
+
+    [Fact]
     public void GetDocumentOutline_AccessibilityFilterOption_ParsesValue()
     {
         var result = CliArgs.Parse(["My.sln", "get-document-outline", "--source-file", "/src/Widget.cs", "--accessibility-filter", "protected internal"]);

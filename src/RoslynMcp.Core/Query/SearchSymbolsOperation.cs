@@ -13,7 +13,7 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Searches for symbols by name pattern across all projects in the solution (or one project when
 /// <see cref="SearchSymbolsParams.ProjectPath"/> is set), optionally restricted by kind, file, namespace,
-/// declared accessibility, and static / instance.
+/// declared accessibility, static / instance, and abstract / non-abstract.
 /// Uses Roslyn's Compilation.GetSymbolsWithName for efficient symbol lookup.
 /// </summary>
 public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsParams, SearchSymbolsResult>
@@ -61,6 +61,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
         var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
         var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
         var staticFilter = @params.StaticFilter;
+        var abstractFilter = @params.AbstractFilter;
 
         var entries = new List<SymbolSearchEntry>();
         var totalCount = 0;
@@ -119,6 +120,13 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                 // also before maxResults. Namespaces are neither static nor instance, so they never match.
                 if (staticFilter.HasValue &&
                     (symbol is INamespaceSymbol || symbol.IsStatic != staticFilter.Value))
+                    continue;
+
+                // Apply abstract filter (ISymbol.IsAbstract; interfaces and body-less interface members
+                // count as abstract, static classes do not), also before maxResults. Namespaces are
+                // neither abstract nor concrete, so they never match.
+                if (abstractFilter.HasValue &&
+                    (symbol is INamespaceSymbol || symbol.IsAbstract != abstractFilter.Value))
                     continue;
 
                 var fqn = symbol.ToDisplayString();

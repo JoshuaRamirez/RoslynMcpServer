@@ -374,6 +374,64 @@ public class ArgsToJsonConverterTests
     [InlineData("TRUE", true)]
     [InlineData("false", false)]
     [InlineData("False", false)]
+    public void SearchSymbols_AbstractFilterOption_RoundTripsToParams(string value, bool expected)
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["query"] = "Widget",
+            ["abstract-filter"] = value
+        }, typeof(RoslynMcp.Contracts.Models.SearchSymbolsParams));
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal(expected, doc.RootElement.GetProperty("abstractFilter").GetBoolean());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal(expected, p.AbstractFilter);
+    }
+
+    // A --abstract-filter value other than true/false (case-insensitive) is not inferred as a boolean, so
+    // it reaches the bool? AbstractFilter as a JSON string and is rejected (the MCP tool reports
+    // INTERNAL_ERROR for the same JSON).
+    [Theory]
+    [InlineData("yes")]
+    [InlineData("1")]
+    [InlineData("maybe")]
+    public void SearchSymbols_AbstractFilterNonBoolean_IsRejected(string value)
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["query"] = "Widget",
+            ["abstract-filter"] = value
+        }, typeof(RoslynMcp.Contracts.Models.SearchSymbolsParams));
+        var doc = JsonDocument.Parse(json);
+        Assert.NotEqual(JsonValueKind.True, doc.RootElement.GetProperty("abstractFilter").ValueKind);
+        Assert.NotEqual(JsonValueKind.False, doc.RootElement.GetProperty("abstractFilter").ValueKind);
+
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true }));
+    }
+
+    [Fact]
+    public void SearchSymbols_AbstractFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["query"] = "Widget"
+        }, typeof(RoslynMcp.Contracts.Models.SearchSymbolsParams));
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.AbstractFilter);
+    }
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("TRUE", true)]
+    [InlineData("false", false)]
+    [InlineData("False", false)]
     public void FindImplementations_StaticFilterOption_RoundTripsToParams(string value, bool expected)
     {
         var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>

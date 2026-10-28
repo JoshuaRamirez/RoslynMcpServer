@@ -105,4 +105,44 @@ public sealed class SearchSymbolsParams
     /// <c>search_symbols</c> tool with <c>INTERNAL_ERROR</c>.
     /// </summary>
     public bool? StaticFilter { get; init; }
+
+    /// <summary>
+    /// Optional abstract / non-abstract filter. <c>true</c> keeps only symbols whose
+    /// <c>ISymbol.IsAbstract</c> is <c>true</c>: abstract classes and abstract records, interfaces (Roslyn
+    /// reports every interface as abstract), <c>abstract</c> and <c>abstract override</c> methods /
+    /// properties / events, and interface members without a default body (instance and
+    /// <c>static abstract</c>). <c>false</c> keeps only symbols whose <c>IsAbstract</c> is <c>false</c>:
+    /// concrete, sealed and static classes (Roslyn reports <c>IsAbstract = false</c> for a static class),
+    /// non-abstract records, structs, enums, delegates, members with bodies, <c>virtual</c> /
+    /// <c>override</c> / <c>extern</c> members, default interface methods, non-abstract static interface
+    /// members, fields, <c>const</c> fields and enum members. Namespaces are returned when this is
+    /// omitted but dropped when it is set to either value (they are neither abstract nor concrete).
+    /// Explicit interface implementations and re-abstractions (e.g. <c>abstract void IBase.M();</c>) are
+    /// never returned by <c>search_symbols</c>, so this filter can never return them. Results are
+    /// source-only: <c>search_symbols</c> never returns metadata symbols (a metadata name such as
+    /// <c>IDisposable</c> gives an empty result for every value), whereas <c>get_type_hierarchy</c>
+    /// <c>abstractFilter</c> lists metadata derived types and <c>find_implementations</c>
+    /// <c>abstractFilter</c> counts metadata implementers. It has no target or root: it judges every
+    /// name-matched type and member itself, including interfaces (which match <c>true</c>), whereas
+    /// <c>get_type_hierarchy</c> judges only derived types (an interface root gives an empty result) and
+    /// <c>find_implementations</c> judges only implementers (a class target gives an empty result).
+    /// Unlike <see cref="StaticFilter"/>, a <c>static class</c> is static but not abstract, so
+    /// <c>abstractFilter = true</c> drops it; both filters drop namespaces. Edge kinds: a generic type is
+    /// returned only as its definition (an abstract <c>Base&lt;T&gt;</c> matches <c>true</c>; constructed
+    /// generics such as <c>Base&lt;int&gt;</c> are never returned); abstract indexers and
+    /// <c>static abstract</c> operators are never returned (they are not referenceable by name); an
+    /// <c>abstract</c> event matches <c>true</c> and a field-like event <c>false</c>;
+    /// <c>sealed override</c> members and <c>static virtual</c> interface members are <c>false</c>; an
+    /// abstract class with no abstract members is <c>true</c>; nested abstract types are <c>true</c>;
+    /// record structs and <c>readonly</c> structs are <c>false</c>. Combines with
+    /// <see cref="StaticFilter"/> (a <c>static abstract</c> interface member matches
+    /// <c>staticFilter = true</c> together with <c>abstractFilter = true</c>) and the other filters (a
+    /// symbol must satisfy all that are set), and is applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the abstract-filtered set. No match gives empty
+    /// <c>Symbols</c>, <c>TotalCount = 0</c>, <c>Truncated = false</c>. Omit for no abstract filter. A
+    /// non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>) is rejected by the
+    /// <c>search_symbols</c> tool with <c>INTERNAL_ERROR</c>. CLI: a bare <c>--abstract-filter</c> means
+    /// <c>true</c>, and a value other than <c>true</c> / <c>false</c> is rejected.
+    /// </summary>
+    public bool? AbstractFilter { get; init; }
 }

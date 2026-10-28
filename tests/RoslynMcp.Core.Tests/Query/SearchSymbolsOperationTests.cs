@@ -12,8 +12,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// filtering (peer of <see cref="GetDiagnosticsOperation"/>), optional <c>caseSensitive</c>
 /// name matching, optional <c>exactMatch</c> whole-name matching, optional
 /// <c>namespaceFilter</c> namespace scoping, optional <c>projectPath</c> project scoping, and optional
-/// <c>accessibilityFilter</c> declared-accessibility filtering, and optional <c>staticFilter</c>
-/// static / instance filtering.
+/// <c>accessibilityFilter</c> declared-accessibility filtering, optional <c>staticFilter</c>
+/// static / instance filtering, and optional <c>abstractFilter</c> abstract / non-abstract filtering.
 /// </summary>
 public class SearchSymbolsOperationTests
 {
@@ -1787,6 +1787,501 @@ public class SearchSymbolsOperationTests
         };
         Assert.Equal(expectedNested, SortedFqns(nested.Data!));
         Assert.Equal(expectedNested.Length, nested.Data!.TotalCount);
+    }
+
+    #endregion
+
+    #region abstractFilter
+
+    private const string AbstractSource = """
+        namespace ToolSpace
+        {
+            public interface IToolA
+            {
+                void ToolRun();
+                int ToolSize { get; }
+                event System.Action ToolEvent;
+                void ToolDefault() { }
+                static abstract void ToolMake();
+                static void ToolHelp() { }
+            }
+
+            public interface IToolB : IToolA
+            {
+                abstract void IToolA.ToolDefault();
+            }
+
+            public abstract class ToolBase
+            {
+                public abstract void ToolAbstract();
+                public virtual void ToolVirtual() { }
+                public abstract int ToolAbsProp { get; }
+                public void ToolConcrete() { }
+                public int ToolField;
+                public const int ToolConst = 1;
+            }
+
+            public abstract class ToolMid : ToolBase
+            {
+                public abstract override void ToolVirtual();
+            }
+
+            public sealed class ToolLeaf : ToolMid
+            {
+                public override void ToolAbstract() { }
+                public override void ToolVirtual() { }
+                public override int ToolAbsProp => 1;
+            }
+
+            public static class ToolStatics
+            {
+                public static void ToolStatic() { }
+            }
+
+            public abstract record ToolRecordBase;
+            public record ToolRecord : ToolRecordBase;
+            public struct ToolStruct { }
+            public enum ToolKind { ToolA }
+            public delegate void ToolHandler();
+
+            public class ToolExtern
+            {
+                public extern void ToolNative();
+            }
+        }
+        """;
+
+    private static readonly string[] AbstractToolNames =
+    [
+        "ToolSpace.IToolA",
+        "ToolSpace.IToolA.ToolEvent",
+        "ToolSpace.IToolA.ToolMake()",
+        "ToolSpace.IToolA.ToolRun()",
+        "ToolSpace.IToolA.ToolSize",
+        "ToolSpace.IToolB",
+        "ToolSpace.ToolBase",
+        "ToolSpace.ToolBase.ToolAbsProp",
+        "ToolSpace.ToolBase.ToolAbstract()",
+        "ToolSpace.ToolMid",
+        "ToolSpace.ToolMid.ToolVirtual()",
+        "ToolSpace.ToolRecordBase"
+    ];
+
+    private static readonly string[] NonAbstractToolNames =
+    [
+        "ToolSpace.IToolA.ToolDefault()",
+        "ToolSpace.IToolA.ToolHelp()",
+        "ToolSpace.ToolBase.ToolConcrete()",
+        "ToolSpace.ToolBase.ToolConst",
+        "ToolSpace.ToolBase.ToolField",
+        "ToolSpace.ToolBase.ToolVirtual()",
+        "ToolSpace.ToolExtern",
+        "ToolSpace.ToolExtern.ToolNative()",
+        "ToolSpace.ToolHandler",
+        "ToolSpace.ToolKind",
+        "ToolSpace.ToolKind.ToolA",
+        "ToolSpace.ToolLeaf",
+        "ToolSpace.ToolLeaf.ToolAbsProp",
+        "ToolSpace.ToolLeaf.ToolAbstract()",
+        "ToolSpace.ToolLeaf.ToolVirtual()",
+        "ToolSpace.ToolRecord",
+        "ToolSpace.ToolStatics",
+        "ToolSpace.ToolStatics.ToolStatic()",
+        "ToolSpace.ToolStruct"
+    ];
+
+    [Fact]
+    public void AbstractFilter_DefaultsToNull()
+    {
+        var @params = new SearchSymbolsParams { Query = "Foo" };
+        Assert.Null(@params.AbstractFilter);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_OmittedAbstractFilter_ReturnsAbstractNonAbstractAndNamespaceSymbols()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Tool",
+            CaseSensitive = true,
+            MaxResults = 100
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var expected = Sorted(AbstractToolNames.Concat(NonAbstractToolNames).Append("ToolSpace"));
+        Assert.Equal(expected, SortedFqns(result.Data));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_AbstractFilterTrue_KeepsOnlyAbstractSymbols()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Tool",
+            CaseSensitive = true,
+            AbstractFilter = true,
+            MaxResults = 100
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        // Interfaces, abstract classes / records, abstract and abstract override members, and body-less
+        // interface members (including static abstract) report IsAbstract. The explicit re-abstraction
+        // in IToolB is never returned by search_symbols; namespaces never match.
+        Assert.Equal(Sorted(AbstractToolNames), SortedFqns(result.Data));
+        Assert.Equal(AbstractToolNames.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_AbstractFilterFalse_KeepsOnlyNonAbstractSymbols()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Tool",
+            CaseSensitive = true,
+            AbstractFilter = false,
+            MaxResults = 100
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        // Static classes, sealed / concrete types, virtual / override / extern members, default
+        // interface methods, non-abstract static interface members, fields, consts and enum members.
+        Assert.Equal(Sorted(NonAbstractToolNames), SortedFqns(result.Data));
+        Assert.Equal(NonAbstractToolNames.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_AbstractFilter_NeverMatchesNamespaces(bool abstractFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "ToolSpace",
+            KindFilter = "Namespace",
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_AbstractFilter_CombinesWithStaticFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var staticAbstract = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Tool",
+            CaseSensitive = true,
+            StaticFilter = true,
+            AbstractFilter = true
+        });
+
+        Assert.True(staticAbstract.Success);
+        Assert.NotNull(staticAbstract.Data);
+        Assert.Equal(["ToolSpace.IToolA.ToolMake()"], SortedFqns(staticAbstract.Data));
+        Assert.Equal(1, staticAbstract.Data.TotalCount);
+
+        var staticConcrete = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Tool",
+            CaseSensitive = true,
+            StaticFilter = true,
+            AbstractFilter = false
+        });
+
+        Assert.True(staticConcrete.Success);
+        Assert.NotNull(staticConcrete.Data);
+        Assert.Equal(
+            [
+                "ToolSpace.IToolA.ToolHelp()",
+                "ToolSpace.ToolBase.ToolConst",
+                "ToolSpace.ToolKind.ToolA",
+                "ToolSpace.ToolStatics",
+                "ToolSpace.ToolStatics.ToolStatic()"
+            ],
+            SortedFqns(staticConcrete.Data));
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_AbstractFilter_CombinesWithKindFilterAndMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var abstractClasses = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Tool",
+            CaseSensitive = true,
+            KindFilter = "Class",
+            AbstractFilter = true
+        });
+
+        Assert.True(abstractClasses.Success);
+        Assert.NotNull(abstractClasses.Data);
+        // Records map to Record, not Class, so ToolRecordBase is excluded by kindFilter.
+        Assert.Equal(["ToolSpace.ToolBase", "ToolSpace.ToolMid"], SortedFqns(abstractClasses.Data));
+
+        var abstractMethods = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Tool",
+            CaseSensitive = true,
+            KindFilter = "Method",
+            AbstractFilter = true
+        });
+
+        Assert.True(abstractMethods.Success);
+        Assert.NotNull(abstractMethods.Data);
+        Assert.Equal(
+            [
+                "ToolSpace.IToolA.ToolMake()",
+                "ToolSpace.IToolA.ToolRun()",
+                "ToolSpace.ToolBase.ToolAbstract()",
+                "ToolSpace.ToolMid.ToolVirtual()"
+            ],
+            SortedFqns(abstractMethods.Data));
+
+        // maxResults caps the abstract-filtered set; TotalCount / Truncated reflect it.
+        var capped = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Tool",
+            CaseSensitive = true,
+            AbstractFilter = true,
+            MaxResults = 3
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(3, capped.Data.Symbols.Count);
+        Assert.Equal(AbstractToolNames.Length, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+        Assert.All(capped.Data.Symbols, s => Assert.Contains(s.FullyQualifiedName, AbstractToolNames));
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_AbstractFilterWithNoMatch_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        // Every interface is abstract.
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Tool",
+            CaseSensitive = true,
+            KindFilter = "Interface",
+            AbstractFilter = false
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    // Edge kinds: a generic definition (no constructed PzGen<int> is ever returned, even though PzHolder
+    // uses one), a sealed override, an abstract event beside a field-like event, static virtual / private /
+    // static abstract interface members, an abstract class with no abstract members, a nested abstract
+    // type, and record struct / readonly struct. The abstract indexer and the static abstract operator are
+    // never returned (CanBeReferencedByName is false).
+    private const string AbstractEdgeSource = """
+        namespace PzSpace
+        {
+            public abstract class PzGen<T>
+            {
+                public abstract void PzGenRun(T t);
+                public virtual void PzGenVirt() { }
+                public abstract int this[int i] { get; }
+            }
+
+            public class PzGenMid : PzGen<int>
+            {
+                public override void PzGenRun(int t) { }
+                public sealed override void PzGenVirt() { }
+                public override int this[int i] => i;
+            }
+
+            public abstract class PzEvents
+            {
+                public abstract event System.Action PzAbsEvent;
+                public event System.Action? PzFieldEvent;
+            }
+
+            public interface IPzOps<TSelf> where TSelf : IPzOps<TSelf>
+            {
+                static abstract TSelf operator +(TSelf a, TSelf b);
+                static virtual void PzStaticVirt() { }
+                private void PzPrivate() { }
+                static abstract int PzStaticAbsProp { get; }
+            }
+
+            public abstract class PzEmptyAbs { }
+            public class PzOuter { public abstract class PzNestedAbs { } }
+            public record struct PzRecStruct;
+            public readonly struct PzReadonly { }
+            public class PzHolder { public PzGen<int>? PzField; }
+        }
+        """;
+
+    private static readonly string[] AbstractEdgeNames =
+    [
+        "PzSpace.IPzOps<TSelf>",
+        "PzSpace.IPzOps<TSelf>.PzStaticAbsProp",
+        "PzSpace.PzEmptyAbs",
+        "PzSpace.PzEvents",
+        "PzSpace.PzEvents.PzAbsEvent",
+        "PzSpace.PzGen<T>",
+        "PzSpace.PzGen<T>.PzGenRun(T)",
+        "PzSpace.PzOuter.PzNestedAbs"
+    ];
+
+    private static readonly string[] NonAbstractEdgeNames =
+    [
+        "PzSpace.IPzOps<TSelf>.PzPrivate()",
+        "PzSpace.IPzOps<TSelf>.PzStaticVirt()",
+        "PzSpace.PzEvents.PzFieldEvent",
+        "PzSpace.PzGen<T>.PzGenVirt()",
+        "PzSpace.PzGenMid",
+        "PzSpace.PzGenMid.PzGenRun(int)",
+        "PzSpace.PzGenMid.PzGenVirt()",
+        "PzSpace.PzHolder",
+        "PzSpace.PzHolder.PzField",
+        "PzSpace.PzOuter",
+        "PzSpace.PzReadonly",
+        "PzSpace.PzRecStruct"
+    ];
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_AbstractFilter_EdgeKinds_JudgedOnEachSymbol(bool? abstractFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Pz",
+            CaseSensitive = true,
+            AbstractFilter = abstractFilter,
+            MaxResults = 100
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var expected = abstractFilter switch
+        {
+            true => Sorted(AbstractEdgeNames),
+            false => Sorted(NonAbstractEdgeNames),
+            null => Sorted(AbstractEdgeNames.Concat(NonAbstractEdgeNames).Append("PzSpace"))
+        };
+        Assert.Equal(expected, SortedFqns(result.Data));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+        Assert.DoesNotContain(result.Data.Symbols, s => s.FullyQualifiedName.Contains("PzGen<int>", StringComparison.Ordinal));
+    }
+
+    [SkippableTheory]
+    [InlineData(null, new[] { "PzSpace.IPzOps<TSelf>.PzStaticAbsProp", "PzSpace.IPzOps<TSelf>.PzStaticVirt()" })]
+    [InlineData(true, new[] { "PzSpace.IPzOps<TSelf>.PzStaticAbsProp" })]
+    [InlineData(false, new[] { "PzSpace.IPzOps<TSelf>.PzStaticVirt()" })]
+    public async Task SearchSymbols_AbstractFilter_StaticAbstractProperty_MatchesWithStaticFilterTrue(
+        bool? abstractFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Pz",
+            CaseSensitive = true,
+            StaticFilter = true,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(expected, SortedFqns(result.Data));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    // Indexers (named this[]) and operators (op_Addition) fail CanBeReferencedByName, so neither the
+    // abstract indexer nor the static abstract operator is ever returned, whatever the filters.
+    [SkippableTheory]
+    [InlineData("this", null, null)]
+    [InlineData("this", true, null)]
+    [InlineData("this", false, null)]
+    [InlineData("op_", null, null)]
+    [InlineData("op_", true, null)]
+    [InlineData("op_", false, null)]
+    [InlineData("op_", true, true)]
+    public async Task SearchSymbols_AbstractFilter_NeverReturnsAbstractIndexerOrStaticAbstractOperator(
+        string query, bool? abstractFilter, bool? staticFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = query,
+            AbstractFilter = abstractFilter,
+            StaticFilter = staticFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+    }
+
+    // Source only: a metadata type such as System.IDisposable is never returned, so abstractFilter true
+    // (an interface is abstract) still gives an empty success.
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_AbstractFilter_NeverReturnsMetadataSymbols(bool? abstractFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "IDisposable",
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
     }
 
     #endregion
