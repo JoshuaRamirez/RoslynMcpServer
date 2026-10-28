@@ -182,9 +182,9 @@ public sealed class FindImplementationsParams
     /// only types (derived classes and records), while this filter also judges implementing members;
     /// <c>get_type_hierarchy</c> lists derived types declared in metadata (e.g. <c>DbException</c> under
     /// <c>System.Exception</c>), while <c>find_implementations</c> never lists metadata implementations
-    /// but still counts them toward <c>TotalCount</c> (e.g. a <c>System.IDisposable</c> target in a
-    /// net9.0 project counts 365 / 71 / 294 for omitted / <c>true</c> / <c>false</c> while listing only
-    /// the source implementers, so <c>Truncated</c> is <c>true</c>); <c>get_type_hierarchy</c> returns
+    /// but still counts them toward <c>TotalCount</c> (a metadata target such as
+    /// <c>System.IDisposable</c> counts its many metadata implementers, so <c>TotalCount</c> far exceeds
+    /// the listed source implementers and <c>Truncated</c> is <c>true</c>); <c>get_type_hierarchy</c> returns
     /// empty <c>DerivedTypes</c> for an interface root, while <c>find_implementations</c> returns
     /// nothing for a class target and lists the implementers of an interface target, including a
     /// derived interface. For an interface
