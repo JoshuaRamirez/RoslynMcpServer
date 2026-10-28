@@ -19,8 +19,9 @@ namespace RoslynMcp.Core.Query;
 /// <see cref="GetTypeHierarchyParams.ProjectPath"/> is set, only within one namespace subtree when
 /// <see cref="GetTypeHierarchyParams.NamespaceFilter"/> is set, only with a given declared
 /// accessibility when <see cref="GetTypeHierarchyParams.AccessibilityFilter"/> is set, only of a
-/// given symbol kind when <see cref="GetTypeHierarchyParams.KindFilter"/> is set, and only with a
-/// name containing a substring when <see cref="GetTypeHierarchyParams.NameFilter"/> is set).
+/// given symbol kind when <see cref="GetTypeHierarchyParams.KindFilter"/> is set, only with a
+/// name containing a substring when <see cref="GetTypeHierarchyParams.NameFilter"/> is set, and only
+/// abstract or only concrete types when <see cref="GetTypeHierarchyParams.AbstractFilter"/> is set).
 /// </summary>
 public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierarchyParams, GetTypeHierarchyResult>
 {
@@ -208,6 +209,12 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
                 // Name filter runs with the other symbol filters before maxResults so TotalCount /
                 // Truncated reflect the filtered set. BaseTypes and Interfaces are never filtered.
                 if (!NameFilterMatcher.Matches(d.Name, nameFilter))
+                    continue;
+
+                // Abstract filter runs with the other symbol filters before maxResults so TotalCount /
+                // Truncated reflect the filtered set: true keeps abstract derived types, false keeps
+                // concrete (instantiable) ones. BaseTypes and Interfaces are never filtered.
+                if (@params.AbstractFilter.HasValue && d.IsAbstract != @params.AbstractFilter.Value)
                     continue;
 
                 if (!filtered)

@@ -2608,6 +2608,300 @@ public class GetTypeHierarchyOperationTests
 
     #endregion
 
+    #region abstractFilter (#3124)
+
+    // Abstract App.Shape (base Root, interface IMarker) has seven descendants: abstract intermediates
+    // Polygon and Curve (a partial type where only the Derived.cs part says abstract), concrete Circle
+    // (through Curve), concrete Square and sealed Triangle (through Polygon), concrete Line (direct),
+    // and internal abstract Blob (direct, App.Other in Other.cs).
+    private static readonly Dictionary<string, string> AbstractSources = new()
+    {
+        ["Shape.cs"] = """
+            namespace App
+            {
+                public class Root { }
+                public interface IMarker { }
+
+                public abstract class Shape : Root, IMarker { }
+            }
+            """,
+        ["Derived.cs"] = """
+            namespace App
+            {
+                public abstract class Polygon : Shape { }
+                public class Square : Polygon { }
+                public sealed class Triangle : Polygon { }
+                public class Line : Shape { }
+                public abstract partial class Curve : Shape { }
+                public class Circle : Curve { }
+            }
+            """,
+        ["Other.cs"] = """
+            namespace App.Other
+            {
+                internal abstract class Blob : App.Shape { }
+            }
+
+            namespace App
+            {
+                public partial class Curve { }
+            }
+            """
+    };
+
+    private static readonly string[] AllAbstractDescendants =
+        { "Blob", "Circle", "Curve", "Line", "Polygon", "Square", "Triangle" };
+
+    private static readonly string[] AbstractDescendants = { "Blob", "Curve", "Polygon" };
+
+    private static readonly string[] ConcreteDescendants = { "Circle", "Line", "Square", "Triangle" };
+
+    private static GetTypeHierarchyParams AbstractParams(TempWorkspace workspace, bool? abstractFilter) => new()
+    {
+        SourceFile = workspace.SourcePath,
+        SymbolName = "Shape",
+        Direction = "Descendants",
+        AbstractFilter = abstractFilter
+    };
+
+    [Fact]
+    public void AbstractFilter_DefaultsToNull()
+    {
+        var @params = new GetTypeHierarchyParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.AbstractFilter);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AbstractFilter_SplitsAbstractAndConcreteDescendants()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var all = await operation.ExecuteAsync(AbstractParams(workspace, null));
+        Assert.True(all.Success);
+        Assert.Equal(AllAbstractDescendants, SortedNames(all.Data!.DerivedTypes));
+        Assert.Equal(7, all.Data.TotalCount);
+        Assert.False(all.Data.Truncated);
+
+        // Curve is abstract although only one of its partial declarations says so.
+        var abstracts = await operation.ExecuteAsync(AbstractParams(workspace, true));
+        Assert.True(abstracts.Success);
+        Assert.Equal(AbstractDescendants, SortedNames(abstracts.Data!.DerivedTypes));
+        Assert.Equal(3, abstracts.Data.TotalCount);
+        Assert.False(abstracts.Data.Truncated);
+
+        // Sealed Triangle is concrete.
+        var concrete = await operation.ExecuteAsync(AbstractParams(workspace, false));
+        Assert.True(concrete.Success);
+        Assert.Equal(ConcreteDescendants, SortedNames(concrete.Data!.DerivedTypes));
+        Assert.Equal(4, concrete.Data.TotalCount);
+        Assert.False(concrete.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AbstractFilter_JudgesRecords()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace App
+            {
+                public abstract record Event;
+                public abstract record DomainEvent : Event;
+                public record Created : DomainEvent;
+                public sealed record Deleted : Event;
+            }
+            """, "Events.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        GetTypeHierarchyParams Params(bool? filter) => new()
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Event",
+            Direction = "Descendants",
+            AbstractFilter = filter
+        };
+
+        var abstracts = await operation.ExecuteAsync(Params(true));
+        Assert.True(abstracts.Success);
+        Assert.Equal(new[] { "DomainEvent" }, SortedNames(abstracts.Data!.DerivedTypes));
+        Assert.Equal(1, abstracts.Data.TotalCount);
+
+        var concrete = await operation.ExecuteAsync(Params(false));
+        Assert.True(concrete.Success);
+        Assert.Equal(new[] { "Created", "Deleted" }, SortedNames(concrete.Data!.DerivedTypes));
+        Assert.Equal(2, concrete.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AbstractFilterWithTransitiveFalse_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        GetTypeHierarchyParams Params(bool filter) => new()
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            Transitive = false,
+            AbstractFilter = filter
+        };
+
+        // Square / Triangle / Circle derive through abstract intermediates, so the direct concrete
+        // set is only Line.
+        var concrete = await operation.ExecuteAsync(Params(false));
+        Assert.True(concrete.Success);
+        Assert.Equal(new[] { "Line" }, SortedNames(concrete.Data!.DerivedTypes));
+        Assert.Equal(1, concrete.Data.TotalCount);
+        Assert.False(concrete.Data.Truncated);
+
+        var abstracts = await operation.ExecuteAsync(Params(true));
+        Assert.True(abstracts.Success);
+        Assert.Equal(AbstractDescendants, SortedNames(abstracts.Data!.DerivedTypes));
+        Assert.Equal(3, abstracts.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AbstractFilterWithMaxResults_CapsFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            AbstractFilter = false,
+            MaxResults = 3
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(3, capped.Data!.DerivedTypes.Count);
+        Assert.All(capped.Data.DerivedTypes, d => Assert.Contains(d.TypeName, ConcreteDescendants));
+        Assert.Equal(4, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var exact = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            AbstractFilter = true,
+            MaxResults = 3
+        });
+
+        Assert.True(exact.Success);
+        Assert.Equal(AbstractDescendants, SortedNames(exact.Data!.DerivedTypes));
+        Assert.Equal(3, exact.Data.TotalCount);
+        Assert.False(exact.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AbstractFilterWithOtherFilters_AndsTheScopes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var internalAbstract = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            AbstractFilter = true,
+            AccessibilityFilter = "internal"
+        });
+        Assert.True(internalAbstract.Success);
+        Assert.Equal(new[] { "Blob" }, SortedNames(internalAbstract.Data!.DerivedTypes));
+
+        var namespaced = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            AbstractFilter = false,
+            NamespaceFilter = "App.Other"
+        });
+        Assert.True(namespaced.Success);
+        Assert.Empty(namespaced.Data!.DerivedTypes);
+        Assert.Equal(0, namespaced.Data.TotalCount);
+        Assert.False(namespaced.Data.Truncated);
+
+        var named = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            AbstractFilter = false,
+            NameFilter = "l"
+        });
+        Assert.True(named.Success);
+        Assert.Equal(new[] { "Circle", "Line", "Triangle" }, SortedNames(named.Data!.DerivedTypes));
+
+        var records = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            AbstractFilter = true,
+            KindFilter = "Record"
+        });
+        Assert.True(records.Success);
+        Assert.Empty(records.Data!.DerivedTypes);
+
+        // Curve's abstract part is in Derived.cs, so a Derived.cs + project scope reports it there;
+        // Blob lives in Other.cs and is dropped.
+        var scoped = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            AbstractFilter = true,
+            DerivedFile = workspace.PathOf("Derived.cs"),
+            ProjectPath = workspace.ProjectPath
+        });
+        Assert.True(scoped.Success);
+        Assert.Equal(new[] { "Curve", "Polygon" }, SortedNames(scoped.Data!.DerivedTypes));
+        Assert.All(scoped.Data.DerivedTypes, d => Assert.True(SamePath(d.File, workspace.PathOf("Derived.cs"))));
+        Assert.Equal(2, scoped.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AbstractFilter_DoesNotFilterBaseTypesOrInterfaces()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Root is concrete and IMarker is an (abstract) interface, yet both stay for either value.
+        foreach (var filter in new[] { true, false })
+        {
+            var both = await operation.ExecuteAsync(new GetTypeHierarchyParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Shape",
+                AbstractFilter = filter
+            });
+            Assert.True(both.Success);
+            Assert.Equal(filter ? AbstractDescendants : ConcreteDescendants, SortedNames(both.Data!.DerivedTypes));
+            Assert.Contains(both.Data.BaseTypes, b => b.TypeName == "Root");
+            Assert.Contains(both.Data.Interfaces, i => i.TypeName == "IMarker");
+
+            var ancestors = await operation.ExecuteAsync(new GetTypeHierarchyParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Shape",
+                Direction = "Ancestors",
+                AbstractFilter = filter
+            });
+            Assert.True(ancestors.Success);
+            Assert.Empty(ancestors.Data!.DerivedTypes);
+            Assert.Equal(0, ancestors.Data.TotalCount);
+            Assert.Contains(ancestors.Data.BaseTypes, b => b.TypeName == "Root");
+            Assert.Contains(ancestors.Data.Interfaces, i => i.TypeName == "IMarker");
+        }
+    }
+
+    #endregion
+
     private static List<string> SortedNames(IEnumerable<TypeHierarchyEntry> entries) =>
         entries.Select(e => e.TypeName).OrderBy(n => n, StringComparer.Ordinal).ToList();
 

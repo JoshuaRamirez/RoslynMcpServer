@@ -421,6 +421,21 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void GetTypeHierarchy_AbstractFilterFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-type-hierarchy", "--source-file", "/src/Shape.cs", "--symbol-name", "Shape", "--abstract-filter"]);
+        Assert.Equal("get-type-hierarchy", result.ToolName);
+        Assert.Equal("true", result.Options["abstract-filter"]);
+    }
+
+    [Fact]
+    public void GetTypeHierarchy_AbstractFilterExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-type-hierarchy", "--source-file", "/src/Shape.cs", "--symbol-name", "Shape", "--abstract-filter", "false"]);
+        Assert.Equal("false", result.Options["abstract-filter"]);
+    }
+
+    [Fact]
     public void GetDiagnostics_StaticFilterFlag_ParsesAsTrue()
     {
         var result = CliArgs.Parse(["My.sln", "get-diagnostics", "--static-filter"]);

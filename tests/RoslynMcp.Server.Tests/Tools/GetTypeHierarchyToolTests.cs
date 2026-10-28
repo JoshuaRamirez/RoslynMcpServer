@@ -448,4 +448,77 @@ public class GetTypeHierarchyToolTests
         Assert.True(result.IsError);
         Assert.DoesNotContain("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
     }
+
+    [Fact]
+    public void GetDefinition_AbstractFilter_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+        var abstractFilter = properties.GetProperty("abstractFilter");
+
+        Assert.Equal("boolean", abstractFilter.GetProperty("type").GetString());
+        var description = abstractFilter.GetProperty("description").GetString()!;
+        Assert.Contains("IsAbstract", description);
+        Assert.Contains("concrete", description);
+        Assert.Contains("BaseTypes or Interfaces", description);
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("abstractFilter", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("abstractFilter", _tool.Description);
+
+        // Peer filters list abstractFilter in their "combined with" sentences.
+        foreach (var peer in new[] { "namespaceFilter", "accessibilityFilter", "kindFilter", "nameFilter" })
+            Assert.Contains("abstractFilter", properties.GetProperty(peer).GetProperty("description").GetString());
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public async Task ExecuteAsync_AbstractFilterBoolean_ParsesAndReachesWorkspace(string value)
+    {
+        // Arrange - well-formed abstractFilter parses; the throwing provider proves parsing succeeded
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Lib/Shape.cs",
+                "symbolName": "Shape",
+                "abstractFilter": {{value}}
+            }
+            """).RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
+
+    [Theory]
+    [InlineData("\"yes\"")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    public async Task ExecuteAsync_AbstractFilterNonBoolean_ReturnsInternalError(string value)
+    {
+        // Arrange - a non-boolean value fails deserialization before workspace creation
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Lib/Shape.cs",
+                "symbolName": "Shape",
+                "abstractFilter": {{value}}
+            }
+            """).RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        var text = result.Content.FirstOrDefault()?.Text ?? "";
+        Assert.Contains("INTERNAL_ERROR", text);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", text);
+    }
 }
