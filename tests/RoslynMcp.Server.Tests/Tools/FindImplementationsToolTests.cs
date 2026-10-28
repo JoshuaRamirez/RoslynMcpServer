@@ -609,6 +609,15 @@ public class FindImplementationsToolTests
         Assert.Contains("staticFilter", description);
         Assert.Contains("applied before maxResults", description);
         Assert.Contains("INTERNAL_ERROR", description);
+        Assert.DoesNotContain("same IsAbstract test", description);
+        Assert.Contains("never lists metadata implementations but still counts them", description);
+        Assert.Contains("returns nothing for a class target", description);
+
+        foreach (var text in new[] { "every construction of IGen<T>", "must match (AND)", "bare --abstract-filter means true", "other than true/false (case-insensitive) is rejected" })
+        {
+            Assert.Contains(text, description);
+            Assert.Contains(text, _tool.Description);
+        }
 
         foreach (var peer in new[] { "namespaceFilter", "accessibilityFilter", "kindFilter", "nameFilter", "staticFilter" })
         {

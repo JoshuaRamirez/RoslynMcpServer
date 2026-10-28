@@ -191,8 +191,8 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
                 continue;
 
             // Abstract filter runs with the other symbol filters before maxResults so TotalCount /
-            // Truncated reflect the filtered set. Same ISymbol.IsAbstract test as get_type_hierarchy
-            // abstractFilter, judged on each returned implementation itself: true keeps abstract
+            // Truncated reflect the filtered set. ISymbol.IsAbstract (the property get_type_hierarchy
+            // abstractFilter also tests), judged on each returned implementation itself: true keeps abstract
             // implementing types / abstract implementing members (including an abstract
             // re-abstraction in a derived interface); false keeps concrete ones.
             if (@params.AbstractFilter.HasValue && impl.IsAbstract != @params.AbstractFilter.Value)

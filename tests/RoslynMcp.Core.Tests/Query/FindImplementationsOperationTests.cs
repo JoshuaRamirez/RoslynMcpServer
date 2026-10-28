@@ -2973,7 +2973,7 @@ public class FindImplementationsOperationTests
         Assert.Equal(expected.Length, data.TotalCount);
     }
 
-    // Abstract / virtual class targets, abstract members with overrides, and an abstract class
+    // Class targets (abstract Animal / BaseRunner, concrete Virt with a virtual member), abstract members with overrides, and an abstract class
     // implementing an interface (BaseRunner and BaseRunner.Run) return no implementations even without
     // a filter (Roslyn FindImplementationsAsync does not report derived classes or overrides). Pins
     // current behavior, not the intended contract. The derived-interface targets IReAbs and IDim are
@@ -2984,6 +2984,7 @@ public class FindImplementationsOperationTests
     [InlineData(20, "Animal")]
     [InlineData(20, "Legs")]
     [InlineData(4, "BaseRunner")]
+    [InlineData(14, "Virt")]
     [InlineData(4, "Run(")]
     [InlineData(14, "Run(")]
     [InlineData(12, "IReAbs")]
@@ -3166,6 +3167,87 @@ public class FindImplementationsOperationTests
         Assert.Equal(expected.Length, result.Data.TotalCount);
     }
 
+    // A constructed generic interface target (IGen<int> in IntG's base list or as Holder's field
+    // type) resolves to IGen<int> but reports the implementers of every construction of IGen<T>,
+    // including AbsStrG : IGen<string> and the open generics OpenG<T> / AbsOpenG<T>, each judged on
+    // its own IsAbstract; transitive false keeps the same set.
+    private const string GenericInterfaceSource = """
+        namespace App.Gen
+        {
+            public interface IGen<T> { void Put(T t); }
+            public class IntG : IGen<int> { public void Put(int t) { } }
+            public class OpenG<T> : IGen<T> { public void Put(T t) { } }
+            public abstract class AbsOpenG<T> : IGen<T> { public abstract void Put(T t); }
+            public abstract class AbsStrG : IGen<string> { public abstract void Put(string t); }
+            public class Holder { IGen<int> field; }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(4, null, null, new[] { "App.Gen.AbsOpenG<T>", "App.Gen.AbsStrG", "App.Gen.IntG", "App.Gen.OpenG<T>" })]
+    [InlineData(4, true, null, new[] { "App.Gen.AbsOpenG<T>", "App.Gen.AbsStrG" })]
+    [InlineData(4, false, null, new[] { "App.Gen.IntG", "App.Gen.OpenG<T>" })]
+    [InlineData(8, null, null, new[] { "App.Gen.AbsOpenG<T>", "App.Gen.AbsStrG", "App.Gen.IntG", "App.Gen.OpenG<T>" })]
+    [InlineData(8, true, null, new[] { "App.Gen.AbsOpenG<T>", "App.Gen.AbsStrG" })]
+    [InlineData(8, false, null, new[] { "App.Gen.IntG", "App.Gen.OpenG<T>" })]
+    [InlineData(4, true, false, new[] { "App.Gen.AbsOpenG<T>", "App.Gen.AbsStrG" })]
+    [InlineData(4, false, false, new[] { "App.Gen.IntG", "App.Gen.OpenG<T>" })]
+    public async Task FindImplementations_AbstractFilter_ConstructedGenericInterfaceTarget_ReportsEveryConstruction(
+        int line, bool? abstractFilter, bool? transitive, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            new Dictionary<string, string> { ["Gen.cs"] = GenericInterfaceSource });
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Gen.cs"),
+            Line = line,
+            Column = GenericInterfaceSource.Split('\n')[line - 1].IndexOf("IGen", StringComparison.Ordinal) + 1,
+            AbstractFilter = abstractFilter,
+            Transitive = transitive
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal("App.Gen.IGen<int>", result.Data!.FullyQualifiedName);
+        Assert.Equal(expected, SortedFqns(result.Data.Implementations));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    // staticFilter and abstractFilter must both match (AND). Implementing types are never static, so
+    // staticFilter true empties a type target whatever abstractFilter is; the implementation of the
+    // static abstract member IStat.Make is static and never abstract, so it survives only staticFilter
+    // true with abstractFilter false (or omitted).
+    [SkippableTheory]
+    [InlineData("IStat", true, null, new string[0])]
+    [InlineData("IStat", true, true, new string[0])]
+    [InlineData("IStat", false, true, new[] { "App.Abs.StatImpl" })]
+    [InlineData("IStat", false, false, new string[0])]
+    [InlineData("Make", true, null, new[] { "App.Abs.StatImpl.Make()" })]
+    [InlineData("Make", true, false, new[] { "App.Abs.StatImpl.Make()" })]
+    [InlineData("Make", true, true, new string[0])]
+    [InlineData("Make", false, null, new string[0])]
+    [InlineData("Make", false, false, new string[0])]
+    public async Task FindImplementations_AbstractFilter_AndsWithStaticFilter_OnStaticAbstractMember(
+        string token, bool staticFilter, bool? abstractFilter, string[] expected)
+    {
+        await using var workspace = await CreateAbstractWorkspaceAsync();
+
+        var data = await RunAbstractFilterAsync(workspace, 17, token, abstractFilter,
+            p => new FindImplementationsParams
+            {
+                SourceFile = p.SourceFile,
+                Line = p.Line,
+                Column = p.Column,
+                AbstractFilter = p.AbstractFilter,
+                StaticFilter = staticFilter
+            });
+
+        Assert.Equal(expected, SortedFqns(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+    }
+
     // Implementations declared only in metadata are never listed but, for a metadata target
     // (System.IDisposable), still count toward TotalCount when no location filter applies and are
     // judged on their own IsAbstract (abstract framework types such as System.IO.Stream implement
@@ -3204,6 +3286,26 @@ public class FindImplementationsOperationTests
             Assert.Equal("App.Meta.Disp", Assert.Single(data.Implementations).FullyQualifiedName);
         Assert.True(data.TotalCount > data.Implementations.Count);
         Assert.True(data.Truncated);
+
+        if (abstractFilter == null)
+        {
+            // true and false partition the counted metadata implementations.
+            var counts = new List<int>();
+            foreach (var filter in new[] { true, false })
+            {
+                var part = await operation.ExecuteAsync(new FindImplementationsParams
+                {
+                    SourceFile = workspace.PathOf("Meta.cs"),
+                    Line = 3,
+                    Column = source.Split('\n')[2].IndexOf("IDisposable", StringComparison.Ordinal) + 1,
+                    AbstractFilter = filter
+                });
+                Assert.True(part.Success);
+                Assert.True(part.Data!.TotalCount > 0);
+                counts.Add(part.Data.TotalCount);
+            }
+            Assert.Equal(data.TotalCount, counts.Sum());
+        }
     }
 
     #endregion
