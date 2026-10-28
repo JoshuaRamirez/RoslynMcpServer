@@ -137,65 +137,28 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
 
         var filtered = implementationFileKey != null || projectScope != null;
 
-        // Optional namespaceFilter (same normalization / matching as search_symbols namespaceFilter):
-        // an implementation matches when its containing namespace (for member targets, the namespace
-        // of the member's containing type) equals the filter or is nested inside it. Null when omitted,
-        // blank, or a bare global:: (no namespace filtering).
-        var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
-
-        // Optional accessibilityFilter (same values / parsing as search_symbols accessibilityFilter):
-        // keep only implementations whose DeclaredAccessibility equals the filter exactly. Null when
-        // omitted / blank (no accessibility filtering). Invalid values already rejected in ValidateParams.
-        var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
-
-        // Optional kindFilter (same values / parsing as search_symbols / get_symbol_info kindFilter):
-        // keep only implementations whose reported Kind (SymbolKindMapper.Map, as in ImplementationInfo)
-        // equals the filter. Null when omitted / blank (no kind filtering). Invalid values already
-        // rejected in ValidateParams.
-        var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
-
-        // Optional nameFilter (same matching as get_document_outline / get_symbol_info nameFilter):
-        // keep only implementations whose reported Name (ISymbol.Name, as in ImplementationInfo)
-        // contains the trimmed value, ordinal case-insensitive. Null when omitted / blank (no name
-        // filtering).
-        var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
+        // Optional namespaceFilter / accessibilityFilter / kindFilter / nameFilter / staticFilter /
+        // abstractFilter (same values / parsing as search_symbols / get_type_hierarchy), judged on each
+        // returned implementation itself: containing namespace (for member targets, the namespace of the
+        // member's containing type) equal to or nested in the filter, exact DeclaredAccessibility, reported
+        // Kind (SymbolKindMapper.Map, as in ImplementationInfo), reported Name (ordinal case-insensitive
+        // contains), ISymbol.IsStatic (implementing types are never static) and ISymbol.IsAbstract (true
+        // keeps abstract implementing types / members, including an abstract re-abstraction in a derived
+        // interface). Omitted / blank values impose no filter; invalid values already rejected in
+        // ValidateParams.
+        var symbolFilter = ResultSymbolFilter.Create(
+            @params.NamespaceFilter,
+            @params.AccessibilityFilter,
+            @params.KindFilter,
+            @params.NameFilter,
+            @params.StaticFilter,
+            @params.AbstractFilter);
 
         foreach (var impl in implSymbols)
         {
-            // Applied before maxResults (and before the location filters below) so TotalCount /
-            // Truncated reflect the namespace-filtered set.
-            if (namespaceFilter != null && !NamespaceFilter.IsInNamespace(impl, namespaceFilter))
-                continue;
-
-            // Accessibility filter runs with the other symbol filters before maxResults so
-            // TotalCount / Truncated reflect the filtered set. Exact DeclaredAccessibility match
-            // (implicit defaults count; protected internal ≠ protected / internal).
-            if (accessibilityFilter.HasValue && impl.DeclaredAccessibility != accessibilityFilter.Value)
-                continue;
-
-            // Kind filter runs with the other symbol filters before maxResults so TotalCount /
-            // Truncated reflect the filtered set. Matches the Kind reported for the implementation.
-            if (kindFilter.HasValue && SymbolKindMapper.Map(impl) != kindFilter.Value)
-                continue;
-
-            // Name filter runs with the other symbol filters before maxResults so TotalCount /
-            // Truncated reflect the filtered set. Matches the Name reported for the implementation.
-            if (!NameFilterMatcher.Matches(impl.Name, nameFilter))
-                continue;
-
-            // Static filter runs with the other symbol filters before maxResults so TotalCount /
-            // Truncated reflect the filtered set. Same ISymbol.IsStatic test as get_symbol_info /
-            // get_document_outline / search_symbols / find_callers / find_references / get_diagnostics
-            // staticFilter; implementing types are never static.
-            if (@params.StaticFilter.HasValue && impl.IsStatic != @params.StaticFilter.Value)
-                continue;
-
-            // Abstract filter runs with the other symbol filters before maxResults so TotalCount /
-            // Truncated reflect the filtered set. ISymbol.IsAbstract (the property get_type_hierarchy
-            // abstractFilter also tests), judged on each returned implementation itself: true keeps abstract
-            // implementing types / abstract implementing members (including an abstract
-            // re-abstraction in a derived interface); false keeps concrete ones.
-            if (@params.AbstractFilter.HasValue && impl.IsAbstract != @params.AbstractFilter.Value)
+            // Symbol filters run before maxResults (and before the location filters below) so
+            // TotalCount / Truncated reflect the filtered set.
+            if (!symbolFilter.Matches(impl))
                 continue;
 
             Location? location;

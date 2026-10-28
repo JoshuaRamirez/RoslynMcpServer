@@ -1,0 +1,76 @@
+using Microsoft.CodeAnalysis;
+using RoslynMcp.Core.Resolution;
+
+namespace RoslynMcp.Core.Query.Utilities;
+
+/// <summary>
+/// The optional <c>namespaceFilter</c> / <c>accessibilityFilter</c> / <c>kindFilter</c> / <c>nameFilter</c> /
+/// <c>staticFilter</c> / <c>abstractFilter</c> combination that <c>find_implementations</c> and
+/// <c>get_type_hierarchy</c> apply to each returned symbol (an implementation or a derived type) before
+/// <c>maxResults</c>. Built once per request from the raw parameters; invalid accessibility / kind values are
+/// rejected earlier in each operation's <c>ValidateParams</c>.
+/// </summary>
+internal sealed class ResultSymbolFilter
+{
+    private readonly string? _namespace;
+    private readonly Accessibility? _accessibility;
+    private readonly Contracts.Enums.SymbolKind? _kind;
+    private readonly string? _name;
+    private readonly bool? _isStatic;
+    private readonly bool? _isAbstract;
+
+    private ResultSymbolFilter(
+        string? @namespace,
+        Accessibility? accessibility,
+        Contracts.Enums.SymbolKind? kind,
+        string? name,
+        bool? isStatic,
+        bool? isAbstract)
+    {
+        _namespace = @namespace;
+        _accessibility = accessibility;
+        _kind = kind;
+        _name = name;
+        _isStatic = isStatic;
+        _isAbstract = isAbstract;
+    }
+
+    /// <summary>
+    /// Parses the raw filter values: <paramref name="namespaceFilter"/> via
+    /// <see cref="NamespaceFilter.Normalize"/>, <paramref name="accessibilityFilter"/> via
+    /// <see cref="AccessibilityFilterParser.Parse"/>, <paramref name="kindFilter"/> via
+    /// <see cref="SymbolKindFilterParser.Parse"/>, <paramref name="nameFilter"/> via
+    /// <see cref="NameFilterMatcher.Normalize"/>; <paramref name="staticFilter"/> and
+    /// <paramref name="abstractFilter"/> are used as-is. Omitted / blank values impose no filter.
+    /// </summary>
+    public static ResultSymbolFilter Create(
+        string? namespaceFilter,
+        string? accessibilityFilter,
+        string? kindFilter,
+        string? nameFilter,
+        bool? staticFilter,
+        bool? abstractFilter) =>
+        new(
+            NamespaceFilter.Normalize(namespaceFilter),
+            AccessibilityFilterParser.Parse(accessibilityFilter),
+            SymbolKindFilterParser.Parse(kindFilter),
+            NameFilterMatcher.Normalize(nameFilter),
+            staticFilter,
+            abstractFilter);
+
+    /// <summary>
+    /// Whether <paramref name="symbol"/> satisfies every set filter: containing namespace equal to or nested
+    /// in the filter (<see cref="NamespaceFilter.IsInNamespace"/>), exact
+    /// <see cref="ISymbol.DeclaredAccessibility"/> equality (implicit defaults count; protected internal ≠
+    /// protected / internal), <see cref="SymbolKindMapper.Map"/> equality, <see cref="NameFilterMatcher.Matches"/>
+    /// on the simple <see cref="ISymbol.Name"/>, <see cref="ISymbol.IsStatic"/> equality and
+    /// <see cref="ISymbol.IsAbstract"/> equality. Always <c>true</c> when no filter is set.
+    /// </summary>
+    public bool Matches(ISymbol symbol) =>
+        (_namespace == null || NamespaceFilter.IsInNamespace(symbol, _namespace))
+        && (!_accessibility.HasValue || symbol.DeclaredAccessibility == _accessibility.Value)
+        && (!_kind.HasValue || SymbolKindMapper.Map(symbol) == _kind.Value)
+        && NameFilterMatcher.Matches(symbol.Name, _name)
+        && (!_isStatic.HasValue || symbol.IsStatic == _isStatic.Value)
+        && (!_isAbstract.HasValue || symbol.IsAbstract == _isAbstract.Value);
+}
