@@ -21,7 +21,9 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <c>accessibilityFilter</c>), and optional <c>kindFilter</c> (restricts reported implementations
 /// by reported kind; peer of <c>search_symbols</c> / <c>get_symbol_info</c> <c>kindFilter</c>), and
 /// optional <c>nameFilter</c> (restricts reported implementations by name substring; peer of
-/// <c>get_document_outline</c> / <c>get_symbol_info</c> <c>nameFilter</c>).
+/// <c>get_document_outline</c> / <c>get_symbol_info</c> <c>nameFilter</c>), and optional
+/// <c>abstractFilter</c> (restricts reported implementations by <c>IsAbstract</c>; peer of
+/// <c>get_type_hierarchy</c> <c>abstractFilter</c>).
 /// </summary>
 public class FindImplementationsOperationTests
 {
@@ -2742,6 +2744,567 @@ public class FindImplementationsOperationTests
             Assert.Equal("App.Meta.Disp", only.FullyQualifiedName);
             Assert.True(data.TotalCount > 1);
             Assert.True(data.Truncated);
+        }
+    }
+
+    #endregion
+
+    #region AbstractFilter (#3136)
+
+    // AbstractSource: IRunner (Run / Speed / Done) is implemented by abstract classes (BaseRunner with
+    // abstract members; EmptyAbs and Explicit with no abstract members), an abstract record (AbsRec),
+    // a nested abstract class, an abstract generic class, and by concrete types: a sealed class, a
+    // struct, a class with a virtual member, a class with an extern member, plus FastRunner / ConRec,
+    // which inherit the interface from an abstract base (reported for type targets only when
+    // transitive is true). IReAbs re-abstracts IRunner.Run and IDim re-implements it with a default
+    // body. IStat has a static abstract member implemented by an abstract class. Animal / Dog pin the
+    // current empty result for class targets.
+    private const string AbstractSource = """
+        namespace App.Abs
+        {
+            public interface IRunner { void Run(); int Speed { get; } event System.Action Done; }
+            public abstract class BaseRunner : IRunner { public abstract void Run(); public abstract int Speed { get; } public abstract event System.Action Done; }
+            public class FastRunner : BaseRunner { public override void Run() { } public override int Speed => 2; public override event System.Action Done { add { } remove { } } }
+            public sealed class SealedRunner : IRunner { public void Run() { } public int Speed => 1; public event System.Action Done { add { } remove { } } }
+            public abstract class EmptyAbs : IRunner { public void Run() { } public int Speed => 0; public event System.Action Done { add { } remove { } } }
+            public abstract record AbsRec : IRunner { public abstract void Run(); public int Speed => 3; public event System.Action Done { add { } remove { } } }
+            public record ConRec : AbsRec { public override void Run() { } }
+            public struct SRunner : IRunner { public void Run() { } public int Speed => 4; public event System.Action Done { add { } remove { } } }
+            public abstract class Explicit : IRunner { void IRunner.Run() { } int IRunner.Speed => 5; event System.Action IRunner.Done { add { } remove { } } }
+            public interface IReAbs : IRunner { abstract void IRunner.Run(); }
+            public interface IDim : IRunner { void IRunner.Run() { } }
+            public class Virt : IRunner { public virtual void Run() { } public int Speed => 6; public event System.Action Done { add { } remove { } } }
+            public abstract class Outer { public abstract class NestedAbs : IRunner { public abstract void Run(); public int Speed => 7; public event System.Action Done { add { } remove { } } } }
+            public abstract class GenAbs<T> : IRunner { public abstract void Run(); public int Speed => 8; public event System.Action Done { add { } remove { } } }
+            public interface IStat { static abstract int Make(); }
+            public abstract class StatImpl : IStat { public static int Make() => 1; }
+            public class ExternImpl : IRunner { [System.Runtime.InteropServices.DllImport("x")] public static extern void Ext(); public void Run() { } public int Speed => 9; public event System.Action Done { add { } remove { } } }
+            public abstract class Animal { public abstract int Legs(); }
+            public abstract class Dog : Animal { }
+        }
+        """;
+
+    private static readonly string[] AbstractTypes =
+    {
+        "App.Abs.AbsRec", "App.Abs.BaseRunner", "App.Abs.EmptyAbs", "App.Abs.Explicit",
+        "App.Abs.GenAbs<T>", "App.Abs.Outer.NestedAbs"
+    };
+
+    private static readonly string[] DirectConcreteTypes =
+    {
+        "App.Abs.ExternImpl", "App.Abs.SRunner", "App.Abs.SealedRunner", "App.Abs.Virt"
+    };
+
+    // AbstractSource line / column of the first occurrence of token on that 1-based line.
+    private static (int Line, int Column) AbstractPosition(int line, string token)
+    {
+        var text = AbstractSource.Split('\n')[line - 1];
+        var index = text.IndexOf(token, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"{token} not on line {line}");
+        return (line, index + 1);
+    }
+
+    private static async Task<FindImplementationsResult> RunAbstractFilterAsync(
+        TempWorkspace workspace, int line, string token, bool? abstractFilter,
+        Func<FindImplementationsParams, FindImplementationsParams>? configure = null)
+    {
+        var (targetLine, targetColumn) = AbstractPosition(line, token);
+        var @params = new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Abs.cs"),
+            Line = targetLine,
+            Column = targetColumn,
+            AbstractFilter = abstractFilter
+        };
+        if (configure != null) @params = configure(@params);
+
+        var operation = new FindImplementationsOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(@params);
+        Assert.True(result.Success, $"{token}/{abstractFilter}: {result.Error?.Message}");
+        return result.Data!;
+    }
+
+    private static Task<TempWorkspace> CreateAbstractWorkspaceAsync() =>
+        TempWorkspace.CreateAsync(new Dictionary<string, string> { ["Abs.cs"] = AbstractSource });
+
+    private static List<string> SortedFqns(IEnumerable<ImplementationInfo> implementations) =>
+        implementations.Select(i => i.FullyQualifiedName).OrderBy(n => n, StringComparer.Ordinal).ToList();
+
+    private static string[] Sorted(params IEnumerable<string>[] parts) =>
+        parts.SelectMany(p => p).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+
+    [Fact]
+    public void AbstractFilter_DefaultsToNull()
+    {
+        var @params = new FindImplementationsParams { SourceFile = "/tmp/x.cs", SymbolName = "IFoo" };
+        Assert.Null(@params.AbstractFilter);
+    }
+
+    // Interface type target: every implementing type is judged on its own IsAbstract. An abstract
+    // class with no abstract members (EmptyAbs, Explicit) counts as abstract; abstract records, nested
+    // and generic abstract classes are abstract; sealed classes, structs, classes with virtual or
+    // extern members, and the concrete subclasses of an abstract implementer (FastRunner, ConRec) are
+    // not. Derived interfaces (IReAbs, IDim) are never returned for a type target.
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FindImplementations_AbstractFilter_InterfaceTypeTarget_JudgesEachImplementingType(bool? abstractFilter)
+    {
+        await using var workspace = await CreateAbstractWorkspaceAsync();
+
+        var data = await RunAbstractFilterAsync(workspace, 3, "IRunner", abstractFilter);
+
+        var inherited = new[] { "App.Abs.ConRec", "App.Abs.FastRunner" };
+        var expected = abstractFilter switch
+        {
+            true => Sorted(AbstractTypes),
+            false => Sorted(DirectConcreteTypes, inherited),
+            null => Sorted(AbstractTypes, DirectConcreteTypes, inherited)
+        };
+        Assert.Equal(expected, SortedFqns(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+        Assert.False(data.Truncated);
+    }
+
+    // transitive false drops FastRunner / ConRec (they inherit IRunner from an abstract base) before
+    // the abstract filter runs, so false keeps only the direct concrete implementers; abstract
+    // implementers all list IRunner directly, so true is unchanged.
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FindImplementations_AbstractFilter_CombinesWithTransitiveFalse(bool abstractFilter)
+    {
+        await using var workspace = await CreateAbstractWorkspaceAsync();
+
+        var data = await RunAbstractFilterAsync(workspace, 3, "IRunner", abstractFilter,
+            p => new FindImplementationsParams
+            {
+                SourceFile = p.SourceFile,
+                Line = p.Line,
+                Column = p.Column,
+                AbstractFilter = p.AbstractFilter,
+                Transitive = false
+            });
+
+        var expected = abstractFilter ? Sorted(AbstractTypes) : Sorted(DirectConcreteTypes);
+        Assert.Equal(expected, SortedFqns(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+    }
+
+    // Interface member target: each implementing member is judged on its own IsAbstract. Abstract
+    // implementing members (BaseRunner / AbsRec / NestedAbs / GenAbs<T>.Run) and the re-abstraction
+    // in a derived interface (abstract void IRunner.Run() in IReAbs) are abstract; members with bodies
+    // in an abstract class (EmptyAbs.Run), explicit implementations (Explicit), the default-body
+    // re-implementation in IDim, virtual members, and members of concrete types are not. Overrides of
+    // an abstract implementing member (FastRunner.Run, ConRec.Run) are not implementations and are
+    // never listed (current behavior).
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FindImplementations_AbstractFilter_InterfaceMethodTarget_JudgesEachImplementingMember(bool? abstractFilter)
+    {
+        await using var workspace = await CreateAbstractWorkspaceAsync();
+
+        var data = await RunAbstractFilterAsync(workspace, 3, "Run(", abstractFilter);
+
+        var abstractMembers = new[]
+        {
+            "App.Abs.AbsRec.Run()", "App.Abs.BaseRunner.Run()", "App.Abs.GenAbs<T>.Run()",
+            "App.Abs.IReAbs.App.Abs.IRunner.Run()", "App.Abs.Outer.NestedAbs.Run()"
+        };
+        var concreteMembers = new[]
+        {
+            "App.Abs.EmptyAbs.Run()", "App.Abs.Explicit.App.Abs.IRunner.Run()", "App.Abs.ExternImpl.Run()",
+            "App.Abs.IDim.App.Abs.IRunner.Run()", "App.Abs.SRunner.Run()", "App.Abs.SealedRunner.Run()",
+            "App.Abs.Virt.Run()"
+        };
+        var expected = abstractFilter switch
+        {
+            true => Sorted(abstractMembers),
+            false => Sorted(concreteMembers),
+            null => Sorted(abstractMembers, concreteMembers)
+        };
+        Assert.Equal(expected, SortedFqns(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+        Assert.False(data.Truncated);
+        Assert.DoesNotContain(data.Implementations, i => i.FullyQualifiedName.Contains("FastRunner", StringComparison.Ordinal));
+        Assert.DoesNotContain(data.Implementations, i => i.FullyQualifiedName.Contains("ConRec", StringComparison.Ordinal));
+    }
+
+    // Property and event targets are judged on the implementing property / event itself: only
+    // BaseRunner declares them abstract (AbsRec's Speed / Done have bodies even though AbsRec is
+    // abstract).
+    [SkippableTheory]
+    [InlineData("Speed", true, new[] { "App.Abs.BaseRunner.Speed" })]
+    [InlineData("Done", true, new[] { "App.Abs.BaseRunner.Done" })]
+    [InlineData("Speed", false, new[] { "App.Abs.AbsRec.Speed", "App.Abs.EmptyAbs.Speed", "App.Abs.Explicit.App.Abs.IRunner.Speed", "App.Abs.ExternImpl.Speed", "App.Abs.GenAbs<T>.Speed", "App.Abs.Outer.NestedAbs.Speed", "App.Abs.SRunner.Speed", "App.Abs.SealedRunner.Speed", "App.Abs.Virt.Speed" })]
+    [InlineData("Done", false, new[] { "App.Abs.AbsRec.Done", "App.Abs.EmptyAbs.Done", "App.Abs.Explicit.App.Abs.IRunner.Done", "App.Abs.ExternImpl.Done", "App.Abs.GenAbs<T>.Done", "App.Abs.Outer.NestedAbs.Done", "App.Abs.SRunner.Done", "App.Abs.SealedRunner.Done", "App.Abs.Virt.Done" })]
+    public async Task FindImplementations_AbstractFilter_PropertyAndEventTargets(
+        string member, bool abstractFilter, string[] expected)
+    {
+        await using var workspace = await CreateAbstractWorkspaceAsync();
+
+        var data = await RunAbstractFilterAsync(workspace, 3, member, abstractFilter);
+
+        Assert.Equal(expected.OrderBy(n => n, StringComparer.Ordinal), SortedFqns(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+    }
+
+    // A static abstract interface member is implemented by static members, which are never abstract,
+    // so true is empty even when the implementing type (StatImpl) is abstract; the type target IStat
+    // still keeps StatImpl for true.
+    [SkippableTheory]
+    [InlineData("IStat", null, new[] { "App.Abs.StatImpl" })]
+    [InlineData("IStat", true, new[] { "App.Abs.StatImpl" })]
+    [InlineData("IStat", false, new string[0])]
+    [InlineData("Make", null, new[] { "App.Abs.StatImpl.Make()" })]
+    [InlineData("Make", true, new string[0])]
+    [InlineData("Make", false, new[] { "App.Abs.StatImpl.Make()" })]
+    public async Task FindImplementations_AbstractFilter_StaticAbstractInterfaceMember(
+        string token, bool? abstractFilter, string[] expected)
+    {
+        await using var workspace = await CreateAbstractWorkspaceAsync();
+
+        var data = await RunAbstractFilterAsync(workspace, 17, token, abstractFilter);
+
+        Assert.Equal(expected, SortedFqns(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+    }
+
+    // Class targets (abstract Animal / BaseRunner, concrete Virt with a virtual member), abstract members with overrides, and an abstract class
+    // implementing an interface (BaseRunner and BaseRunner.Run) return no implementations even without
+    // a filter (Roslyn FindImplementationsAsync does not report derived classes or overrides). Pins
+    // current behavior, not the intended contract. The derived-interface targets IReAbs and IDim are
+    // empty only because AbstractSource declares no type implementing them, not because derived
+    // interfaces are unsupported: see
+    // FindImplementations_AbstractFilter_DerivedInterfaceTarget_JudgesItsImplementers.
+    [SkippableTheory]
+    [InlineData(20, "Animal")]
+    [InlineData(20, "Legs")]
+    [InlineData(4, "BaseRunner")]
+    [InlineData(14, "Virt")]
+    [InlineData(4, "Run(")]
+    [InlineData(14, "Run(")]
+    [InlineData(12, "IReAbs")]
+    [InlineData(13, "IDim")]
+    public async Task FindImplementations_AbstractFilter_ClassAndUnimplementedDerivedInterfaceTargets_AreEmpty(int line, string token)
+    {
+        await using var workspace = await CreateAbstractWorkspaceAsync();
+
+        foreach (var abstractFilter in new bool?[] { null, true, false })
+        {
+            var data = await RunAbstractFilterAsync(workspace, line, token, abstractFilter);
+            Assert.Empty(data.Implementations);
+            Assert.Equal(0, data.TotalCount);
+            Assert.False(data.Truncated);
+        }
+    }
+
+    // A derived-interface target is an interface target like any other: IFast : IRunner is
+    // implemented by an abstract class (AbsFast), a concrete class (Turbo), and a concrete subclass of
+    // the abstract implementer (ConcFast), each judged on its own IsAbstract. The derived interface
+    // itself is never returned, and the base-interface implementer Plain is not an IFast implementer.
+    [SkippableTheory]
+    [InlineData(null, new[] { "App.Der.AbsFast", "App.Der.ConcFast", "App.Der.Turbo" })]
+    [InlineData(true, new[] { "App.Der.AbsFast" })]
+    [InlineData(false, new[] { "App.Der.ConcFast", "App.Der.Turbo" })]
+    public async Task FindImplementations_AbstractFilter_DerivedInterfaceTarget_JudgesItsImplementers(
+        bool? abstractFilter, string[] expected)
+    {
+        const string source = """
+            namespace App.Der
+            {
+                public interface IRunner { void Run(); }
+                public interface IFast : IRunner { }
+                public abstract class AbsFast : IFast { public abstract void Run(); }
+                public class ConcFast : AbsFast { public override void Run() { } }
+                public class Turbo : IFast { public void Run() { } }
+                public class Plain : IRunner { public void Run() { } }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(
+            new Dictionary<string, string> { ["Der.cs"] = source });
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Der.cs"),
+            Line = 4,
+            Column = source.Split('\n')[3].IndexOf("IFast", StringComparison.Ordinal) + 1,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal("App.Der.IFast", result.Data!.FullyQualifiedName);
+        Assert.Equal(expected, SortedFqns(result.Data.Implementations));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_AbstractFilter_AppliedBeforeMaxResults()
+    {
+        await using var workspace = await CreateAbstractWorkspaceAsync();
+
+        var data = await RunAbstractFilterAsync(workspace, 3, "IRunner", true,
+            p => new FindImplementationsParams
+            {
+                SourceFile = p.SourceFile,
+                Line = p.Line,
+                Column = p.Column,
+                AbstractFilter = p.AbstractFilter,
+                MaxResults = 2
+            });
+
+        Assert.Equal(2, data.Implementations.Count);
+        Assert.All(data.Implementations, i => Assert.Contains(i.FullyQualifiedName, AbstractTypes));
+        Assert.Equal(AbstractTypes.Length, data.TotalCount);
+        Assert.True(data.Truncated);
+
+        var exact = await RunAbstractFilterAsync(workspace, 3, "Speed", true,
+            p => new FindImplementationsParams
+            {
+                SourceFile = p.SourceFile,
+                Line = p.Line,
+                Column = p.Column,
+                AbstractFilter = p.AbstractFilter,
+                MaxResults = 1
+            });
+        Assert.Single(exact.Implementations);
+        Assert.Equal(1, exact.TotalCount);
+        Assert.False(exact.Truncated);
+    }
+
+    // Combined with the other symbol filters (all must match): kindFilter Record keeps the abstract
+    // record for true and the concrete record for false; nameFilter / accessibilityFilter /
+    // staticFilter narrow further.
+    [SkippableTheory]
+    [InlineData(true, "Record", null, null, null, new[] { "App.Abs.AbsRec" })]
+    [InlineData(false, "Record", null, null, null, new[] { "App.Abs.ConRec" })]
+    [InlineData(false, "Struct", null, null, null, new[] { "App.Abs.SRunner" })]
+    [InlineData(true, "Struct", null, null, null, new string[0])]
+    [InlineData(true, null, "Abs", null, null, new[] { "App.Abs.AbsRec", "App.Abs.EmptyAbs", "App.Abs.GenAbs<T>", "App.Abs.Outer.NestedAbs" })]
+    [InlineData(false, null, "Runner", null, null, new[] { "App.Abs.FastRunner", "App.Abs.SRunner", "App.Abs.SealedRunner" })]
+    [InlineData(true, null, null, "public", null, new[] { "App.Abs.AbsRec", "App.Abs.BaseRunner", "App.Abs.EmptyAbs", "App.Abs.Explicit", "App.Abs.GenAbs<T>", "App.Abs.Outer.NestedAbs" })]
+    [InlineData(true, null, null, null, true, new string[0])]
+    [InlineData(true, null, null, null, false, new[] { "App.Abs.AbsRec", "App.Abs.BaseRunner", "App.Abs.EmptyAbs", "App.Abs.Explicit", "App.Abs.GenAbs<T>", "App.Abs.Outer.NestedAbs" })]
+    public async Task FindImplementations_AbstractFilter_CombinesWithSymbolFilters(
+        bool abstractFilter, string? kindFilter, string? nameFilter, string? accessibilityFilter, bool? staticFilter,
+        string[] expected)
+    {
+        await using var workspace = await CreateAbstractWorkspaceAsync();
+
+        var data = await RunAbstractFilterAsync(workspace, 3, "IRunner", abstractFilter,
+            p => new FindImplementationsParams
+            {
+                SourceFile = p.SourceFile,
+                Line = p.Line,
+                Column = p.Column,
+                AbstractFilter = p.AbstractFilter,
+                KindFilter = kindFilter,
+                NameFilter = nameFilter,
+                AccessibilityFilter = accessibilityFilter,
+                StaticFilter = staticFilter
+            });
+
+        Assert.Equal(expected, SortedFqns(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FindImplementations_AbstractFilter_CombinesWithImplementationFile(bool abstractFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Abs.cs"] = AbstractSource,
+            ["More.cs"] = "namespace App.Abs { public sealed class SealedMore : IRunner { public void Run() { } public int Speed => 0; public event System.Action Done { add { } remove { } } } }"
+        });
+
+        var data = await RunAbstractFilterAsync(workspace, 3, "IRunner", abstractFilter,
+            p => new FindImplementationsParams
+            {
+                SourceFile = p.SourceFile,
+                Line = p.Line,
+                Column = p.Column,
+                AbstractFilter = p.AbstractFilter,
+                ImplementationFile = workspace.PathOf("More.cs")
+            });
+
+        var fqns = SortedFqns(data.Implementations);
+        Assert.Equal(abstractFilter ? Array.Empty<string>() : new[] { "App.Abs.SealedMore" }, fqns);
+        Assert.Equal(fqns.Count, data.TotalCount);
+    }
+
+    // Implementations in other projects of the solution are returned and judged like local ones.
+    [SkippableTheory]
+    [InlineData("IRunner", null, new[] { "AbsApp", "L1", "P1", "P2", "P3" })]
+    [InlineData("IRunner", true, new[] { "AbsApp" })]
+    [InlineData("IRunner", false, new[] { "L1", "P1", "P2", "P3" })]
+    [InlineData("Run", true, new[] { "AbsApp.Run()" })]
+    [InlineData("Run", false, new[] { "L1.Run()", "P1.Run()", "P2.Run()", "P3.Run()" })]
+    public async Task FindImplementations_AbstractFilter_OtherProjects_AreReturnedAndFiltered(
+        string symbolName, bool? abstractFilter, string[] expected)
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync(
+            extraAppSource: "public abstract class AbsApp : IRunner { public abstract void Run(); }");
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.LibInterfacePath,
+            SymbolName = symbolName,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            expected,
+            result.Data!.Implementations.Select(i => i.FullyQualifiedName).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
+    // A constructed generic interface target (IGen<int> in IntG's base list or as Holder's field
+    // type) resolves to IGen<int> but reports the implementers of every construction of IGen<T>,
+    // including AbsStrG : IGen<string> and the open generics OpenG<T> / AbsOpenG<T>, each judged on
+    // its own IsAbstract; transitive false keeps the same set.
+    private const string GenericInterfaceSource = """
+        namespace App.Gen
+        {
+            public interface IGen<T> { void Put(T t); }
+            public class IntG : IGen<int> { public void Put(int t) { } }
+            public class OpenG<T> : IGen<T> { public void Put(T t) { } }
+            public abstract class AbsOpenG<T> : IGen<T> { public abstract void Put(T t); }
+            public abstract class AbsStrG : IGen<string> { public abstract void Put(string t); }
+            public class Holder { IGen<int> field; }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(4, null, null, new[] { "App.Gen.AbsOpenG<T>", "App.Gen.AbsStrG", "App.Gen.IntG", "App.Gen.OpenG<T>" })]
+    [InlineData(4, true, null, new[] { "App.Gen.AbsOpenG<T>", "App.Gen.AbsStrG" })]
+    [InlineData(4, false, null, new[] { "App.Gen.IntG", "App.Gen.OpenG<T>" })]
+    [InlineData(8, null, null, new[] { "App.Gen.AbsOpenG<T>", "App.Gen.AbsStrG", "App.Gen.IntG", "App.Gen.OpenG<T>" })]
+    [InlineData(8, true, null, new[] { "App.Gen.AbsOpenG<T>", "App.Gen.AbsStrG" })]
+    [InlineData(8, false, null, new[] { "App.Gen.IntG", "App.Gen.OpenG<T>" })]
+    [InlineData(4, true, false, new[] { "App.Gen.AbsOpenG<T>", "App.Gen.AbsStrG" })]
+    [InlineData(4, false, false, new[] { "App.Gen.IntG", "App.Gen.OpenG<T>" })]
+    public async Task FindImplementations_AbstractFilter_ConstructedGenericInterfaceTarget_ReportsEveryConstruction(
+        int line, bool? abstractFilter, bool? transitive, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            new Dictionary<string, string> { ["Gen.cs"] = GenericInterfaceSource });
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Gen.cs"),
+            Line = line,
+            Column = GenericInterfaceSource.Split('\n')[line - 1].IndexOf("IGen", StringComparison.Ordinal) + 1,
+            AbstractFilter = abstractFilter,
+            Transitive = transitive
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal("App.Gen.IGen<int>", result.Data!.FullyQualifiedName);
+        Assert.Equal(expected, SortedFqns(result.Data.Implementations));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    // staticFilter and abstractFilter must both match (AND). Implementing types are never static, so
+    // staticFilter true empties a type target whatever abstractFilter is; the implementation of the
+    // static abstract member IStat.Make is static and never abstract, so it survives only staticFilter
+    // true with abstractFilter false (or omitted).
+    [SkippableTheory]
+    [InlineData("IStat", true, null, new string[0])]
+    [InlineData("IStat", true, true, new string[0])]
+    [InlineData("IStat", false, true, new[] { "App.Abs.StatImpl" })]
+    [InlineData("IStat", false, false, new string[0])]
+    [InlineData("Make", true, null, new[] { "App.Abs.StatImpl.Make()" })]
+    [InlineData("Make", true, false, new[] { "App.Abs.StatImpl.Make()" })]
+    [InlineData("Make", true, true, new string[0])]
+    [InlineData("Make", false, null, new string[0])]
+    [InlineData("Make", false, false, new string[0])]
+    public async Task FindImplementations_AbstractFilter_AndsWithStaticFilter_OnStaticAbstractMember(
+        string token, bool staticFilter, bool? abstractFilter, string[] expected)
+    {
+        await using var workspace = await CreateAbstractWorkspaceAsync();
+
+        var data = await RunAbstractFilterAsync(workspace, 17, token, abstractFilter,
+            p => new FindImplementationsParams
+            {
+                SourceFile = p.SourceFile,
+                Line = p.Line,
+                Column = p.Column,
+                AbstractFilter = p.AbstractFilter,
+                StaticFilter = staticFilter
+            });
+
+        Assert.Equal(expected, SortedFqns(data.Implementations));
+        Assert.Equal(expected.Length, data.TotalCount);
+    }
+
+    // Implementations declared only in metadata are never listed but, for a metadata target
+    // (System.IDisposable), still count toward TotalCount when no location filter applies and are
+    // judged on their own IsAbstract (abstract framework types such as System.IO.Stream implement
+    // IDisposable), so true lists nothing here yet TotalCount > 0 and Truncated is true. Pins current
+    // behavior.
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FindImplementations_AbstractFilter_MetadataImplementations_AreCountedButNotListed(bool? abstractFilter)
+    {
+        const string source = """
+            namespace App.Meta
+            {
+                public class Disp : System.IDisposable { public void Dispose() { } }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(
+            new Dictionary<string, string> { ["Meta.cs"] = source });
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Meta.cs"),
+            Line = 3,
+            Column = source.Split('\n')[2].IndexOf("IDisposable", StringComparison.Ordinal) + 1,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        var data = result.Data!;
+        Assert.Equal("System.IDisposable", data.FullyQualifiedName);
+        if (abstractFilter == true)
+            Assert.Empty(data.Implementations);
+        else
+            Assert.Equal("App.Meta.Disp", Assert.Single(data.Implementations).FullyQualifiedName);
+        Assert.True(data.TotalCount > data.Implementations.Count);
+        Assert.True(data.Truncated);
+
+        if (abstractFilter == null)
+        {
+            // true and false partition the counted metadata implementations.
+            var counts = new List<int>();
+            foreach (var filter in new[] { true, false })
+            {
+                var part = await operation.ExecuteAsync(new FindImplementationsParams
+                {
+                    SourceFile = workspace.PathOf("Meta.cs"),
+                    Line = 3,
+                    Column = source.Split('\n')[2].IndexOf("IDisposable", StringComparison.Ordinal) + 1,
+                    AbstractFilter = filter
+                });
+                Assert.True(part.Success);
+                Assert.True(part.Data!.TotalCount > 0);
+                counts.Add(part.Data.TotalCount);
+            }
+            Assert.Equal(data.TotalCount, counts.Sum());
         }
     }
 

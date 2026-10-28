@@ -525,6 +525,109 @@ public class FindImplementationsToolTests
         var staticFilter = doc.RootElement.GetProperty("properties").GetProperty("staticFilter");
         Assert.Equal("boolean", staticFilter.GetProperty("type").GetString());
     }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public async Task ExecuteAsync_AbstractFilterBoolean_ParsesAndReachesWorkspace(string value)
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/IShape.cs"",
+            ""symbolName"": ""Create"",
+            ""abstractFilter"": " + value + @"
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Theory]
+    [InlineData("\"yes\"")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    public async Task ExecuteAsync_AbstractFilterNonBoolean_ReturnsInternalError(string value)
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/IShape.cs"",
+            ""symbolName"": ""Create"",
+            ""abstractFilter"": " + value + @"
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = GetResultText(result);
+        Assert.Contains("INTERNAL_ERROR", text);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", text);
+    }
+
+    [Fact]
+    public void InputSchema_DeclaresAbstractFilterBoolean()
+    {
+        var schema = JsonSerializer.Serialize(_tool.InputSchema);
+        using var doc = JsonDocument.Parse(schema);
+        var abstractFilter = doc.RootElement.GetProperty("properties").GetProperty("abstractFilter");
+        Assert.Equal("boolean", abstractFilter.GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AbstractFilterWithStaticFilter_ParsesAndReachesWorkspace()
+    {
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/IShape.cs"",
+            ""symbolName"": ""IShape"",
+            ""abstractFilter"": false,
+            ""staticFilter"": false
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public void InputSchema_AbstractFilterDescription_DocumentsEdgeCases()
+    {
+        var schema = JsonSerializer.Serialize(_tool.InputSchema);
+        using var doc = JsonDocument.Parse(schema);
+        var description = doc.RootElement.GetProperty("properties").GetProperty("abstractFilter")
+            .GetProperty("description").GetString()!;
+        Assert.Contains("get_type_hierarchy abstractFilter", description);
+        Assert.Contains("No pruning", description);
+        Assert.Contains("derived interfaces are never returned", description);
+        Assert.Contains("derived-interface target", description);
+        Assert.DoesNotContain("derived-interface targets return nothing", description);
+        Assert.Contains("abstract re-abstraction", description);
+        Assert.Contains("static abstract", description);
+        Assert.Contains("metadata", description);
+        Assert.Contains("staticFilter", description);
+        Assert.Contains("applied before maxResults", description);
+        Assert.Contains("INTERNAL_ERROR", description);
+        Assert.DoesNotContain("same IsAbstract test", description);
+        Assert.Contains("never lists metadata implementations but still counts them", description);
+        Assert.Contains("returns nothing for a class target", description);
+
+        foreach (var text in new[] { "every construction of IGen<T>", "must match (AND)", "bare --abstract-filter means true", "other than true/false (case-insensitive) is rejected" })
+        {
+            Assert.Contains(text, description);
+            Assert.Contains(text, _tool.Description);
+        }
+
+        foreach (var peer in new[] { "namespaceFilter", "accessibilityFilter", "kindFilter", "nameFilter", "staticFilter" })
+        {
+            var peerDescription = doc.RootElement.GetProperty("properties").GetProperty(peer)
+                .GetProperty("description").GetString()!;
+            Assert.Contains("abstractFilter", peerDescription);
+        }
+
+        Assert.Contains("Optional abstractFilter (boolean)", _tool.Description);
+    }
     #endregion
 
     #region Helper Methods

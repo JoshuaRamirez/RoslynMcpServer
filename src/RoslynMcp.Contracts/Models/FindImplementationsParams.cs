@@ -75,7 +75,7 @@ public sealed class FindImplementationsParams
     /// Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
     /// <c>global::</c> is accepted. Combined with <see cref="ImplementationFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, <see cref="AccessibilityFilter"/>,
-    /// <see cref="KindFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/>, and applied before
+    /// <see cref="KindFilter"/>, <see cref="NameFilter"/>, <see cref="StaticFilter"/>, and <see cref="AbstractFilter"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered set. Implementations in the global namespace never match a named filter. Omit, blank, or a bare
     /// <c>global::</c> (the root namespace) reports implementations in all namespaces.
     /// <see cref="SourceFile"/> still locates the target symbol and may be in another namespace.
@@ -95,7 +95,7 @@ public sealed class FindImplementationsParams
     /// targets, the implementing member's declared accessibility is used (explicit interface
     /// implementations are <c>private</c>). Combined with <see cref="ImplementationFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, <see cref="NamespaceFilter"/>,
-    /// <see cref="KindFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/>, and applied before
+    /// <see cref="KindFilter"/>, <see cref="NameFilter"/>, <see cref="StaticFilter"/>, and <see cref="AbstractFilter"/>, and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
     /// accessibility-filtered set. Omit or leave blank for no accessibility filter. An unrecognized
     /// value fails with <c>InvalidVisibility</c>.
@@ -112,7 +112,7 @@ public sealed class FindImplementationsParams
     /// <c>Record</c>, not <c>Class</c>) equals it are returned, e.g. <c>Struct</c> for "which structs
     /// implement this interface?". Combined with <see cref="ImplementationFile"/>,
     /// <see cref="ProjectPath"/>, <see cref="Transitive"/>, <see cref="NamespaceFilter"/>,
-    /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/> (an implementation must satisfy
+    /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, <see cref="StaticFilter"/>, and <see cref="AbstractFilter"/> (an implementation must satisfy
     /// all that are set), and applied
     /// before <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the
     /// kind-filtered set. A kind that no implementation has (e.g. <c>Local</c>, <c>Parameter</c>,
@@ -133,7 +133,7 @@ public sealed class FindImplementationsParams
     /// Roslyn's qualified metadata name (e.g. <c>App.IRunner.Run</c>), so this filter is mainly useful
     /// for type targets. Combined with <see cref="ImplementationFile"/>, <see cref="ProjectPath"/>,
     /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>,
-    /// <see cref="KindFilter"/>, and <see cref="StaticFilter"/> (an implementation must satisfy all that are set), and applied before
+    /// <see cref="KindFilter"/>, <see cref="StaticFilter"/>, and <see cref="AbstractFilter"/> (an implementation must satisfy all that are set), and applied before
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the name-filtered set.
     /// A value no implementation name contains returns an empty success. Omit, empty, or whitespace
     /// for no name filter.
@@ -167,10 +167,71 @@ public sealed class FindImplementationsParams
     /// a filter.
     /// Combined with <see cref="ImplementationFile"/>, <see cref="ProjectPath"/>,
     /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>,
-    /// <see cref="KindFilter"/>, and <see cref="NameFilter"/> (an implementation must satisfy all that
-    /// are set), and applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
-    /// <c>Truncated</c> reflect the static-filtered set. Omit (<c>null</c>) for no static filter. A
+    /// <see cref="KindFilter"/>, <see cref="NameFilter"/>, and <see cref="AbstractFilter"/> (an
+    /// implementation must satisfy all that are set), and applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the static-filtered set. Omit (<c>null</c>) for no static filter. A
     /// non-boolean JSON value fails the <c>find_implementations</c> tool with <c>INTERNAL_ERROR</c>.
     /// </summary>
     public bool? StaticFilter { get; init; }
+
+    /// <summary>
+    /// Optional abstractness to restrict reported implementations to: <c>true</c> keeps only
+    /// implementations whose <c>ISymbol.IsAbstract</c> is <c>true</c>, <c>false</c> keeps only
+    /// non-abstract ones, judged on each returned implementation symbol itself. <c>get_type_hierarchy</c>
+    /// <c>abstractFilter</c> tests the same property but the two differ: <c>get_type_hierarchy</c> judges
+    /// only types (derived classes and records), while this filter also judges implementing members;
+    /// <c>get_type_hierarchy</c> lists derived types declared in metadata (e.g. <c>DbException</c> under
+    /// <c>System.Exception</c>), while <c>find_implementations</c> never lists metadata implementations
+    /// but still counts them toward <c>TotalCount</c> (a metadata target such as
+    /// <c>System.IDisposable</c> counts its many metadata implementers, so <c>TotalCount</c> far exceeds
+    /// the listed source implementers and <c>Truncated</c> is <c>true</c>); <c>get_type_hierarchy</c> returns
+    /// empty <c>DerivedTypes</c> for an interface root, while <c>find_implementations</c> returns
+    /// nothing for a class target and lists the implementers of an interface target, including a
+    /// derived interface. For an interface
+    /// type target, implementing types are judged: abstract classes count as abstract even with no
+    /// abstract members (including abstract records, nested and generic abstract classes, and abstract
+    /// classes that implement the interface only explicitly); sealed classes, structs, classes with
+    /// only virtual or extern members, and concrete subclasses of an abstract implementer are not.
+    /// Filtering does not prune: with <see cref="Transitive"/> <c>true</c> (default), concrete
+    /// subclasses of a filtered-out abstract implementer are still listed for <c>false</c>
+    /// (with <see cref="Transitive"/> <c>false</c> they are dropped because they do not list the
+    /// interface directly). Derived interfaces are never returned for a type target. For an interface
+    /// member target (method, property, event), implementing members are judged on their own
+    /// <c>IsAbstract</c>, independent of their containing type: an abstract member and an
+    /// <c>abstract</c> re-abstraction in a derived interface (<c>abstract void IRunner.Run();</c>) are
+    /// abstract; a member with a body inside an abstract class, an explicit implementation, a default
+    /// body re-implementation in a derived interface, and virtual members are not. Overrides of an
+    /// abstract implementing member are not implementations and are never listed (current
+    /// behavior). Implementations of a C# 11 <c>static abstract</c> interface member are static and
+    /// never abstract, so <c>true</c> returns an empty success for such a member target (the
+    /// implementing type itself is still judged on its own <c>IsAbstract</c> for a type target).
+    /// Implementations in other projects of the solution are returned and filtered; implementations
+    /// declared only in metadata are never listed (for a metadata target such as
+    /// <c>System.IDisposable</c> they are still judged and counted toward <c>TotalCount</c>, so
+    /// <c>Truncated</c> can be <c>true</c>). Current behavior: class targets (abstract, virtual, or
+    /// concrete) and abstract / virtual class members with overrides return no implementations even
+    /// without a filter. A derived-interface target (e.g. <c>IFastRunner : IRunner</c>) is an interface
+    /// target like any other: its implementing types are returned and judged the same way. Targeting a
+    /// constructed generic interface such as <c>IGen&lt;int&gt;</c> (in a base list or as a field type)
+    /// reports the implementers of every construction of <c>IGen&lt;T&gt;</c>, each judged on its own
+    /// <c>IsAbstract</c>: omitted gives <c>IntG : IGen&lt;int&gt;</c>, <c>OpenG&lt;T&gt;</c>,
+    /// <c>AbsOpenG&lt;T&gt;</c>, and <c>AbsStrG : IGen&lt;string&gt;</c>; <c>true</c> gives
+    /// <c>AbsOpenG&lt;T&gt;</c> and <c>AbsStrG</c>; <c>false</c> gives <c>IntG</c> and
+    /// <c>OpenG&lt;T&gt;</c> (<see cref="Transitive"/> <c>false</c> keeps the same set). With
+    /// <see cref="StaticFilter"/> both filters must match (AND): implementing types are never static, so
+    /// <see cref="StaticFilter"/> <c>true</c> returns nothing for a type target whatever this filter is;
+    /// implementations of a <c>static abstract</c> interface member are static and never abstract, so for
+    /// that member target <see cref="StaticFilter"/> <c>true</c> with this filter <c>false</c> (or
+    /// omitted) keeps them, <c>true</c> here is always empty, and <see cref="StaticFilter"/>
+    /// <c>false</c> is always empty.
+    /// Combined with <see cref="ImplementationFile"/>, <see cref="ProjectPath"/>,
+    /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>,
+    /// <see cref="KindFilter"/>, <see cref="NameFilter"/>, and <see cref="StaticFilter"/> (an
+    /// implementation must satisfy all that are set), and applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the abstract-filtered set. Omit (<c>null</c>) for
+    /// no abstract filter. A non-boolean JSON value fails the <c>find_implementations</c> tool with
+    /// <c>INTERNAL_ERROR</c>. On the CLI a bare <c>--abstract-filter</c> means <c>true</c> and a value
+    /// other than <c>true</c> / <c>false</c> (case-insensitive) is rejected.
+    /// </summary>
+    public bool? AbstractFilter { get; init; }
 }
