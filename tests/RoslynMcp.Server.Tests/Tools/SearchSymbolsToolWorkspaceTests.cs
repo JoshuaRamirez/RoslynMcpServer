@@ -22,6 +22,12 @@ public class SearchSymbolsToolWorkspaceTests
             public static void WidgetReset() { }
             public void WidgetDraw() { }
         }
+
+        public abstract class WidgetBase
+        {
+            public abstract void WidgetPaint();
+            public virtual void WidgetLayout() { }
+        }
         """;
 
     [Theory]
@@ -50,6 +56,50 @@ public class SearchSymbolsToolWorkspaceTests
                 solutionPath = projectPath,
                 query = "Widget",
                 staticFilter
+            });
+
+            var result = await tool.ExecuteAsync(args);
+            var text = result.Content.FirstOrDefault()?.Text ?? string.Empty;
+            Assert.False(result.IsError, text);
+
+            var names = CollectSymbolNames(JsonDocument.Parse(text).RootElement);
+            foreach (var name in expected)
+                Assert.Contains(name, names);
+            foreach (var name in excluded)
+                Assert.DoesNotContain(name, names);
+        }
+        finally
+        {
+            try { Directory.Delete(directory, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Theory]
+    [InlineData(true, new[] { "WidgetBase", "WidgetPaint" }, new[] { "Widget", "WidgetLayout", "WidgetDraw", "WidgetCount" })]
+    [InlineData(false, new[] { "Widget", "WidgetLayout", "WidgetDraw", "WidgetCount" }, new[] { "WidgetBase", "WidgetPaint" })]
+    public async Task ExecuteAsync_AbstractFilter_IsMappedToOperation(bool abstractFilter, string[] expected, string[] excluded)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpSearchSymbolsTool_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var projectPath = Path.Combine(directory, "TestApp.csproj");
+            await File.WriteAllTextAsync(projectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(Path.Combine(directory, "Widget.cs"), Source);
+
+            var tool = new SearchSymbolsTool(new MSBuildWorkspaceProvider());
+            var args = JsonSerializer.SerializeToElement(new
+            {
+                solutionPath = projectPath,
+                query = "Widget",
+                abstractFilter
             });
 
             var result = await tool.ExecuteAsync(args);

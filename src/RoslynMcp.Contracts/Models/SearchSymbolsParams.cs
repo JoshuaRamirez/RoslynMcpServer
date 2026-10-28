@@ -105,4 +105,29 @@ public sealed class SearchSymbolsParams
     /// <c>search_symbols</c> tool with <c>INTERNAL_ERROR</c>.
     /// </summary>
     public bool? StaticFilter { get; init; }
+
+    /// <summary>
+    /// Optional abstract / non-abstract filter. <c>true</c> keeps only symbols whose
+    /// <c>ISymbol.IsAbstract</c> is <c>true</c>: abstract classes and abstract records, interfaces (Roslyn
+    /// reports every interface as abstract), <c>abstract</c> and <c>abstract override</c> methods /
+    /// properties / events, and interface members without a default body (instance and
+    /// <c>static abstract</c>). <c>false</c> keeps only symbols whose <c>IsAbstract</c> is <c>false</c>:
+    /// concrete, sealed and static classes (Roslyn reports <c>IsAbstract = false</c> for a static class),
+    /// non-abstract records, structs, enums, delegates, members with bodies, <c>virtual</c> /
+    /// <c>override</c> / <c>extern</c> members, default interface methods, non-abstract static interface
+    /// members, fields, <c>const</c> fields and enum members. Namespaces are returned when this is
+    /// omitted but dropped when it is set to either value (they are neither abstract nor concrete).
+    /// Explicit interface implementations and re-abstractions (e.g. <c>abstract void IBase.M();</c>) are
+    /// never returned by <c>search_symbols</c>, so this filter can never return them. Same
+    /// <c>ISymbol.IsAbstract</c> test as <c>get_type_hierarchy</c> / <c>find_implementations</c>
+    /// <c>abstractFilter</c>, judged on each returned symbol itself. Combines with
+    /// <see cref="StaticFilter"/> (a <c>static abstract</c> interface member matches
+    /// <c>staticFilter = true</c> together with <c>abstractFilter = true</c>) and the other filters (a
+    /// symbol must satisfy all that are set), and is applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the abstract-filtered set. No match gives empty
+    /// <c>Symbols</c>, <c>TotalCount = 0</c>, <c>Truncated = false</c>. Omit for no abstract filter. A
+    /// non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>) is rejected by the
+    /// <c>search_symbols</c> tool with <c>INTERNAL_ERROR</c>.
+    /// </summary>
+    public bool? AbstractFilter { get; init; }
 }
