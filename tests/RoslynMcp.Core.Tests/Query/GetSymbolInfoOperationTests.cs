@@ -1263,6 +1263,64 @@ public class GetSymbolInfoOperationTests
     }
 
     [SkippableFact]
+    public async Task GetSymbolInfo_AllMemberFiltersCombinedThenMaxResults_RequiresEveryFilter()
+    {
+        const string source = """
+            namespace App.Services
+            {
+                public class Gadget
+                {
+                    public static void RunFirst() { }
+                    public static void RunSecond() { }
+                    public static void RunThird() { }
+                    public void RunInstance() { }
+                    private static void RunHidden() { }
+                    public static int RunCount;
+                    public static void Stop() { }
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Gadget",
+            KindFilter = "Method",
+            AccessibilityFilter = "public",
+            NameFilter = "run",
+            NamespaceFilter = "App",
+            StaticFilter = true,
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        var members = result.Data!.Members!;
+        Assert.Equal(2, members.Count);
+        Assert.Contains("RunFirst", members[0], StringComparison.Ordinal);
+        Assert.Contains("RunSecond", members[1], StringComparison.Ordinal);
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+
+        var otherNamespace = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Gadget",
+            KindFilter = "Method",
+            AccessibilityFilter = "public",
+            NameFilter = "run",
+            NamespaceFilter = "App.Other",
+            StaticFilter = true
+        });
+
+        Assert.True(otherNamespace.Success);
+        Assert.Empty(otherNamespace.Data!.Members!);
+        Assert.Equal(0, otherNamespace.Data.TotalCount);
+        Assert.False(otherNamespace.Data.Truncated);
+    }
+
+    [SkippableFact]
     public async Task GetSymbolInfo_NamespaceFilterThenMaxResults_TruncatesFilteredSet()
     {
         await using var workspace = await TempWorkspace.CreateAsync(NamespacedWidgetSource);

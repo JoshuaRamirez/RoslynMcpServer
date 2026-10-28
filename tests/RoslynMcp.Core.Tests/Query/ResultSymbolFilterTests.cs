@@ -7,8 +7,8 @@ namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
 /// Unit tests for <see cref="ResultSymbolFilter"/>, the namespaceFilter / accessibilityFilter / kindFilter /
-/// nameFilter / staticFilter / abstractFilter combination that <c>find_implementations</c> and
-/// <c>get_type_hierarchy</c> apply to each returned symbol.
+/// nameFilter / staticFilter / abstractFilter combination that <c>find_implementations</c>,
+/// <c>get_type_hierarchy</c> and <c>get_symbol_info</c> (members, no abstractFilter) apply to each returned symbol.
 /// </summary>
 public class ResultSymbolFilterTests
 {
@@ -156,5 +156,26 @@ public class ResultSymbolFilterTests
         Assert.False(Filter("Outer", "internal", "Class", "xyz", false, false).Matches(circle));
         Assert.False(Filter("Outer", "internal", "Class", "irc", true, false).Matches(circle));
         Assert.False(Filter("Outer", "internal", "Class", "irc", false, true).Matches(circle));
+    }
+
+    [Fact]
+    public void Matches_MemberFilters_WithoutAbstractFilter_SelectTypeMembers()
+    {
+        // get_symbol_info shape: kind / accessibility / name / namespace / static over a type's members,
+        // abstractFilter always null.
+        var members = Type("Outer.Shape").GetMembers()
+            .Where(m => !m.IsImplicitlyDeclared && m.CanBeReferencedByName)
+            .ToList();
+
+        static string[] Names(IEnumerable<ISymbol> symbols) => symbols.Select(m => m.Name).ToArray();
+
+        Assert.Equal(["Area", "Count"], Names(members.Where(Filter().Matches)));
+        Assert.Equal(["Count"], Names(members.Where(Filter("Outer", "public", "Field", "cou", true).Matches)));
+        Assert.Equal(["Area"], Names(members.Where(Filter("Outer", "public", "Method", "AREA", false).Matches)));
+        Assert.DoesNotContain(members, Filter("Outer.Inner", "public", "Field", "cou", true).Matches);
+        Assert.DoesNotContain(members, Filter("Outer", "private", "Field", "cou", true).Matches);
+        Assert.DoesNotContain(members, Filter("Outer", "public", "Method", "cou", true).Matches);
+        Assert.DoesNotContain(members, Filter("Outer", "public", "Field", "area", true).Matches);
+        Assert.DoesNotContain(members, Filter("Outer", "public", "Field", "cou", false).Matches);
     }
 }

@@ -5,8 +5,9 @@ namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
 /// The optional <c>namespaceFilter</c> / <c>accessibilityFilter</c> / <c>kindFilter</c> / <c>nameFilter</c> /
-/// <c>staticFilter</c> / <c>abstractFilter</c> combination that <c>find_implementations</c> and
-/// <c>get_type_hierarchy</c> apply to each returned symbol (an implementation or a derived type) before
+/// <c>staticFilter</c> / <c>abstractFilter</c> combination that <c>find_implementations</c>,
+/// <c>get_type_hierarchy</c> and <c>get_symbol_info</c> apply to each returned symbol (an implementation, a
+/// derived type, or a member of the target type; <c>get_symbol_info</c> passes no abstractFilter) before
 /// <c>maxResults</c>. Built once per request from the raw parameters; invalid accessibility / kind values are
 /// rejected earlier in each operation's <c>ValidateParams</c>.
 /// </summary>
