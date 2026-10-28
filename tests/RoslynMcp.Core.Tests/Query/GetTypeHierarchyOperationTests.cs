@@ -2900,6 +2900,206 @@ public class GetTypeHierarchyOperationTests
         }
     }
 
+    // Edge roots for abstractFilter. Each row is a root and the sorted DerivedTypes for null / true /
+    // false ("" = empty). Interfaces (implementers and derived interfaces are never listed; use
+    // find_implementations), structs, record structs, enums, delegates, static and sealed classes always
+    // return empty DerivedTypes. The root itself is always reported and never filtered (abstract AbsRoot
+    // with true gives an empty list). Transitive search does not prune: concrete Leaf under abstract
+    // AbsMid stays listed for false. Subclasses of a constructed generic base (IntD : Base<int>) and
+    // nested subclasses are judged on their own modifier, and an abstract class with no abstract members
+    // (NoAbstractMembers) counts as abstract.
+    private const string AbstractEdgeSource = """
+        namespace P
+        {
+            public interface IFoo { }
+            public class FooImpl : IFoo { }
+            public abstract class AbsFooImpl : IFoo { }
+            public interface IBar : IFoo { }
+            public struct S { }
+            public record struct RS;
+            public enum E { A }
+            public delegate void D();
+            public static class St { }
+            public sealed class Se { }
+            public abstract class AbsRoot { }
+            public class ConcreteUnderAbsRoot : AbsRoot { }
+            public class Root { }
+            public abstract class AbsMid : Root { }
+            public class Leaf : AbsMid { }
+            public abstract class MyAbsEx : System.Exception { }
+            public class MyEx : System.Exception { }
+            public abstract class Base<T> { }
+            public class IntD : Base<int> { }
+            public abstract class AbsStrD : Base<string> { }
+            public class GenD<T> : Base<T> { }
+            public abstract class NoAbstractMembers : Root { public void M() { } }
+            public class Outer : Root
+            {
+                public abstract class NestedAbs : Root { }
+                public class NestedConcrete : NestedAbs { }
+            }
+        }
+        """;
+
+
+    [SkippableTheory]
+    [InlineData("IFoo", "Interface", "", "", "")]
+    [InlineData("IBar", "Interface", "", "", "")]
+    [InlineData("S", "Struct", "", "", "")]
+    [InlineData("RS", "Struct", "", "", "")]
+    [InlineData("E", "Enum", "", "", "")]
+    [InlineData("D", "Delegate", "", "", "")]
+    [InlineData("St", "Class", "", "", "")]
+    [InlineData("Se", "Class", "", "", "")]
+    [InlineData("AbsRoot", "Class", "ConcreteUnderAbsRoot", "", "ConcreteUnderAbsRoot")]
+    [InlineData("AbsMid", "Class", "Leaf", "", "Leaf")]
+    [InlineData("Root", "Class", "AbsMid,Leaf,NestedAbs,NestedConcrete,NoAbstractMembers,Outer",
+        "AbsMid,NestedAbs,NoAbstractMembers", "Leaf,NestedConcrete,Outer")]
+    [InlineData("Base", "Class", "AbsStrD,GenD,IntD", "AbsStrD", "GenD,IntD")]
+    public async Task GetTypeHierarchy_AbstractFilter_EdgeRoots(
+        string root, string kind, string expectedAll, string expectedAbstract, string expectedConcrete)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource, "Edge.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        foreach (var (filter, expected) in new (bool?, string)[]
+                 { (null, expectedAll), (true, expectedAbstract), (false, expectedConcrete) })
+        {
+            var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = root,
+                Direction = "Descendants",
+                AbstractFilter = filter
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(root, result.Data!.TypeName);
+            Assert.Equal(kind, result.Data.Kind);
+            var names = expected.Length == 0 ? new List<string>() : expected.Split(',').ToList();
+            Assert.Equal(names, SortedNames(result.Data.DerivedTypes));
+            Assert.Equal(names.Count, result.Data.TotalCount);
+            Assert.False(result.Data.Truncated);
+        }
+    }
+
+    // Targeting the constructed Base<int> (at IntD's base list) resolves to Base<int> but reports the
+    // subclasses of every construction of Base<T>, each judged on its own modifier.
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AbstractFilter_ConstructedGenericTarget()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource, "Edge.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+        var (line, column) = PositionOf(AbstractEdgeSource, "class IntD : Base<int>", "Base");
+
+        foreach (var (filter, expected) in new (bool?, string[])[]
+                 {
+                     (null, new[] { "AbsStrD", "GenD", "IntD" }),
+                     (true, new[] { "AbsStrD" }),
+                     (false, new[] { "GenD", "IntD" })
+                 })
+        {
+            var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Base",
+                Line = line,
+                Column = column,
+                Direction = "Descendants",
+                AbstractFilter = filter
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal("P.Base<int>", result.Data!.FullyQualifiedName);
+            Assert.Equal(expected, SortedNames(result.Data.DerivedTypes));
+        }
+    }
+
+    // Types from compiled libraries are judged too: System.Exception's abstract descendants are the
+    // metadata DbException and the source MyAbsEx; true and false partition the full list. With transitive
+    // false only the direct abstract subclass MyAbsEx remains.
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AbstractFilter_JudgesLibraryTypes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEdgeSource, "Edge.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+        var (line, column) = PositionOf(AbstractEdgeSource, "class MyAbsEx : System.Exception", "Exception");
+
+        async Task<GetTypeHierarchyResult> Run(bool? filter, bool? transitive = null)
+        {
+            var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Exception",
+                Line = line,
+                Column = column,
+                Direction = "Descendants",
+                Transitive = transitive,
+                AbstractFilter = filter
+            });
+            Assert.True(result.Success);
+            Assert.Equal("System.Exception", result.Data!.FullyQualifiedName);
+            return result.Data;
+        }
+
+        var all = await Run(null);
+        var abstracts = await Run(true);
+        var concrete = await Run(false);
+
+        Assert.Contains(abstracts.DerivedTypes, d => d.TypeName == "MyAbsEx" && d.File != null);
+        Assert.Contains(abstracts.DerivedTypes, d => d.TypeName == "DbException" && d.File == null);
+        Assert.DoesNotContain(abstracts.DerivedTypes, d => d.TypeName is "MyEx" or "ArgumentException");
+        Assert.Contains(concrete.DerivedTypes, d => d.TypeName == "MyEx");
+        Assert.Contains(concrete.DerivedTypes, d => d.TypeName == "ArgumentException" && d.File == null);
+        Assert.DoesNotContain(concrete.DerivedTypes, d => d.TypeName is "MyAbsEx" or "DbException");
+        Assert.Equal(all.TotalCount, abstracts.TotalCount + concrete.TotalCount);
+        Assert.Equal(
+            SortedNames(all.DerivedTypes),
+            SortedNames(abstracts.DerivedTypes.Concat(concrete.DerivedTypes)));
+
+        var directAbstract = await Run(true, transitive: false);
+        Assert.Equal(new[] { "MyAbsEx" }, SortedNames(directAbstract.DerivedTypes));
+    }
+
+    // Derived types in another project are judged too: App's abstract AppAbs and concrete AppConcrete
+    // derive from Lib's concrete Shape alongside Lib's L1 / Mid and App's P1 / P2 / P3.
+    [SkippableFact]
+    public async Task GetTypeHierarchy_AbstractFilter_JudgesDerivedTypesInAnotherProject()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync(appExtraSource: """
+            public abstract class AppAbs : Shape { }
+            public class AppConcrete : AppAbs { }
+            """);
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        GetTypeHierarchyParams Params(bool? filter) => new()
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            AbstractFilter = filter
+        };
+
+        var abstracts = await operation.ExecuteAsync(Params(true));
+        Assert.True(abstracts.Success);
+        Assert.Equal(new[] { "AppAbs" }, SortedNames(abstracts.Data!.DerivedTypes));
+
+        var concrete = await operation.ExecuteAsync(Params(false));
+        Assert.True(concrete.Success);
+        Assert.Equal(
+            new[] { "AppConcrete", "L1", "Mid", "P1", "P2", "P3" },
+            SortedNames(concrete.Data!.DerivedTypes));
+    }
+
+    private static (int Line, int Column) PositionOf(string source, string lineText, string token)
+    {
+        var lines = source.Split('\n');
+        var index = Array.FindIndex(lines, l => l.Contains(lineText, StringComparison.Ordinal));
+        Assert.True(index >= 0, lineText);
+        var start = lines[index].IndexOf(lineText, StringComparison.Ordinal);
+        return (index + 1, lines[index].IndexOf(token, start, StringComparison.Ordinal) + 1);
+    }
+
     #endregion
 
     private static List<string> SortedNames(IEnumerable<TypeHierarchyEntry> entries) =>
@@ -3016,7 +3216,7 @@ public class GetTypeHierarchyOperationTests
         public string? LinkedPath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TwoProjectWorkspace> CreateAsync(string? linkedSource = null)
+        public static async Task<TwoProjectWorkspace> CreateAsync(string? linkedSource = null, string? appExtraSource = null)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -3072,6 +3272,8 @@ public class GetTypeHierarchyOperationTests
             await File.WriteAllTextAsync(libDerived, LibDerivedSource);
             await File.WriteAllTextAsync(appA, AppASource);
             await File.WriteAllTextAsync(appB, AppBSource);
+            if (appExtraSource != null)
+                await File.WriteAllTextAsync(Path.Combine(appDir, "AppExtra.cs"), appExtraSource);
 
             var solutionPath = Path.Combine(directory, "TestApp.sln");
             await File.WriteAllTextAsync(solutionPath, """

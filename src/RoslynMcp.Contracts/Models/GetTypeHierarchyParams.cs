@@ -154,9 +154,21 @@ public sealed class GetTypeHierarchyParams
     /// records, e.g. the intermediate bases under a target), <c>false</c> keeps only concrete
     /// (instantiable) derived types, including <c>sealed</c> classes and records, e.g. "which classes
     /// deriving from <c>ControllerBase</c> can be instantiated?". Derived types are always classes or
-    /// records (never interfaces, structs, or static classes), so every reported entry is judged on
-    /// its own <c>abstract</c> modifier; a partial type is abstract when any of its parts declares
-    /// <c>abstract</c>. Combined with <see cref="DerivedFile"/>, <see cref="ProjectPath"/>,
+    /// records (never interfaces, structs, or static classes; there is no <c>staticFilter</c> here
+    /// because derived classes are never static), so every reported entry is judged on its own
+    /// <c>abstract</c> modifier, including subclasses of a constructed generic base
+    /// (<c>IntD : Base&lt;int&gt;</c>), nested subclasses, and types from compiled libraries (e.g. a
+    /// <c>System.Exception</c> root with <c>true</c> gives <c>[DbException, MyAbsEx]</c> when the
+    /// project declares <c>abstract MyAbsEx : Exception</c>); an abstract class with no abstract
+    /// members counts as abstract, and a partial source type is abstract when any of its parts
+    /// declares <c>abstract</c>. The target type itself is always reported and never filtered (an
+    /// abstract root whose subclasses are all concrete gives an empty list for <c>true</c>). An
+    /// interface root always returns empty <c>DerivedTypes</c> whatever the filter (implementers and
+    /// derived interfaces are never listed; use <c>find_implementations</c>), as do struct, record
+    /// struct, enum, delegate, <c>static</c>, and <c>sealed</c> roots. With <see cref="Transitive"/>
+    /// <c>true</c> (the default) nothing is pruned: a concrete subclass of a filtered-out abstract
+    /// parent is still listed. Targeting a constructed generic such as <c>Base&lt;int&gt;</c> reports
+    /// the subclasses of every construction of <c>Base&lt;T&gt;</c>. Combined with <see cref="DerivedFile"/>, <see cref="ProjectPath"/>,
     /// <see cref="Transitive"/>, <see cref="NamespaceFilter"/>, <see cref="AccessibilityFilter"/>,
     /// <see cref="KindFilter"/>, and <see cref="NameFilter"/> (a derived type must satisfy all that are
     /// set), and applied before <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c>
@@ -164,7 +176,9 @@ public sealed class GetTypeHierarchyParams
     /// direct subclasses only (a concrete grandchild under an abstract direct subclass is not
     /// reported). Does not filter BaseTypes or Interfaces and has no effect when <c>direction</c> is
     /// <c>Ancestors</c>. Omit (<c>null</c>) for no abstract filter. A non-boolean JSON value fails the
-    /// <c>get_type_hierarchy</c> tool with <c>INTERNAL_ERROR</c>.
+    /// <c>get_type_hierarchy</c> tool with <c>INTERNAL_ERROR</c>. On the CLI <c>--abstract-filter</c>
+    /// alone means <c>true</c> and a value other than <c>true</c> / <c>false</c> (case-insensitive) is
+    /// rejected.
     /// </summary>
     public bool? AbstractFilter { get; init; }
 }
