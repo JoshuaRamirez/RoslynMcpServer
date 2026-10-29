@@ -37,14 +37,7 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
 
         SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
 
-        if (!@params.Line.HasValue && string.IsNullOrWhiteSpace(@params.SymbolName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either line/column or symbolName must be provided.");
-
-        if (@params.Line.HasValue && @params.Line.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
-
-        if (@params.Column.HasValue && @params.Column.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
+        SymbolTargetValidator.Validate(@params.Line, @params.Column, @params.SymbolName);
 
         if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
