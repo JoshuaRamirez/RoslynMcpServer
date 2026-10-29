@@ -211,4 +211,39 @@ public class ResultSymbolFilterTests
         Assert.DoesNotContain(callers, Calling("public", "Method", "xyz", false).Matches);
         Assert.DoesNotContain(callers, Calling("public", "Method", "area", true).Matches);
     }
+
+    [Theory]
+    [InlineData(null, null, null, false)]
+    [InlineData("public", null, null, true)]
+    [InlineData(null, false, null, true)]
+    [InlineData(null, null, true, true)]
+    [InlineData(" ", null, null, false)]
+    public void ConstrainsModifiers_TrueOnlyWhenAccessibilityStaticOrAbstractFilterSet(
+        string? accessibility, bool? isStatic, bool? isAbstract, bool expected)
+    {
+        Assert.Equal(expected, Filter(accessibility: accessibility, isStatic: isStatic, isAbstract: isAbstract).ConstrainsModifiers);
+        // namespaceFilter / kindFilter / nameFilter never constrain modifiers.
+        Assert.Equal(
+            expected,
+            Filter("Outer", accessibility, "Namespace", "Inner", isStatic, isAbstract).ConstrainsModifiers);
+    }
+
+    [Fact]
+    public void SearchSymbolsShape_NamespaceSymbolsRejectedOnlyWhenModifiersConstrained()
+    {
+        // search_symbols shape: no nameFilter, and a namespace never matches an accessibility / static /
+        // abstract filter even though Roslyn reports it as Public (and static).
+        var inner = Type("Outer.Inner.Square").ContainingNamespace;
+
+        static bool Found(ResultSymbolFilter filter, ISymbol symbol) =>
+            filter.Matches(symbol) && !(symbol is INamespaceSymbol && filter.ConstrainsModifiers);
+
+        Assert.True(Found(Filter(), inner));
+        Assert.True(Found(Filter(ns: "Outer", kind: "Namespace"), inner));
+        Assert.False(Found(Filter(accessibility: "public"), inner));
+        Assert.False(Found(Filter(isStatic: true), inner));
+        Assert.False(Found(Filter(isStatic: false), inner));
+        Assert.False(Found(Filter(isAbstract: false), inner));
+        Assert.True(Found(Filter(accessibility: "public", isStatic: false, isAbstract: true), Type("Outer.Shape")));
+    }
 }

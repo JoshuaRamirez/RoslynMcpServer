@@ -58,10 +58,17 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             ? StringComparison.Ordinal
             : StringComparison.OrdinalIgnoreCase;
         var exactMatch = @params.ExactMatch == true;
-        var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
-        var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
-        var staticFilter = @params.StaticFilter;
-        var abstractFilter = @params.AbstractFilter;
+
+        // kindFilter / namespaceFilter / accessibilityFilter / staticFilter / abstractFilter, applied to each
+        // found symbol before maxResults so TotalCount / Truncated reflect them (the query is the only name
+        // filter, so no nameFilter).
+        var resultFilter = ResultSymbolFilter.Create(
+            @params.NamespaceFilter,
+            @params.AccessibilityFilter,
+            @params.KindFilter,
+            nameFilter: null,
+            @params.StaticFilter,
+            @params.AbstractFilter);
 
         var entries = new List<SymbolSearchEntry>();
         var totalCount = 0;
@@ -101,32 +108,13 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                 if (symbol.IsImplicitlyDeclared) continue;
                 if (!symbol.CanBeReferencedByName) continue;
 
-                // Apply kind filter
-                if (kindFilter.HasValue && SymbolKindMapper.Map(symbol) != kindFilter.Value)
-                    continue;
-
-                // Apply namespace filter (before maxResults so TotalCount / Truncated reflect it)
-                if (namespaceFilter != null && !NamespaceFilter.IsInNamespace(symbol, namespaceFilter))
-                    continue;
-
-                // Apply accessibility filter (declared accessibility, so implicit defaults count; exact
-                // match), also before maxResults. Namespaces have no accessibility modifier (Roslyn
-                // reports them as Public), so they never match a named filter.
-                if (accessibilityFilter.HasValue &&
-                    (symbol is INamespaceSymbol || symbol.DeclaredAccessibility != accessibilityFilter.Value))
-                    continue;
-
-                // Apply static filter (ISymbol.IsStatic; const fields and enum members count as static),
-                // also before maxResults. Namespaces are neither static nor instance, so they never match.
-                if (staticFilter.HasValue &&
-                    (symbol is INamespaceSymbol || symbol.IsStatic != staticFilter.Value))
-                    continue;
-
-                // Apply abstract filter (ISymbol.IsAbstract; interfaces and body-less interface members
-                // count as abstract, static classes do not), also before maxResults. Namespaces are
-                // neither abstract nor concrete, so they never match.
-                if (abstractFilter.HasValue &&
-                    (symbol is INamespaceSymbol || symbol.IsAbstract != abstractFilter.Value))
+                // Apply kind / namespace / accessibility (declared, so implicit defaults count; exact match) /
+                // static (const fields and enum members count as static) / abstract (interfaces and body-less
+                // interface members count as abstract, static classes do not) filters. Namespaces have no
+                // modifiers (Roslyn reports them as Public), so they never match an accessibility, static or
+                // abstract filter.
+                if (!resultFilter.Matches(symbol) ||
+                    (symbol is INamespaceSymbol && resultFilter.ConstrainsModifiers))
                     continue;
 
                 var fqn = symbol.ToDisplayString();
