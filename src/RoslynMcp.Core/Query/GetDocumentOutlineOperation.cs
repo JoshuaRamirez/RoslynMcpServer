@@ -273,10 +273,7 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        if (!declarations.TryGetValue(entry, out var node))
-            return false;
-
-        var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+        var symbol = GetTrackedDeclaredSymbol(entry, declarations, semanticModel, cancellationToken);
         return symbol is not null and not INamespaceSymbol && symbol.DeclaredAccessibility == accessibility;
     }
 
@@ -295,10 +292,7 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        if (!declarations.TryGetValue(entry, out var node))
-            return false;
-
-        return semanticModel.GetDeclaredSymbol(node, cancellationToken) switch
+        return GetTrackedDeclaredSymbol(entry, declarations, semanticModel, cancellationToken) switch
         {
             INamespaceSymbol ns => NamespaceFilter.IsNamespaceInFilter(ns, normalizedFilter),
             { } symbol => NamespaceFilter.IsInNamespace(symbol, normalizedFilter),
@@ -318,12 +312,24 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        if (!declarations.TryGetValue(entry, out var node))
-            return false;
-
-        var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+        var symbol = GetTrackedDeclaredSymbol(entry, declarations, semanticModel, cancellationToken);
         return symbol is not null and not INamespaceSymbol && symbol.IsStatic == wantStatic;
     }
+
+    /// <summary>
+    /// The symbol declared by the syntax node <see cref="Track"/> recorded for <paramref name="entry"/>, or
+    /// <c>null</c> when the entry has no tracked declaration or the node declares no symbol. Shared by the
+    /// accessibilityFilter / namespaceFilter / staticFilter outline predicates, which all treat <c>null</c> as
+    /// "never matches".
+    /// </summary>
+    private static ISymbol? GetTrackedDeclaredSymbol(
+        OutlineEntry entry,
+        IReadOnlyDictionary<OutlineEntry, SyntaxNode> declarations,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        declarations.TryGetValue(entry, out var node)
+            ? semanticModel.GetDeclaredSymbol(node, cancellationToken)
+            : null;
 
     /// <summary>
     /// Records <paramref name="node"/> as the declaration of <paramref name="entry"/> when
