@@ -78,12 +78,21 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
     {
         var modifiers = GetModifiers(symbol);
         var location = GetLocation(symbol);
-        var kindFilterValue = SymbolKindFilterParser.Parse(kindFilter);
-        var accessibilityFilterValue = AccessibilityFilterParser.Parse(accessibilityFilter);
-        var nameFilterValue = NameFilterMatcher.Normalize(nameFilter);
-        // Same normalization as search_symbols / get_document_outline / find_implementations /
-        // get_type_hierarchy / find_references / find_callers / get_diagnostics namespaceFilter.
-        var namespaceFilterValue = NamespaceFilter.Normalize(namespaceFilter);
+        // Optional kindFilter / accessibilityFilter / nameFilter / namespaceFilter / staticFilter (same
+        // values / parsing as search_symbols / find_implementations / get_type_hierarchy), judged on each
+        // member of a type target: reported Kind (SymbolKindMapper.Map), exact DeclaredAccessibility
+        // (implicit defaults count), simple Name (ordinal case-insensitive contains), containing namespace
+        // equal to or nested in the filter (members share their type's namespace, nested types included)
+        // and ISymbol.IsStatic (Roslyn reports const fields as static). get_symbol_info has no
+        // abstractFilter. Omitted / blank values impose no filter; invalid kind / accessibility values are
+        // already rejected in ValidateParams.
+        var memberFilter = ResultSymbolFilter.Create(
+            namespaceFilter,
+            accessibilityFilter,
+            kindFilter,
+            nameFilter,
+            staticFilter,
+            abstractFilter: null);
 
         // Gather type-specific fields
         string? baseType = null;
@@ -100,52 +109,15 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                 ? null
                 : namedType.BaseType?.ToDisplayString();
             interfaces = namedType.Interfaces.Select(i => i.ToDisplayString()).ToList();
-            IEnumerable<ISymbol> memberSymbols = namedType.GetMembers()
-                .Where(m => !m.IsImplicitlyDeclared && m.CanBeReferencedByName);
-            if (kindFilterValue.HasValue)
-            {
-                memberSymbols = memberSymbols
-                    .Where(m => SymbolKindMapper.Map(m) == kindFilterValue.Value);
-            }
-
-            if (accessibilityFilterValue.HasValue)
-            {
-                // Exact match on declared accessibility (implicit defaults count), same as
-                // search_symbols accessibilityFilter.
-                memberSymbols = memberSymbols
-                    .Where(m => m.DeclaredAccessibility == accessibilityFilterValue.Value);
-            }
-
-            if (nameFilterValue != null)
-            {
-                // Ordinal case-insensitive substring on the simple name, same as
-                // get_document_outline nameFilter.
-                memberSymbols = memberSymbols
-                    .Where(m => NameFilterMatcher.Matches(m.Name, nameFilterValue));
-            }
-
-            if (namespaceFilterValue != null)
-            {
-                // Containing namespace equals filter or nested inside it (ordinal), same as
-                // search_symbols / find_implementations namespaceFilter. Members of a type normally
-                // share the type's containing namespace (including nested types).
-                memberSymbols = memberSymbols
-                    .Where(m => NamespaceFilter.IsInNamespace(m, namespaceFilterValue));
-            }
-
-            if (staticFilter.HasValue)
-            {
-                // true keeps static members (Roslyn reports const fields as static); false keeps
-                // instance members.
-                var wantStatic = staticFilter.Value;
-                memberSymbols = memberSymbols.Where(m => m.IsStatic == wantStatic);
-            }
+            var memberSymbols = namedType.GetMembers()
+                .Where(m => !m.IsImplicitlyDeclared && m.CanBeReferencedByName)
+                .Where(memberFilter.Matches);
 
             var allMembers = memberSymbols
                 .Select(m => m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
                 .ToList();
 
-            // kindFilter → accessibilityFilter → nameFilter → namespaceFilter → staticFilter apply first; maxResults
+            // The member filters (kindFilter / accessibilityFilter / nameFilter / namespaceFilter / staticFilter) apply first; maxResults
             // caps only Members (first N in today's enumeration order); TotalCount stays the filtered
             // member count.
             totalCount = allMembers.Count;
