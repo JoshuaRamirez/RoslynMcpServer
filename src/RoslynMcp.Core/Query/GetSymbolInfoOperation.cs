@@ -62,7 +62,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         var symbol = resolved.Symbol;
         var info = BuildDetailedInfo(
             symbol, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter,
-            @params.NameFilter, @params.NamespaceFilter, @params.StaticFilter);
+            @params.NameFilter, @params.NamespaceFilter, @params.StaticFilter, @params.AbstractFilter);
 
         return QueryResult<DetailedSymbolInfo>.Succeeded(operationId, info);
     }
@@ -74,17 +74,18 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         string? accessibilityFilter,
         string? nameFilter,
         string? namespaceFilter,
-        bool? staticFilter)
+        bool? staticFilter,
+        bool? abstractFilter)
     {
         var modifiers = GetModifiers(symbol);
         var location = GetLocation(symbol);
-        // Optional kindFilter / accessibilityFilter / nameFilter / namespaceFilter / staticFilter (same
+        // Optional kindFilter / accessibilityFilter / nameFilter / namespaceFilter / staticFilter / abstractFilter (same
         // values / parsing as search_symbols / find_implementations / get_type_hierarchy), judged on each
         // member of a type target: reported Kind (SymbolKindMapper.Map), exact DeclaredAccessibility
         // (implicit defaults count), simple Name (ordinal case-insensitive contains), containing namespace
         // equal to or nested in the filter (members share their type's namespace, nested types included)
-        // and ISymbol.IsStatic (Roslyn reports const fields as static). get_symbol_info has no
-        // abstractFilter. Omitted / blank values impose no filter; invalid kind / accessibility values are
+        // ISymbol.IsStatic (Roslyn reports const fields as static) and ISymbol.IsAbstract (interface members
+        // without a default body and nested interfaces count as abstract). Omitted / blank values impose no filter; invalid kind / accessibility values are
         // already rejected in ValidateParams.
         var memberFilter = ResultSymbolFilter.Create(
             namespaceFilter,
@@ -92,7 +93,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             kindFilter,
             nameFilter,
             staticFilter,
-            abstractFilter: null);
+            abstractFilter);
 
         // Gather type-specific fields
         string? baseType = null;
@@ -117,7 +118,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                 .Select(m => m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
                 .ToList();
 
-            // The member filters (kindFilter / accessibilityFilter / nameFilter / namespaceFilter / staticFilter) apply first; maxResults
+            // The member filters (kindFilter / accessibilityFilter / nameFilter / namespaceFilter / staticFilter / abstractFilter) apply first; maxResults
             // caps only Members (first N in today's enumeration order); TotalCount stays the filtered
             // member count.
             totalCount = allMembers.Count;
