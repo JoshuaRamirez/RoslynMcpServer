@@ -367,6 +367,15 @@ public class GetSymbolInfoToolTests
             Assert.Contains("a static class is static but not abstract", text, StringComparison.Ordinal);
             Assert.Contains("staticFilter true + abstractFilter true keeps static abstract interface members", text, StringComparison.Ordinal);
             Assert.Contains("CLI: bare --abstract-filter = true", text, StringComparison.Ordinal);
+            Assert.Contains("a value other than true / false (case-insensitive) is rejected", text, StringComparison.Ordinal);
+            Assert.Contains("the target type itself is always returned whatever its own IsAbstract", text, StringComparison.Ordinal);
+            Assert.Contains("a nested abstract class with no abstract members still matches true", text, StringComparison.Ordinal);
+            Assert.Contains("An abstract event matches true and a field-like event false", text, StringComparison.Ordinal);
+            Assert.Contains("System.IO.Stream", text, StringComparison.Ordinal);
+            Assert.Contains("search_symbols abstractFilter judges every name-matched symbol, is source-only, and drops namespaces", text, StringComparison.Ordinal);
+            Assert.Contains("get_type_hierarchy abstractFilter judges only derived types (including metadata) and returns empty for an interface root", text, StringComparison.Ordinal);
+            Assert.Contains("find_implementations abstractFilter judges only implementers, counts metadata implementers in totalCount, and returns nothing for a class target", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("same ISymbol.IsAbstract test", text, StringComparison.Ordinal);
         }
     }
 

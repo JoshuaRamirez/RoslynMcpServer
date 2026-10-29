@@ -1984,6 +1984,98 @@ public class GetSymbolInfoOperationTests
     }
 
     [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilter_AbstractEventIsAbstractFieldLikeEventIsNot()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public abstract class Publisher
+            {
+                public abstract event System.EventHandler? AbstractRaised;
+                public event System.EventHandler? FieldLikeRaised;
+            }
+            """);
+
+        AssertMembers(await GetMembersAsync(workspace, "Publisher", abstractFilter: true), "AbstractRaised");
+        AssertMembers(await GetMembersAsync(workspace, "Publisher", abstractFilter: false), "FieldLikeRaised");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilterTrue_AbstractTargetWithNoAbstractMembersIsStillReturned()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public abstract class Shell
+            {
+                public void Go() { }
+                public int Value;
+                public abstract class EmptyNestedBase
+                {
+                    public void Helper() { }
+                }
+            }
+            """);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        // The filter only affects Members: the abstract target itself is always reported, and with no
+        // abstract members its Members list is empty for true.
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "EmptyNestedBase",
+            AbstractFilter = true
+        });
+        Assert.True(result.Success);
+        Assert.Equal("EmptyNestedBase", result.Data!.Name);
+        Assert.Empty(result.Data.Members!);
+        Assert.Equal(0, result.Data.TotalCount);
+
+        // A nested abstract class with no abstract members still matches true on its containing type.
+        AssertMembers(await GetMembersAsync(workspace, "Shell", abstractFilter: true), "EmptyNestedBase");
+        AssertMembers(await GetMembersAsync(workspace, "Shell", abstractFilter: false), "Go", "Value");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilter_MetadataTargetJudgesEachMemberOnItsOwnIsAbstract()
+    {
+        const string source = """
+            public class Holder
+            {
+                public System.IO.Stream? Target;
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        async Task<IReadOnlyList<string>> StreamMembersAsync(bool? abstractFilter)
+        {
+            var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 3,
+                Column = source.Split('\n')[2].IndexOf("Stream", StringComparison.Ordinal) + 1,
+                AbstractFilter = abstractFilter
+            });
+            Assert.True(result.Success);
+            Assert.Equal("Stream", result.Data!.Name);
+            return result.Data.Members!;
+        }
+
+        // Each metadata member is judged on its own IsAbstract (named members, not counts, so the test
+        // does not depend on the reference-assembly version).
+        var abstractMembers = await StreamMembersAsync(true);
+        Assert.Contains("int Stream.Read(byte[] buffer, int offset, int count)", abstractMembers);
+        Assert.Contains("void Stream.Write(byte[] buffer, int offset, int count)", abstractMembers);
+        Assert.Contains("bool Stream.CanRead", abstractMembers);
+        Assert.DoesNotContain(abstractMembers, m => m.Contains("Stream.CopyTo(", StringComparison.Ordinal));
+        Assert.DoesNotContain("int Stream.Read(Span<byte> buffer)", abstractMembers);
+
+        var concreteMembers = await StreamMembersAsync(false);
+        Assert.Contains("void Stream.CopyTo(Stream destination)", concreteMembers);
+        Assert.Contains("int Stream.Read(Span<byte> buffer)", concreteMembers);
+        Assert.Contains("bool Stream.CanTimeout", concreteMembers);
+        Assert.DoesNotContain("int Stream.Read(byte[] buffer, int offset, int count)", concreteMembers);
+        Assert.DoesNotContain("void Stream.Write(byte[] buffer, int offset, int count)", concreteMembers);
+    }
+
+    [SkippableFact]
     public async Task GetSymbolInfo_AbstractFilter_NoEffectOnNonTypeSymbol()
     {
         await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);

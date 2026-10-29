@@ -120,14 +120,27 @@ public sealed class GetSymbolInfoParams
     /// non-abstract members (members with bodies, <c>virtual</c> / <c>override</c> / <c>sealed override</c>,
     /// <c>extern</c>, fields, constants, default interface members and <c>static virtual</c> interface
     /// members with a body, nested concrete / sealed / static classes, structs, enums and delegates);
-    /// <c>null</c> keeps all members. Judged on each member's own symbol (same <c>ISymbol.IsAbstract</c>
-    /// test as <c>search_symbols</c> / <c>find_implementations</c> / <c>get_type_hierarchy</c>
-    /// <c>abstractFilter</c>), independent of the target type: a concrete type's methods, properties,
+    /// <c>null</c> keeps all members. Judged on each member's own symbol, independent of the target
+    /// type: a concrete type's methods, properties,
     /// events and fields are never abstract, but its nested abstract classes / abstract records and nested
     /// interfaces still match <c>true</c>, so a concrete target is empty for <c>true</c> only when it
     /// declares no such nested types. A static class is static but not abstract.
     /// Abstract indexers, operators (including <c>static abstract</c> operators) and accessors never appear
-    /// in <c>Members</c>, so <c>true</c> cannot return them. Combined with <see cref="KindFilter"/>,
+    /// in <c>Members</c>, so <c>true</c> cannot return them.
+    /// The filter only affects <c>Members</c>: the target type itself is always returned whatever its own
+    /// <c>IsAbstract</c>, so an abstract class with no abstract members gives empty <c>Members</c> for
+    /// <c>true</c>, while a nested abstract class with no abstract members still matches <c>true</c> on its
+    /// containing type. An <c>abstract</c> event matches <c>true</c> and a field-like event <c>false</c>.
+    /// Metadata targets work too (e.g. <c>System.IO.Stream</c>): each metadata member is judged on its own
+    /// <c>IsAbstract</c> (<c>Read(byte[], int, int)</c> / <c>Write(byte[], int, int)</c> / <c>CanRead</c> are
+    /// abstract; <c>CopyTo</c>, <c>Read(Span&lt;byte&gt;)</c> and <c>CanTimeout</c> are not).
+    /// Peer differences: <c>get_symbol_info</c> filters only one target's <c>Members</c>, never removes the
+    /// target, and works on metadata targets; <c>search_symbols</c> <c>abstractFilter</c> judges every
+    /// name-matched symbol, is source-only, and drops namespaces when the filter is set;
+    /// <c>get_type_hierarchy</c> <c>abstractFilter</c> judges only derived types (including metadata) and
+    /// returns empty for an interface root; <c>find_implementations</c> <c>abstractFilter</c> judges only
+    /// implementers, counts metadata implementers in <c>totalCount</c>, and returns nothing for a class target.
+    /// Combined with <see cref="KindFilter"/>,
     /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, <see cref="NamespaceFilter"/>, and
     /// <see cref="StaticFilter"/> (a member must satisfy all that are set; e.g. <see cref="StaticFilter"/>
     /// true with <c>true</c> keeps <c>static abstract</c> interface members) and applied before
@@ -135,7 +148,8 @@ public sealed class GetSymbolInfoParams
     /// effect on non-type symbols, Interfaces, or Parameters. No match gives empty <c>Members</c>,
     /// <c>TotalCount = 0</c>, <c>Truncated = false</c>. A non-boolean value (e.g. <c>"yes"</c>, the string
     /// <c>"true"</c>, or <c>1</c>) is rejected by the <c>get_symbol_info</c> tool with
-    /// <c>INTERNAL_ERROR</c>; on the CLI a bare <c>--abstract-filter</c> means true.
+    /// <c>INTERNAL_ERROR</c>; CLI: bare <c>--abstract-filter</c> = <c>true</c>, a value other than
+    /// <c>true</c> / <c>false</c> (case-insensitive) is rejected.
     /// </summary>
     public bool? AbstractFilter { get; init; }
 }
