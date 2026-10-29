@@ -1921,6 +1921,28 @@ public class GetSymbolInfoOperationTests
     }
 
     [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilterTrue_ConcreteTypeKeepsNestedAbstractTypesAndInterfaces()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class Outer
+            {
+                public int Value;
+                public void Go() { }
+                public abstract class NestedBase { }
+                public abstract record NestedRecord;
+                public interface INestedContract { }
+                public sealed class NestedLeaf { }
+            }
+            """);
+
+        // A concrete target is empty for true only when it declares no nested abstract types / interfaces.
+        AssertMembers(await GetMembersAsync(workspace, "Outer", abstractFilter: true),
+            "NestedBase", "NestedRecord", "INestedContract");
+        AssertMembers(await GetMembersAsync(workspace, "Outer", abstractFilter: false),
+            "Value", "Go", "NestedLeaf");
+    }
+
+    [SkippableFact]
     public async Task GetSymbolInfo_AbstractFilterCombinedWithKindFilter_RequiresBoth()
     {
         await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);

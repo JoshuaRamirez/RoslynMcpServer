@@ -122,8 +122,10 @@ public sealed class GetSymbolInfoParams
     /// members with a body, nested concrete / sealed / static classes, structs, enums and delegates);
     /// <c>null</c> keeps all members. Judged on each member's own symbol (same <c>ISymbol.IsAbstract</c>
     /// test as <c>search_symbols</c> / <c>find_implementations</c> / <c>get_type_hierarchy</c>
-    /// <c>abstractFilter</c>), independent of the target type: a concrete type's members are never
-    /// abstract, so <c>true</c> returns empty Members for it. A static class is static but not abstract.
+    /// <c>abstractFilter</c>), independent of the target type: a concrete type's methods, properties,
+    /// events and fields are never abstract, but its nested abstract classes / abstract records and nested
+    /// interfaces still match <c>true</c>, so a concrete target is empty for <c>true</c> only when it
+    /// declares no such nested types. A static class is static but not abstract.
     /// Abstract indexers, operators (including <c>static abstract</c> operators) and accessors never appear
     /// in <c>Members</c>, so <c>true</c> cannot return them. Combined with <see cref="KindFilter"/>,
     /// <see cref="AccessibilityFilter"/>, <see cref="NameFilter"/>, <see cref="NamespaceFilter"/>, and
