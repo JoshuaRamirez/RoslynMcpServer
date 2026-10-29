@@ -255,6 +255,22 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void GetSymbolInfo_AbstractFilterFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-symbol-info", "--source-file", "/src/Foo.cs", "--symbol-name", "Template", "--abstract-filter"]);
+        Assert.Equal("get-symbol-info", result.ToolName);
+        Assert.Equal("true", result.Options["abstract-filter"]);
+    }
+
+    [Fact]
+    public void GetSymbolInfo_AbstractFilterExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-symbol-info", "--source-file", "/src/Foo.cs", "--abstract-filter", "false", "--static-filter"]);
+        Assert.Equal("false", result.Options["abstract-filter"]);
+        Assert.Equal("true", result.Options["static-filter"]);
+    }
+
+    [Fact]
     public void SearchSymbols_AbstractFilterFlag_ParsesAsTrue()
     {
         var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Widget", "--abstract-filter"]);

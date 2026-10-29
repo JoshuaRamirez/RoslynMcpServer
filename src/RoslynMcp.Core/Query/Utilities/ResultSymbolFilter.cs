@@ -8,8 +8,8 @@ namespace RoslynMcp.Core.Query.Utilities;
 /// <c>staticFilter</c> / <c>abstractFilter</c> combination that <c>find_implementations</c>,
 /// <c>get_type_hierarchy</c>, <c>get_symbol_info</c> and <c>find_callers</c> apply to each returned symbol (an
 /// implementation, a derived type, a member of the target type, or a call site's calling symbol) before
-/// <c>maxResults</c>. <c>get_symbol_info</c> passes no abstractFilter; <c>find_callers</c> passes neither
-/// namespaceFilter (it scopes call-site locations via <see cref="NamespaceSiteScope"/>) nor abstractFilter. Built once per request from the raw parameters; invalid accessibility / kind values are
+/// <c>maxResults</c>. <c>find_callers</c> passes neither namespaceFilter (it scopes call-site locations via
+/// <see cref="NamespaceSiteScope"/>) nor abstractFilter. Built once per request from the raw parameters; invalid accessibility / kind values are
 /// rejected earlier in each operation's <c>ValidateParams</c>.
 /// </summary>
 internal sealed class ResultSymbolFilter

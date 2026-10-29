@@ -1765,4 +1765,219 @@ public class GetSymbolInfoOperationTests
     }
 
     #endregion
+
+    #region abstractFilter
+
+    private const string AbstractMixSource = """
+        public interface IShape
+        {
+            int Sides { get; }
+            double Area();
+            static abstract IShape Create();
+            static virtual string Tag() => "s";
+            string Describe() => "shape";
+            event System.EventHandler? Changed;
+            const int Max = 4;
+        }
+
+        public abstract class Template
+        {
+            public abstract void Run();
+            public abstract int Count { get; }
+            public abstract event System.EventHandler? Fired;
+            public abstract int this[int i] { get; }
+            public virtual void Hook() { }
+            public void Execute() { }
+            protected int state;
+            public abstract class InnerBase { }
+            public interface INested { }
+            public static class Helpers { }
+            public sealed class Leaf { }
+            public enum Mode { A }
+        }
+
+        public abstract class Mid : Template
+        {
+            public abstract override void Hook();
+            public sealed override void Run() { }
+            public override int Count => 0;
+            public override event System.EventHandler? Fired;
+            public override int this[int i] => i;
+        }
+
+        public class Concrete
+        {
+            public int Value;
+            public virtual void Go() { }
+        }
+        """;
+
+    [Fact]
+    public void AbstractFilter_DefaultsToNull()
+    {
+        var @params = new GetSymbolInfoParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.AbstractFilter);
+    }
+
+    private static async Task<IReadOnlyList<string>> GetMembersAsync(
+        TempWorkspace workspace, string symbolName, bool? abstractFilter, bool? staticFilter = null)
+    {
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = symbolName,
+            AbstractFilter = abstractFilter,
+            StaticFilter = staticFilter
+        });
+        Assert.True(result.Success);
+        Assert.Equal(result.Data!.Members!.Count, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+        return result.Data.Members!;
+    }
+
+    private static void AssertMembers(IReadOnlyList<string> members, params string[] expectedNames)
+    {
+        Assert.Equal(expectedNames.Length, members.Count);
+        foreach (var name in expectedNames)
+            Assert.Contains(members, m => m.Contains(name, StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_OmittedAbstractFilter_ReturnsAllMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);
+
+        // The abstract indexer never appears in Members (not referenceable by name).
+        var members = await GetMembersAsync(workspace, "Template", abstractFilter: null);
+        AssertMembers(members, "Run", "Count", "Fired", "Hook", "Execute", "state",
+            "InnerBase", "INested", "Helpers", "Leaf", "Mode");
+        Assert.DoesNotContain(members, m => m.Contains("this[", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilterTrue_KeepsOnlyAbstractClassMembersAndNestedAbstractTypes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);
+
+        // Nested abstract classes and nested interfaces count as abstract; a static class does not.
+        var members = await GetMembersAsync(workspace, "Template", abstractFilter: true);
+        AssertMembers(members, "Run", "Count", "Fired", "InnerBase", "INested");
+        Assert.DoesNotContain(members, m => m.Contains("Helpers", StringComparison.Ordinal));
+        Assert.DoesNotContain(members, m => m.Contains("this[", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilterFalse_KeepsOnlyNonAbstractMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);
+
+        var members = await GetMembersAsync(workspace, "Template", abstractFilter: false);
+        AssertMembers(members, "Hook", "Execute", "state", "Helpers", "Leaf", "Mode");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilter_InterfaceMembersWithoutBodyAreAbstract()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);
+
+        // Members without a default body (including static abstract) are abstract; default interface
+        // members, static virtual members with a body and constants are not.
+        AssertMembers(await GetMembersAsync(workspace, "IShape", abstractFilter: true),
+            "Sides", "Area", "Create", "Changed");
+        AssertMembers(await GetMembersAsync(workspace, "IShape", abstractFilter: false),
+            "Tag", "Describe", "Max");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilterCombinedWithStaticFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);
+
+        AssertMembers(await GetMembersAsync(workspace, "IShape", abstractFilter: true, staticFilter: true),
+            "Create");
+        AssertMembers(await GetMembersAsync(workspace, "IShape", abstractFilter: false, staticFilter: true),
+            "Tag", "Max");
+        AssertMembers(await GetMembersAsync(workspace, "IShape", abstractFilter: true, staticFilter: false),
+            "Sides", "Area", "Changed");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilter_AbstractOverrideIsAbstractSealedOverrideIsNot()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);
+
+        AssertMembers(await GetMembersAsync(workspace, "Mid", abstractFilter: true), "Hook");
+        AssertMembers(await GetMembersAsync(workspace, "Mid", abstractFilter: false), "Run", "Count", "Fired");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilterTrue_ConcreteTypeReturnsEmptyMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);
+
+        Assert.Empty(await GetMembersAsync(workspace, "Concrete", abstractFilter: true));
+        AssertMembers(await GetMembersAsync(workspace, "Concrete", abstractFilter: false), "Value", "Go");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilterCombinedWithKindFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Template",
+            KindFilter = "Method",
+            AbstractFilter = true
+        });
+
+        Assert.True(result.Success);
+        var members = result.Data!.Members!;
+        Assert.Single(members);
+        Assert.Contains("Run", members[0], StringComparison.Ordinal);
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilterAppliedBeforeMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Template",
+            AbstractFilter = true,
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Members!.Count);
+        Assert.Equal(5, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_AbstractFilter_NoEffectOnNonTypeSymbol()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Execute",
+            AbstractFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Null(result.Data!.Members);
+        Assert.Null(result.Data.TotalCount);
+    }
+
+    #endregion
 }
