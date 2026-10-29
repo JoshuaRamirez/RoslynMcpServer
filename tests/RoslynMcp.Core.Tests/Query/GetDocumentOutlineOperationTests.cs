@@ -2176,6 +2176,42 @@ public class GetDocumentOutlineOperationTests
     }
 
     [SkippableFact]
+    public async Task Execute_StaticFilterCombinedWithAccessibilityAndNamespaceFilter_RequiresAll()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        // The static constructor is the only static entry with (implicit) private accessibility.
+        var privateStatics = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "App",
+            AccessibilityFilter = "private",
+            StaticFilter = true
+        });
+
+        Assert.True(privateStatics.Success);
+        Assert.Equal(
+            new[] { ("App", "Namespace"), ("Mixer", "Class"), ("Mixer", "Constructor") },
+            Flatten(privateStatics.Data!.Entries).Select(e => (e.Name, e.Kind)));
+        Assert.Equal(3, privateStatics.Data.TotalCount);
+        Assert.False(privateStatics.Data.Truncated);
+
+        // Same accessibility / static filters outside the file's namespace match nothing.
+        var otherNamespace = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceFilter = "Other",
+            AccessibilityFilter = "private",
+            StaticFilter = true
+        });
+
+        Assert.True(otherNamespace.Success);
+        Assert.Empty(otherNamespace.Data!.Entries);
+        Assert.Equal(0, otherNamespace.Data.TotalCount);
+    }
+
+    [SkippableFact]
     public async Task Execute_StaticFilterAppliedBeforeMaxResults()
     {
         await using var workspace = await TempWorkspace.CreateAsync(StaticSource);
