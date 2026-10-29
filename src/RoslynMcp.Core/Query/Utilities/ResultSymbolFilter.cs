@@ -6,9 +6,11 @@ namespace RoslynMcp.Core.Query.Utilities;
 /// <summary>
 /// The optional <c>namespaceFilter</c> / <c>accessibilityFilter</c> / <c>kindFilter</c> / <c>nameFilter</c> /
 /// <c>staticFilter</c> / <c>abstractFilter</c> combination that <c>find_implementations</c>,
-/// <c>get_type_hierarchy</c>, <c>get_symbol_info</c> and <c>find_callers</c> apply to each returned symbol (an
-/// implementation, a derived type, a member of the target type, or a call site's calling symbol) before
-/// <c>maxResults</c>. <c>get_symbol_info</c> passes no abstractFilter; <c>find_callers</c> passes neither
+/// <c>get_type_hierarchy</c>, <c>get_symbol_info</c>, <c>find_callers</c> and <c>search_symbols</c> apply to each
+/// returned symbol (an implementation, a derived type, a member of the target type, a call site's calling symbol,
+/// or a found declaration) before <c>maxResults</c>. <c>get_symbol_info</c> passes no abstractFilter;
+/// <c>search_symbols</c> passes no nameFilter (its query is the name match) and additionally rejects namespaces
+/// when <see cref="ConstrainsModifiers"/>; <c>find_callers</c> passes neither
 /// namespaceFilter (it scopes call-site locations via <see cref="NamespaceSiteScope"/>) nor abstractFilter. Built once per request from the raw parameters; invalid accessibility / kind values are
 /// rejected earlier in each operation's <c>ValidateParams</c>.
 /// </summary>
@@ -59,6 +61,12 @@ internal sealed class ResultSymbolFilter
             NameFilterMatcher.Normalize(nameFilter),
             staticFilter,
             abstractFilter);
+
+    /// <summary>
+    /// Whether an accessibilityFilter, staticFilter or abstractFilter is set — the filters on declaration
+    /// modifiers that a namespace (no modifiers) can never satisfy in <c>search_symbols</c>.
+    /// </summary>
+    public bool ConstrainsModifiers => _accessibility.HasValue || _isStatic.HasValue || _isAbstract.HasValue;
 
     /// <summary>
     /// Whether <paramref name="symbol"/> satisfies every set filter: containing namespace equal to or nested
