@@ -8,7 +8,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <summary>
 /// Unit tests for <see cref="ResultSymbolFilter"/>, the namespaceFilter / accessibilityFilter / kindFilter /
 /// nameFilter / staticFilter / abstractFilter combination that <c>find_implementations</c>,
-/// <c>get_type_hierarchy</c> and <c>get_symbol_info</c> (members, no abstractFilter) apply to each returned symbol.
+/// <c>get_type_hierarchy</c>, <c>get_symbol_info</c> (members, no abstractFilter) and <c>find_callers</c> (calling
+/// symbols, no namespaceFilter / abstractFilter) apply to each returned symbol.
 /// </summary>
 public class ResultSymbolFilterTests
 {
@@ -177,5 +178,37 @@ public class ResultSymbolFilterTests
         Assert.DoesNotContain(members, Filter("Outer", "public", "Method", "cou", true).Matches);
         Assert.DoesNotContain(members, Filter("Outer", "public", "Field", "area", true).Matches);
         Assert.DoesNotContain(members, Filter("Outer", "public", "Field", "cou", false).Matches);
+    }
+
+    [Fact]
+    public void Matches_CallingSymbolFilters_WithoutNamespaceOrAbstractFilter_SelectCallingSymbols()
+    {
+        // find_callers shape: accessibility / kind / name / static over calling symbols (members and types),
+        // namespaceFilter and abstractFilter always null, so the containing namespace is never consulted.
+        ISymbol[] callers =
+        [
+            Member("Outer.Shape", "Area"),
+            Member("Outer.Shape", "Count"),
+            Member("Outer.Circle", "Area"),
+            Type("Outer.Circle"),
+            Type("GlobalWidget"),
+        ];
+
+        static ResultSymbolFilter Calling(
+            string? accessibility = null, string? kind = null, string? name = null, bool? isStatic = null) =>
+            ResultSymbolFilter.Create(null, accessibility, kind, name, isStatic, null);
+
+        static string[] Names(IEnumerable<ISymbol> symbols) =>
+            symbols.Select(s => $"{s.ContainingSymbol.Name}.{s.Name}").ToArray();
+
+        Assert.Equal(callers.Length, callers.Count(Calling().Matches));
+        Assert.Equal(["Shape.Area", "Circle.Area"], Names(callers.Where(Calling("public", "Method", "area", false).Matches)));
+        Assert.Equal(["Shape.Count"], Names(callers.Where(Calling("public", "Field", "COU", true).Matches)));
+        Assert.Equal(["Outer.Circle"], Names(callers.Where(Calling("internal", "Class", null, false).Matches)));
+        Assert.Equal([".GlobalWidget"], Names(callers.Where(Calling("public", "Class", "widget").Matches)));
+        Assert.DoesNotContain(callers, Calling("private", "Method", "area", false).Matches);
+        Assert.DoesNotContain(callers, Calling("public", "Property", "area", false).Matches);
+        Assert.DoesNotContain(callers, Calling("public", "Method", "xyz", false).Matches);
+        Assert.DoesNotContain(callers, Calling("public", "Method", "area", true).Matches);
     }
 }

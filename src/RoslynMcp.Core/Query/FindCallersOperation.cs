@@ -105,34 +105,26 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         // inside it. The target symbol's own namespace is irrelevant. Null when no filter applies.
         var namespaceScope = NamespaceSiteScope.Create(Context, @params.NamespaceFilter);
 
-        // Optional accessibilityFilter (same values / parsing as search_symbols /
-        // find_implementations / get_type_hierarchy accessibilityFilter): keep only call sites
-        // whose calling symbol's DeclaredAccessibility equals the filter exactly. Null when
-        // omitted / blank (no accessibility filtering). Invalid values already rejected in
-        // ValidateParams.
-        var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
-
-        // Optional nameFilter (same matching as get_document_outline / get_symbol_info /
-        // find_implementations / get_type_hierarchy / find_references nameFilter): keep only call
-        // sites whose calling symbol (the same CallingSymbol accessibilityFilter judges) has a
-        // simple Name containing the trimmed value, ordinal case-insensitive. Null when omitted /
-        // blank (no name filtering). Free text — no validation error.
-        var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
-
-        // Optional kindFilter (same values / parsing as search_symbols / get_document_outline /
-        // get_symbol_info / find_implementations / get_type_hierarchy kindFilter): keep only call
-        // sites whose calling symbol (the same CallingSymbol accessibilityFilter / nameFilter judge)
-        // maps to that kind via SymbolKindMapper (methods / constructors / lambdas → Method, property
-        // bodies → Property, field initializers → Field or Constant). Null when omitted / blank.
-        // Invalid values already rejected in ValidateParams.
-        var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
-
-        // Optional staticFilter (same ISymbol.IsStatic test as get_symbol_info / get_document_outline /
-        // search_symbols / find_implementations staticFilter; find_references / get_diagnostics staticFilter judge sites
-        // differently): keep only call sites whose calling symbol (the same
-        // CallingSymbol accessibilityFilter / nameFilter / kindFilter judge) is static (true) or
-        // instance (false). Null when omitted (no static filtering).
-        var staticFilter = @params.StaticFilter;
+        // Optional accessibilityFilter / nameFilter / kindFilter / staticFilter on the calling symbol (same
+        // ResultSymbolFilter as find_implementations / get_type_hierarchy / get_symbol_info):
+        // - accessibilityFilter: exact DeclaredAccessibility match (same values / parsing as search_symbols
+        //   accessibilityFilter). Invalid values already rejected in ValidateParams.
+        // - nameFilter: simple Name contains the trimmed value, ordinal case-insensitive. Free text, so there is
+        //   no validation error.
+        // - kindFilter: SymbolKindMapper kind (methods / constructors / lambdas → Method, property bodies →
+        //   Property, field initializers → Field or Constant). Invalid values already rejected in ValidateParams.
+        // - staticFilter: ISymbol.IsStatic equality (find_references / get_diagnostics staticFilter judge sites
+        //   differently).
+        // Omitted / blank values impose no filter. namespaceFilter is deliberately not passed: find_callers judges
+        // it per call-site location via NamespaceSiteScope above, not on the calling symbol's containing
+        // namespace. abstractFilter is not a find_callers parameter.
+        var callingSymbolFilter = ResultSymbolFilter.Create(
+            namespaceFilter: null,
+            @params.AccessibilityFilter,
+            @params.KindFilter,
+            @params.NameFilter,
+            @params.StaticFilter,
+            abstractFilter: null);
 
         foreach (var caller in callerResults)
         {
@@ -141,17 +133,7 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
             // DeclaredAccessibility match (implicit defaults count; protected internal ≠
             // protected / internal). Name is ISymbol.Name substring (OrdinalIgnoreCase). Kind is
             // SymbolKindMapper.Map equality. Static is ISymbol.IsStatic equality.
-            if (accessibilityFilter.HasValue
-                && caller.CallingSymbol.DeclaredAccessibility != accessibilityFilter.Value)
-                continue;
-
-            if (!NameFilterMatcher.Matches(caller.CallingSymbol.Name, nameFilter))
-                continue;
-
-            if (kindFilter.HasValue && SymbolKindMapper.Map(caller.CallingSymbol) != kindFilter.Value)
-                continue;
-
-            if (staticFilter.HasValue && caller.CallingSymbol.IsStatic != staticFilter.Value)
+            if (!callingSymbolFilter.Matches(caller.CallingSymbol))
                 continue;
 
             foreach (var location in caller.Locations)

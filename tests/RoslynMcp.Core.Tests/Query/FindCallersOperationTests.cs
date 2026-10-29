@@ -1861,6 +1861,48 @@ public class FindCallersOperationTests
         Assert.All(result.Data.Callers, c => Assert.Contains(c.CallerName, StaticCallerNames));
     }
 
+    [SkippableFact]
+    public async Task FindCallers_AllCallingSymbolFiltersWithMaxResults_AndsThenCaps()
+    {
+        // accessibilityFilter + kindFilter + nameFilter + staticFilter all judge the same calling symbol and are
+        // ANDed before maxResults: public static methods whose name contains "a" are StaticHandle and op_Addition
+        // (.cctor is private, StaticTotal is a property, Handle is instance).
+        await using var workspace = await TempWorkspace.CreateAsync(StaticSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var uncapped = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public",
+            KindFilter = "Method",
+            NameFilter = " A ",
+            StaticFilter = true
+        });
+
+        Assert.True(uncapped.Success);
+        Assert.Equal(new[] { "StaticHandle", "op_Addition" }, SortedCallerNames(uncapped.Data!.Callers));
+        Assert.Equal(2, uncapped.Data.TotalCount);
+        Assert.False(uncapped.Data.Truncated);
+
+        var capped = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            AccessibilityFilter = "public",
+            KindFilter = "Method",
+            NameFilter = " A ",
+            StaticFilter = true,
+            MaxResults = 1
+        });
+
+        Assert.True(capped.Success);
+        Assert.Single(capped.Data!.Callers);
+        Assert.Equal(2, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+        Assert.Contains(capped.Data.Callers[0].CallerName, new[] { "StaticHandle", "op_Addition" });
+    }
+
     [SkippableTheory]
     [InlineData(false, "Static", null)]
     [InlineData(true, null, "Constant")]
