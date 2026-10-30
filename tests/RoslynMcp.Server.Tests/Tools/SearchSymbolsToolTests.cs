@@ -614,7 +614,7 @@ public class SearchSymbolsToolTests
             Assert.Contains("a value other than true/false (case-insensitive) is rejected", text, StringComparison.Ordinal);
             Assert.Contains("search_symbols never returns indexers (so a sealed override indexer is never returned), operators and conversion operators, accessors, constructors, or explicit interface implementations", text, StringComparison.Ordinal);
             Assert.Contains("a finalizer is returned (as an instance method named Finalize) and counts as unsealed", text, StringComparison.Ordinal);
-            Assert.Contains("sealedFilter exists only on search_symbols; get_symbol_info, get_document_outline, get_type_hierarchy and find_implementations have abstractFilter and staticFilter but no sealedFilter", text, StringComparison.Ordinal);
+            Assert.Contains("sealedFilter exists only on search_symbols; get_symbol_info, get_document_outline, get_type_hierarchy and find_implementations have abstractFilter but no sealedFilter, and all of them except get_type_hierarchy also have staticFilter", text, StringComparison.Ordinal);
             Assert.Contains("interfaces and body-less interface members are abstract but not sealed; static classes are neither; structs, enums and delegates are sealed but not abstract", text, StringComparison.Ordinal);
             Assert.Contains("search_symbols returns a flat, source-only list from GetSymbolsWithName, so there is no container rule (unlike get_document_outline) and no target-only member filtering (unlike get_symbol_info)", text, StringComparison.Ordinal);
         }
