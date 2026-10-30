@@ -154,29 +154,32 @@ public sealed class GetSymbolInfoParams
     public bool? AbstractFilter { get; init; }
 
     /// <summary>
-    /// Optional sealedFilter (boolean) keeps only Members of a type symbol whose ISymbol.IsSealed is true when true
-    /// (sealed override methods / properties / events; nested sealed classes and sealed records; nested structs,
-    /// including readonly structs and record structs; nested enums and delegates, which Roslyn reports as sealed) or
-    /// only Members whose IsSealed is false when false (ordinary, virtual, abstract and non-sealed override members;
-    /// fields, const fields and enum members; nested unsealed, abstract and static classes and records; nested
-    /// interfaces; every interface member, including an explicitly sealed default-bodied one, which Roslyn reports as
-    /// non-virtual rather than IsSealed; every member of a struct, including an override such as ToString). Judged on
-    /// each member's own symbol: the target type itself is always returned whatever its own IsSealed, so a sealed class
-    /// or struct target with no sealed members gives empty Members for true. Never-returned kinds: indexers (so a
-    /// sealed override indexer is never returned), operators, constructors, property / event accessors and explicit
-    /// interface implementations never appear in Members, so sealedFilter = true cannot return them. Metadata targets
-    /// work too: each metadata member is judged on its own IsSealed (e.g. on System.Collections.Generic.List&lt;int&gt;
-    /// the nested Enumerator struct matches true while Add matches false). Peer differences: get_symbol_info
-    /// sealedFilter filters only one target's Members, never removes the target, and works on metadata targets;
-    /// search_symbols sealedFilter judges every name-matched symbol, is source-only, and drops namespaces when the
-    /// filter is set; get_document_outline, get_type_hierarchy and find_implementations have abstractFilter but no
-    /// sealedFilter. Versus abstractFilter: no member is both abstract and sealed, so abstractFilter true +
-    /// sealedFilter true is always empty; a static class is neither sealed nor abstract. Combined with kindFilter,
-    /// accessibilityFilter, nameFilter, namespaceFilter, staticFilter and abstractFilter (all must match) and applied
-    /// before maxResults so totalCount / truncated reflect the filtered set; no effect on non-type symbols, Interfaces
-    /// or Parameters. No match gives empty Members, totalCount = 0, truncated = false. A non-boolean value (e.g. 'yes',
-    /// the string 'true', or 1) is rejected with INTERNAL_ERROR. CLI: bare --sealed-filter = true, and a value other
-    /// than true / false (case-insensitive) is rejected. Omitted = no sealed filter.
+    /// Optional sealedFilter (boolean) keeps only Members of a type symbol whose ISymbol.IsSealed is true when true (sealed
+    /// override methods / properties / events; nested sealed classes and sealed records; nested structs, including readonly
+    /// structs and record structs; nested enums and delegates, which Roslyn reports as sealed) or only Members whose
+    /// IsSealed is false when false (ordinary, virtual, abstract and non-sealed override members; fields, const fields and
+    /// enum members; nested unsealed, abstract and static classes and records; nested interfaces; every interface member,
+    /// including an explicitly sealed default-bodied one, which Roslyn reports as non-virtual rather than IsSealed; every
+    /// member of a struct, including an override such as ToString). A finalizer is returned in Members (as ~T()), matches
+    /// false and is excluded by true. Judged on each member's own symbol: the target type itself is always returned
+    /// whatever its own IsSealed, so a sealed class or struct target with no sealed members gives empty Members for true.
+    /// Never-returned kinds: indexers (so a sealed override indexer is never returned), operators and conversion operators,
+    /// instance and static constructors, property / event accessors and explicit interface implementations (including
+    /// explicit interface indexers) never appear in Members, so sealedFilter = true cannot return them. Metadata targets
+    /// work too: each metadata member is judged on its own IsSealed (e.g. on System.Collections.Generic.List&lt;int&gt; the
+    /// nested Enumerator struct matches true while Add matches false). Peer differences: get_symbol_info sealedFilter
+    /// filters only one target's Members, never removes the target, and works on metadata targets; search_symbols
+    /// sealedFilter judges every name-matched symbol, is source-only, and drops namespaces when the filter is set;
+    /// get_document_outline, get_type_hierarchy and find_implementations have abstractFilter but no sealedFilter. Versus
+    /// abstractFilter: no member is both abstract and sealed, so abstractFilter true + sealedFilter true is always empty; a
+    /// static class is neither sealed nor abstract. Versus staticFilter: static members and static classes are never
+    /// sealed, so staticFilter true + sealedFilter true is always empty; nested structs, enums and delegates are sealed but
+    /// not static, so they match staticFilter false + sealedFilter true. Combined with kindFilter, accessibilityFilter,
+    /// nameFilter, namespaceFilter, staticFilter and abstractFilter (all must match) and applied before maxResults so
+    /// totalCount / truncated reflect the filtered set; no effect on non-type symbols, including namespace targets (Members
+    /// stays null), or on Interfaces or Parameters. No match gives empty Members, totalCount = 0, truncated = false. A
+    /// non-boolean value (e.g. 'yes', the string 'true', or 1) is rejected with INTERNAL_ERROR. CLI: bare --sealed-filter =
+    /// true, and a value other than true/false (case-insensitive) is rejected. Omitted = no sealed filter.
     /// </summary>
     public bool? SealedFilter { get; init; }
 }

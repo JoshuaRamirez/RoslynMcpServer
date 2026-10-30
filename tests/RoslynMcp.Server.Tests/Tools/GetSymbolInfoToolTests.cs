@@ -452,7 +452,10 @@ public class GetSymbolInfoToolTests
         foreach (var text in new[] { schemaText, _tool.Description })
         {
             Assert.Contains("the target type itself is always returned whatever its own IsSealed", text, StringComparison.Ordinal);
-            Assert.Contains("Never-returned kinds: indexers (so a sealed override indexer is never returned), operators, constructors, property / event accessors and explicit interface implementations", text, StringComparison.Ordinal);
+            Assert.Contains("Never-returned kinds: indexers (so a sealed override indexer is never returned), operators and conversion operators, instance and static constructors, property / event accessors and explicit interface implementations (including explicit interface indexers)", text, StringComparison.Ordinal);
+            Assert.Contains("A finalizer is returned in Members (as ~T()), matches false and is excluded by true", text, StringComparison.Ordinal);
+            Assert.Contains("Versus staticFilter: static members and static classes are never sealed, so staticFilter true + sealedFilter true is always empty; nested structs, enums and delegates are sealed but not static, so they match staticFilter false + sealedFilter true", text, StringComparison.Ordinal);
+            Assert.Contains("no effect on non-type symbols, including namespace targets (Members stays null), or on Interfaces or Parameters", text, StringComparison.Ordinal);
             Assert.Contains("including an explicitly sealed default-bodied one", text, StringComparison.Ordinal);
             Assert.Contains("every member of a struct, including an override such as ToString", text, StringComparison.Ordinal);
             Assert.Contains("System.Collections.Generic.List<int>", text, StringComparison.Ordinal);
@@ -461,7 +464,7 @@ public class GetSymbolInfoToolTests
             Assert.Contains("abstractFilter true + sealedFilter true is always empty", text, StringComparison.Ordinal);
             Assert.Contains("applied before maxResults", text, StringComparison.Ordinal);
             Assert.Contains("CLI: bare --sealed-filter = true", text, StringComparison.Ordinal);
-            Assert.Contains("a value other than true / false (case-insensitive) is rejected", text, StringComparison.Ordinal);
+            Assert.Contains("a value other than true/false (case-insensitive) is rejected", text, StringComparison.Ordinal);
         }
     }
 

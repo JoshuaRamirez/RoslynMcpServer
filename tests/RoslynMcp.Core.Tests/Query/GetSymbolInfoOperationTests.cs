@@ -2109,8 +2109,21 @@ public class GetSymbolInfoOperationTests
             public virtual void Other() { }
         }
 
-        public class Derived : Base
+        public interface IProbe
         {
+            void Ping();
+            int this[string key] { get; }
+        }
+
+        public class Derived : Base, IProbe
+        {
+            public Derived() { }
+            static Derived() { }
+            ~Derived() { }
+            public static Derived operator +(Derived a, Derived b) => a;
+            public static explicit operator int(Derived d) => 0;
+            void IProbe.Ping() { }
+            int IProbe.this[string key] => 0;
             public sealed override void Run() { }
             public sealed override int Count => 1;
             public sealed override event EventHandler? Fired;
@@ -2180,14 +2193,47 @@ public class GetSymbolInfoOperationTests
         Assert.Null(@params.SealedFilter);
     }
 
+    // Derived's exact Members (display strings) per sealedFilter value. The indexer, the operator, the conversion
+    // operator, the instance and static constructors, the accessors and the explicit interface implementations
+    // (IProbe.Ping and the IProbe indexer) never appear; the finalizer appears as Derived.~Derived() and is unsealed.
+    private static readonly string[] SealedDerivedMembers =
+    [
+        "void Derived.Run()",
+        "int Derived.Count",
+        "event EventHandler? Derived.Fired",
+        "Leaf",
+        "LeafRecord",
+        "Point",
+        "RoPoint",
+        "RecPoint",
+        "Mode",
+        "Handler"
+    ];
+
+    private static readonly string[] UnsealedDerivedMembers =
+    [
+        "Derived.~Derived()",
+        "void Derived.Other()",
+        "void Derived.Plain()",
+        "int Derived.state",
+        "int Derived.Max",
+        "Open",
+        "AbstractInner",
+        "Helpers",
+        "INested",
+        "OpenRecord"
+    ];
+
+    private static void AssertExactMembers(IReadOnlyList<string> members, IEnumerable<string> expected) =>
+        Assert.Equal(expected.Order(StringComparer.Ordinal), members.Order(StringComparer.Ordinal));
+
     [SkippableFact]
     public async Task GetSymbolInfo_OmittedSealedFilter_ReturnsAllMembers()
     {
         await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
 
-        // 3 sealed overrides (the indexer is never a Member) + Other/Plain/state/Max + 12 nested types.
         var members = await GetSealedMembersAsync(workspace, "Derived", sealedFilter: null);
-        Assert.Equal(19, members.Count);
+        AssertExactMembers(members, SealedDerivedMembers.Concat(UnsealedDerivedMembers));
     }
 
     [SkippableFact]
@@ -2196,8 +2242,7 @@ public class GetSymbolInfoOperationTests
         await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
 
         var members = await GetSealedMembersAsync(workspace, "Derived", sealedFilter: true);
-        AssertMembers(members, "Run", "Count", "Fired", "Leaf", "LeafRecord", "Point", "RoPoint", "RecPoint",
-            "Mode", "Handler");
+        AssertExactMembers(members, SealedDerivedMembers);
     }
 
     [SkippableFact]
@@ -2206,8 +2251,7 @@ public class GetSymbolInfoOperationTests
         await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
 
         var members = await GetSealedMembersAsync(workspace, "Derived", sealedFilter: false);
-        AssertMembers(members, "Other", "Plain", "state", "Max", "Open", "AbstractInner", "Helpers", "INested",
-            "OpenRecord");
+        AssertExactMembers(members, UnsealedDerivedMembers);
     }
 
     [SkippableFact]
@@ -2215,14 +2259,28 @@ public class GetSymbolInfoOperationTests
     {
         await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
 
-        foreach (var filter in new bool?[] { true, false, null })
-        {
-            var members = await GetSealedMembersAsync(workspace, "Derived", sealedFilter: filter);
-            Assert.DoesNotContain(members, m => m.Contains("this[", StringComparison.Ordinal));
-            Assert.DoesNotContain(members, m => m.Contains("Derived()", StringComparison.Ordinal));
-            Assert.DoesNotContain(members, m => m.Contains(".get", StringComparison.Ordinal));
-            Assert.DoesNotContain(members, m => m.Contains("add_", StringComparison.Ordinal));
-        }
+        // Derived declares a sealed override indexer, an operator +, an explicit conversion operator, an explicit
+        // instance constructor, a static constructor, IProbe.Ping and an explicit IProbe indexer; none is a Member
+        // for any sealedFilter value, so each list is exactly the named members below.
+        AssertExactMembers(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: null),
+            SealedDerivedMembers.Concat(UnsealedDerivedMembers));
+        AssertExactMembers(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: true), SealedDerivedMembers);
+        AssertExactMembers(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: false), UnsealedDerivedMembers);
+    }
+
+    [SkippableTheory]
+    [InlineData(null, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task GetSymbolInfo_SealedFilter_FinalizerIsReturnedAndUnsealed(bool? sealedFilter, bool expectFinalizer)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+
+        var members = await GetSealedMembersAsync(workspace, "Derived", sealedFilter: sealedFilter);
+        if (expectFinalizer)
+            Assert.Contains("Derived.~Derived()", members);
+        else
+            Assert.DoesNotContain("Derived.~Derived()", members);
     }
 
     [SkippableFact]
@@ -2254,6 +2312,9 @@ public class GetSymbolInfoOperationTests
         AssertMembers(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: false, staticFilter: true),
             "Max", "Helpers");
         Assert.Empty(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: true, staticFilter: true));
+        // Nested structs, enums and delegates are sealed but not static.
+        AssertExactMembers(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: true, staticFilter: false),
+            SealedDerivedMembers);
         Assert.Empty(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: true, abstractFilter: true));
         AssertMembers(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: false, abstractFilter: true),
             "AbstractInner", "INested");
@@ -2352,6 +2413,31 @@ public class GetSymbolInfoOperationTests
         Assert.True(result.Success);
         Assert.Null(result.Data!.Members);
         Assert.Null(result.Data.TotalCount);
+
+        const string namespaceSource = """
+            namespace App.Sealing
+            {
+                public sealed class Leaf { }
+            }
+            """;
+        await using var namespaceWorkspace = await TempWorkspace.CreateAsync(namespaceSource);
+        var namespaceOperation = new GetSymbolInfoOperation(namespaceWorkspace.Context);
+        foreach (var filter in new bool?[] { null, true, false })
+        {
+            var namespaceResult = await namespaceOperation.ExecuteAsync(new GetSymbolInfoParams
+            {
+                SourceFile = namespaceWorkspace.SourcePath,
+                Line = 1,
+                Column = namespaceSource.IndexOf("Sealing", StringComparison.Ordinal) + 1,
+                SealedFilter = filter
+            });
+
+            Assert.True(namespaceResult.Success);
+            Assert.Equal("Sealing", namespaceResult.Data!.Name);
+            Assert.Equal(RoslynMcp.Contracts.Enums.SymbolKind.Namespace, namespaceResult.Data.Kind);
+            Assert.Null(namespaceResult.Data.Members);
+            Assert.Null(namespaceResult.Data.TotalCount);
+        }
     }
 
     #endregion
