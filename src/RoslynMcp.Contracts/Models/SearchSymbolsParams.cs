@@ -145,4 +145,27 @@ public sealed class SearchSymbolsParams
     /// <c>true</c>, and a value other than <c>true</c> / <c>false</c> is rejected.
     /// </summary>
     public bool? AbstractFilter { get; init; }
+
+    /// <summary>
+    /// Optional sealed / unsealed filter. <c>true</c> keeps only symbols whose <c>ISymbol.IsSealed</c> is
+    /// <c>true</c>: sealed classes and sealed records (including nested and generic definitions), structs
+    /// (including <c>readonly</c> structs and record structs), enums and delegates, which Roslyn reports as
+    /// sealed, and <c>sealed override</c> methods / properties / events. <c>false</c> keeps only symbols whose
+    /// <c>IsSealed</c> is <c>false</c>: unsealed classes and records, including abstract and static classes
+    /// (Roslyn reports <c>IsSealed = false</c> for a static class), interfaces, every interface member
+    /// (instance, default-bodied and <c>static abstract</c>), ordinary, <c>virtual</c>, <c>abstract</c> and
+    /// non-sealed <c>override</c> members, members of structs (which are not themselves sealed), fields,
+    /// <c>const</c> fields and enum members. Namespaces are returned when this is omitted but dropped when it
+    /// is set to either value. Results are source-only (a metadata name such as <c>String</c> gives an empty
+    /// result for every value). Unlike <see cref="StaticFilter"/>, a <c>static class</c> is static but not
+    /// sealed, so <c>sealedFilter = true</c> drops it. Combines with <see cref="StaticFilter"/>,
+    /// <see cref="AbstractFilter"/> (no symbol is both abstract and sealed, so both set to <c>true</c> is
+    /// always empty) and the other filters (a symbol must satisfy all that are set), and is applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the sealed-filtered set. No
+    /// match gives empty <c>Symbols</c>, <c>TotalCount = 0</c>, <c>Truncated = false</c>. Omit for no sealed
+    /// filter. A non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>) is rejected by
+    /// the <c>search_symbols</c> tool with <c>INTERNAL_ERROR</c>. CLI: a bare <c>--sealed-filter</c> means
+    /// <c>true</c>, and a value other than <c>true</c> / <c>false</c> is rejected.
+    /// </summary>
+    public bool? SealedFilter { get; init; }
 }

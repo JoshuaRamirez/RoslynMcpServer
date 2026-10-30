@@ -2536,4 +2536,319 @@ public class SearchSymbolsOperationTests
             });
         }
     }
+
+    #region sealedFilter
+
+    private const string SealedSource = """
+        namespace SealSpace
+        {
+            public sealed class SealLeaf { }
+            public class SealOpen
+            {
+                public virtual void SealVirt() { }
+                public void SealPlain() { }
+                public int SealField;
+                public const int SealConst = 1;
+                public int SealProp { get; set; }
+                public virtual int SealVirtProp { get; set; }
+                public event System.Action? SealEvt;
+            }
+            public class SealDerived : SealOpen
+            {
+                public sealed override void SealVirt() { }
+                public override int SealVirtProp { get; set; }
+            }
+            public abstract class SealAbs { public abstract void SealAbsM(); }
+            public static class SealStatics { public static void SealHelper() { } }
+            public struct SealStruct { public void SealStructM() { } }
+            public readonly struct SealRoStruct { }
+            public record struct SealRecStruct(int SealX);
+            public sealed record SealRecord;
+            public record SealOpenRecord;
+            public enum SealKind { SealA }
+            public delegate void SealHandler();
+            public interface ISealIface { void SealRun(); void SealDefault() { } static abstract void SealMake(); }
+            public class SealOuter { private sealed class SealNested { } }
+            public sealed class SealGen<T> { }
+        }
+        """;
+
+    private static readonly string[] SealedSealNames =
+    [
+        "SealSpace.SealDerived.SealVirt()",
+        "SealSpace.SealGen<T>",
+        "SealSpace.SealHandler",
+        "SealSpace.SealKind",
+        "SealSpace.SealLeaf",
+        "SealSpace.SealOuter.SealNested",
+        "SealSpace.SealRecStruct",
+        "SealSpace.SealRecord",
+        "SealSpace.SealRoStruct",
+        "SealSpace.SealStruct"
+    ];
+
+    private static readonly string[] UnsealedSealNames =
+    [
+        "SealSpace.ISealIface",
+        "SealSpace.ISealIface.SealDefault()",
+        "SealSpace.ISealIface.SealMake()",
+        "SealSpace.ISealIface.SealRun()",
+        "SealSpace.SealAbs",
+        "SealSpace.SealAbs.SealAbsM()",
+        "SealSpace.SealDerived",
+        "SealSpace.SealDerived.SealVirtProp",
+        "SealSpace.SealKind.SealA",
+        "SealSpace.SealOpen",
+        "SealSpace.SealOpen.SealConst",
+        "SealSpace.SealOpen.SealEvt",
+        "SealSpace.SealOpen.SealField",
+        "SealSpace.SealOpen.SealPlain()",
+        "SealSpace.SealOpen.SealProp",
+        "SealSpace.SealOpen.SealVirt()",
+        "SealSpace.SealOpen.SealVirtProp",
+        "SealSpace.SealOpenRecord",
+        "SealSpace.SealOuter",
+        "SealSpace.SealRecStruct.SealX",
+        "SealSpace.SealStatics",
+        "SealSpace.SealStatics.SealHelper()",
+        "SealSpace.SealStruct.SealStructM()"
+    ];
+
+    [Fact]
+    public void SealedFilter_DefaultsToNull()
+    {
+        var @params = new SearchSymbolsParams { Query = "Foo" };
+        Assert.Null(@params.SealedFilter);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_OmittedSealedFilter_ReturnsSealedUnsealedAndNamespaceSymbols()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Seal",
+            CaseSensitive = true,
+            MaxResults = 100
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var expected = Sorted(SealedSealNames.Concat(UnsealedSealNames).Append("SealSpace"));
+        Assert.Equal(expected, SortedFqns(result.Data));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_SealedFilterTrue_KeepsOnlySealedSymbols()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Seal",
+            CaseSensitive = true,
+            SealedFilter = true,
+            MaxResults = 100
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        // Sealed classes / records (nested and generic definitions too), structs, readonly structs, record
+        // structs, enums, delegates and sealed override members report IsSealed; namespaces never match.
+        Assert.Equal(Sorted(SealedSealNames), SortedFqns(result.Data));
+        Assert.Equal(SealedSealNames.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_SealedFilterFalse_KeepsOnlyUnsealedSymbols()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Seal",
+            CaseSensitive = true,
+            SealedFilter = false,
+            MaxResults = 100
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        // Static classes, abstract classes, interfaces and their members, struct members, non-sealed
+        // overrides, fields, consts and enum members report IsSealed = false; namespaces never match.
+        Assert.Equal(Sorted(UnsealedSealNames), SortedFqns(result.Data));
+        Assert.Equal(UnsealedSealNames.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_SealedFilter_NeverMatchesNamespaces(bool sealedFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "SealSpace",
+            KindFilter = "Namespace",
+            SealedFilter = sealedFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_SealedFilter_CombinesWithStaticAndAbstractFilters()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        // No symbol is both abstract and sealed.
+        var abstractSealed = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Seal",
+            CaseSensitive = true,
+            AbstractFilter = true,
+            SealedFilter = true
+        });
+        Assert.True(abstractSealed.Success);
+        Assert.NotNull(abstractSealed.Data);
+        Assert.Empty(abstractSealed.Data.Symbols);
+        Assert.Equal(0, abstractSealed.Data.TotalCount);
+
+        // A static class is static but not sealed, so staticFilter = true with sealedFilter = true is empty.
+        var staticSealed = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Seal",
+            CaseSensitive = true,
+            StaticFilter = true,
+            SealedFilter = true
+        });
+        Assert.True(staticSealed.Success);
+        Assert.NotNull(staticSealed.Data);
+        Assert.Empty(staticSealed.Data.Symbols);
+
+        var staticUnsealed = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Seal",
+            CaseSensitive = true,
+            StaticFilter = true,
+            SealedFilter = false
+        });
+        Assert.True(staticUnsealed.Success);
+        Assert.NotNull(staticUnsealed.Data);
+        Assert.Equal(
+            [
+                "SealSpace.ISealIface.SealMake()",
+                "SealSpace.SealKind.SealA",
+                "SealSpace.SealOpen.SealConst",
+                "SealSpace.SealStatics",
+                "SealSpace.SealStatics.SealHelper()"
+            ],
+            SortedFqns(staticUnsealed.Data));
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_SealedFilter_CombinesWithKindFilterAndMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var structs = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Seal",
+            CaseSensitive = true,
+            KindFilter = "Struct",
+            SealedFilter = true
+        });
+        Assert.True(structs.Success);
+        Assert.NotNull(structs.Data);
+        Assert.Equal(
+            ["SealSpace.SealRecStruct", "SealSpace.SealRoStruct", "SealSpace.SealStruct"],
+            SortedFqns(structs.Data));
+
+        var methods = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Seal",
+            CaseSensitive = true,
+            KindFilter = "Method",
+            SealedFilter = true
+        });
+        Assert.True(methods.Success);
+        Assert.NotNull(methods.Data);
+        Assert.Equal(["SealSpace.SealDerived.SealVirt()"], SortedFqns(methods.Data));
+
+        var capped = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Seal",
+            CaseSensitive = true,
+            SealedFilter = true,
+            MaxResults = 3
+        });
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(3, capped.Data.Symbols.Count);
+        Assert.Equal(SealedSealNames.Length, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+        Assert.All(capped.Data.Symbols, s => Assert.Contains(s.FullyQualifiedName, SealedSealNames));
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_SealedFilter_NeverReturnsMetadataSymbols(bool? sealedFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "String",
+            ExactMatch = true,
+            SealedFilter = sealedFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_SealedFilterWithNoMatch_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "SealOpen",
+            ExactMatch = true,
+            KindFilter = "Class",
+            SealedFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    #endregion
 }

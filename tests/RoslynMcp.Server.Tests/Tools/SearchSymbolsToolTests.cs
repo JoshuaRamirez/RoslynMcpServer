@@ -566,4 +566,79 @@ public class SearchSymbolsToolTests
         Assert.True(result.IsError);
         Assert.Contains("Workspace creation should not have been attempted", GetResultText(result), StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void GetDefinition_SealedFilter_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var sealedFilter = doc.RootElement.GetProperty("properties").GetProperty("sealedFilter");
+
+        Assert.Equal("boolean", sealedFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("sealedFilter", required);
+        Assert.Contains("sealedFilter", _tool.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetDefinition_SealedFilter_DocumentsEdgeKindsAndCliRules()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var schemaText = doc.RootElement.GetProperty("properties").GetProperty("sealedFilter")
+            .GetProperty("description").GetString();
+        Assert.NotNull(schemaText);
+
+        foreach (var text in new[] { schemaText, _tool.Description })
+        {
+            Assert.Contains("ISymbol.IsSealed", text, StringComparison.Ordinal);
+            Assert.Contains("a static class is static but not sealed", text, StringComparison.Ordinal);
+            Assert.Contains("a struct is sealed but its members are not", text, StringComparison.Ordinal);
+            Assert.Contains("search_symbols never returns metadata symbols", text, StringComparison.Ordinal);
+            Assert.Contains("CLI: bare --sealed-filter = true", text, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("\"yes\"")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    public async Task ExecuteAsync_SealedFilterNonBoolean_ReturnsInternalError(string rawValue)
+    {
+        // A non-boolean sealedFilter fails deserialization before workspace creation.
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "query": "Widget",
+                "sealedFilter": {{rawValue}}
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = GetResultText(result);
+        Assert.Contains("INTERNAL_ERROR", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", text, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public async Task ExecuteAsync_SealedFilterBoolean_ParsesAndReachesWorkspace(string rawValue)
+    {
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "query": "Widget",
+                "sealedFilter": {{rawValue}}
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result), StringComparison.Ordinal);
+    }
 }
