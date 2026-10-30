@@ -2832,6 +2832,139 @@ public class SearchSymbolsOperationTests
         Assert.False(result.Data.Truncated);
     }
 
+    // Named members for the symbol kinds search_symbols never returns (indexers, including a sealed override
+    // indexer; operators and conversion operators; property accessors; constructors, including a static
+    // constructor; explicit interface implementations) and for the finalizer, which is returned and unsealed.
+    private const string SealedEdgeSource = """
+        namespace SealEdge
+        {
+            public interface ISealEdgeRun { void SealEdgeRun(); }
+            public abstract class SealEdgeBase
+            {
+                public abstract int this[int i] { get; }
+                public virtual void SealEdgeVirt() { }
+            }
+            public class SealEdgeHost : SealEdgeBase, ISealEdgeRun
+            {
+                public SealEdgeHost() { }
+                static SealEdgeHost() { }
+                ~SealEdgeHost() { }
+                public sealed override int this[int i] => i;
+                public sealed override void SealEdgeVirt() { }
+                public int SealEdgeProp { get; set; }
+                public static SealEdgeHost operator +(SealEdgeHost a, SealEdgeHost b) => a;
+                public static implicit operator int(SealEdgeHost h) => 0;
+                void ISealEdgeRun.SealEdgeRun() { }
+            }
+            public static class SealEdgeStatics { }
+            public struct SealEdgeStruct { }
+            public enum SealEdgeKind { SealEdgeA }
+            public delegate void SealEdgeHandler();
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SearchSymbols_SealedFilter_NamedMembers_IndexerOperatorExplicitImplAbsent_FinalizerUnsealed(
+        bool? sealedFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedEdgeSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        // Indexers (this[], including the sealed override indexer), operators (op_Addition) and conversion
+        // operators (op_Implicit), accessors (get_ / set_), constructors (.ctor / .cctor) are never returned.
+        foreach (var query in new[] { "this", "op_", "get_", "set_", "ctor" })
+        {
+            var absent = await operation.ExecuteAsync(new SearchSymbolsParams
+            {
+                Query = query,
+                SealedFilter = sealedFilter
+            });
+            Assert.True(absent.Success);
+            Assert.NotNull(absent.Data);
+            Assert.Empty(absent.Data.Symbols);
+            Assert.Equal(0, absent.Data.TotalCount);
+        }
+
+        // The explicit implementation ISealEdgeRun.SealEdgeRun is never returned; only the interface member
+        // itself is, and it is unsealed.
+        var run = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "SealEdgeRun",
+            ExactMatch = true,
+            CaseSensitive = true,
+            SealedFilter = sealedFilter
+        });
+        Assert.True(run.Success);
+        Assert.NotNull(run.Data);
+        string[] expectedRun = sealedFilter == true ? [] : ["SealEdge.ISealEdgeRun.SealEdgeRun()"];
+        Assert.Equal(expectedRun, SortedFqns(run.Data));
+
+        // The finalizer is returned (as an instance method named Finalize) and counts as unsealed.
+        var finalizer = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Finalize",
+            SealedFilter = sealedFilter
+        });
+        Assert.True(finalizer.Success);
+        Assert.NotNull(finalizer.Data);
+        string[] expectedFinalizer = sealedFilter == true ? [] : ["SealEdge.SealEdgeHost.~SealEdgeHost()"];
+        Assert.Equal(expectedFinalizer, SortedFqns(finalizer.Data));
+
+        // A sealed override method is returned, unlike the sealed override indexer beside it.
+        var sealedMembers = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "SealEdge",
+            CaseSensitive = true,
+            KindFilter = "Method",
+            SealedFilter = sealedFilter
+        });
+        Assert.True(sealedMembers.Success);
+        Assert.NotNull(sealedMembers.Data);
+        string[] expectedMethods = sealedFilter switch
+        {
+            true => ["SealEdge.SealEdgeHost.SealEdgeVirt()"],
+            false => ["SealEdge.ISealEdgeRun.SealEdgeRun()", "SealEdge.SealEdgeBase.SealEdgeVirt()"],
+            null =>
+            [
+                "SealEdge.ISealEdgeRun.SealEdgeRun()",
+                "SealEdge.SealEdgeBase.SealEdgeVirt()",
+                "SealEdge.SealEdgeHost.SealEdgeVirt()"
+            ]
+        };
+        Assert.Equal(expectedMethods, SortedFqns(sealedMembers.Data));
+    }
+
+    // Versus abstractFilter: interfaces and body-less interface members are abstract but not sealed; static
+    // classes are neither; structs, enums and delegates are sealed but not abstract.
+    [SkippableTheory]
+    [InlineData(true, false, new[] { "SealEdge.ISealEdgeRun", "SealEdge.ISealEdgeRun.SealEdgeRun()", "SealEdge.SealEdgeBase" })]
+    [InlineData(true, true, new string[0])]
+    [InlineData(false, true, new[] { "SealEdge.SealEdgeHandler", "SealEdge.SealEdgeHost.SealEdgeVirt()", "SealEdge.SealEdgeKind", "SealEdge.SealEdgeStruct" })]
+    [InlineData(false, false, new[] { "SealEdge.SealEdgeBase.SealEdgeVirt()", "SealEdge.SealEdgeHost", "SealEdge.SealEdgeHost.SealEdgeProp", "SealEdge.SealEdgeKind.SealEdgeA", "SealEdge.SealEdgeStatics" })]
+    public async Task SearchSymbols_SealedFilter_VersusAbstractFilter_NamedTypes(
+        bool abstractFilter, bool sealedFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedEdgeSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "SealEdge",
+            CaseSensitive = true,
+            AbstractFilter = abstractFilter,
+            SealedFilter = sealedFilter,
+            MaxResults = 100
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(Sorted(expected), SortedFqns(result.Data));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+    }
+
     [SkippableFact]
     public async Task SearchSymbols_SealedFilterWithNoMatch_ReturnsEmptySuccess()
     {

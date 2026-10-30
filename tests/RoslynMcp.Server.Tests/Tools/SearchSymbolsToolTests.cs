@@ -595,9 +595,32 @@ public class SearchSymbolsToolTests
             Assert.Contains("ISymbol.IsSealed", text, StringComparison.Ordinal);
             Assert.Contains("a static class is static but not sealed", text, StringComparison.Ordinal);
             Assert.Contains("a struct is sealed but its members are not", text, StringComparison.Ordinal);
-            Assert.Contains("search_symbols never returns metadata symbols", text, StringComparison.Ordinal);
+            Assert.Contains("a metadata name such as String gives an empty result for every sealedFilter value", text, StringComparison.Ordinal);
             Assert.Contains("CLI: bare --sealed-filter = true", text, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void GetDefinition_SealedFilter_DocumentsCliCaseRuleSymbolKindsAndPeerDifferences()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var schemaText = doc.RootElement.GetProperty("properties").GetProperty("sealedFilter")
+            .GetProperty("description").GetString();
+        Assert.NotNull(schemaText);
+
+        foreach (var text in new[] { schemaText, _tool.Description })
+        {
+            Assert.Contains("a value other than true/false (case-insensitive) is rejected", text, StringComparison.Ordinal);
+            Assert.Contains("search_symbols never returns indexers (so a sealed override indexer is never returned), operators and conversion operators, accessors, constructors, or explicit interface implementations", text, StringComparison.Ordinal);
+            Assert.Contains("a finalizer is returned (as an instance method named Finalize) and counts as unsealed", text, StringComparison.Ordinal);
+            Assert.Contains("sealedFilter exists only on search_symbols; get_symbol_info, get_document_outline, get_type_hierarchy and find_implementations have abstractFilter and staticFilter but no sealedFilter", text, StringComparison.Ordinal);
+            Assert.Contains("interfaces and body-less interface members are abstract but not sealed; static classes are neither; structs, enums and delegates are sealed but not abstract", text, StringComparison.Ordinal);
+            Assert.Contains("search_symbols returns a flat, source-only list from GetSymbolsWithName, so there is no container rule (unlike get_document_outline) and no target-only member filtering (unlike get_symbol_info)", text, StringComparison.Ordinal);
+        }
+
+        // The sealedFilter text in the Description is the schema text, verbatim.
+        Assert.Contains(schemaText, _tool.Description, StringComparison.Ordinal);
     }
 
     [Theory]

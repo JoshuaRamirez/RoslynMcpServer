@@ -147,26 +147,32 @@ public sealed class SearchSymbolsParams
     public bool? AbstractFilter { get; init; }
 
     /// <summary>
-    /// Optional sealed / unsealed filter. <c>true</c> keeps only symbols whose <c>ISymbol.IsSealed</c> is
-    /// <c>true</c>: sealed classes and sealed records (including nested and generic definitions), structs
-    /// (including <c>readonly</c> structs and record structs), enums and delegates, which Roslyn reports as
-    /// sealed, and <c>sealed override</c> methods / properties / events. <c>false</c> keeps only symbols whose
-    /// <c>IsSealed</c> is <c>false</c>: unsealed classes and records, including abstract and static classes
-    /// (Roslyn reports <c>IsSealed = false</c> for a static class), interfaces, every interface member
-    /// (instance, default-bodied, explicitly <c>sealed</c> default-bodied and <c>static abstract</c>; Roslyn
-    /// reports an interface member declared <c>sealed</c> as non-virtual, not <c>IsSealed</c>), ordinary, <c>virtual</c>, <c>abstract</c> and
-    /// non-sealed <c>override</c> members, members of structs (which are not themselves sealed), fields,
-    /// <c>const</c> fields and enum members. Namespaces are returned when this is omitted but dropped when it
-    /// is set to either value. Results are source-only (a metadata name such as <c>String</c> gives an empty
-    /// result for every value). Unlike <see cref="StaticFilter"/>, a <c>static class</c> is static but not
-    /// sealed, so <c>sealedFilter = true</c> drops it. Combines with <see cref="StaticFilter"/>,
-    /// <see cref="AbstractFilter"/> (no symbol is both abstract and sealed, so both set to <c>true</c> is
-    /// always empty) and the other filters (a symbol must satisfy all that are set), and is applied before
-    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the sealed-filtered set. No
-    /// match gives empty <c>Symbols</c>, <c>TotalCount = 0</c>, <c>Truncated = false</c>. Omit for no sealed
-    /// filter. A non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>) is rejected by
-    /// the <c>search_symbols</c> tool with <c>INTERNAL_ERROR</c>. CLI: a bare <c>--sealed-filter</c> means
-    /// <c>true</c>, and a value other than <c>true</c> / <c>false</c> is rejected.
+    /// Optional <c>sealedFilter</c> (boolean) keeps only symbols whose <c>ISymbol.IsSealed</c> is <c>true</c> (sealed
+    /// classes and sealed records, including nested and generic definitions; structs, including <c>readonly</c> structs
+    /// and record structs; enums and delegates, which Roslyn reports as sealed; and <c>sealed override</c> methods /
+    /// properties / events) or only symbols whose <c>IsSealed</c> is <c>false</c> (unsealed classes and records,
+    /// including abstract and <c>static</c> classes; interfaces; every interface member, including an explicitly
+    /// <c>sealed</c> default-bodied one, which Roslyn reports as non-virtual rather than <c>IsSealed</c>; ordinary /
+    /// <c>virtual</c> / <c>abstract</c> / non-sealed <c>override</c> members; members of structs; fields, <c>const</c>
+    /// fields and enum members). Namespaces are returned when <c>sealedFilter</c> is omitted but dropped when it is set
+    /// to either value. Symbol kinds: <c>search_symbols</c> never returns indexers (so a <c>sealed override</c> indexer
+    /// is never returned), operators and conversion operators, accessors, constructors, or explicit interface
+    /// implementations, so <c>sealedFilter</c> can never return them; a finalizer is returned (as an instance method
+    /// named <c>Finalize</c>) and counts as unsealed. Peer differences: <c>sealedFilter</c> exists only on
+    /// <c>search_symbols</c>; <c>get_symbol_info</c>, <c>get_document_outline</c>, <c>get_type_hierarchy</c> and
+    /// <c>find_implementations</c> have <c>abstractFilter</c> and <c>staticFilter</c> but no <c>sealedFilter</c>.
+    /// Versus <c>abstractFilter</c> in <c>search_symbols</c>: interfaces and body-less interface members are abstract
+    /// but not sealed; static classes are neither; structs, enums and delegates are sealed but not abstract; no symbol
+    /// is both, so <c>abstractFilter</c> = <c>true</c> with <c>sealedFilter</c> = <c>true</c> is always empty.
+    /// <c>search_symbols</c> returns a flat, source-only list from <c>GetSymbolsWithName</c>, so there is no container
+    /// rule (unlike <c>get_document_outline</c>) and no target-only member filtering (unlike <c>get_symbol_info</c>); a
+    /// metadata name such as <c>String</c> gives an empty result for every <c>sealedFilter</c> value. Unlike
+    /// <c>staticFilter</c>, a static class is static but not sealed, so <c>sealedFilter</c> = <c>true</c> drops it; a
+    /// struct is sealed but its members are not. Combined with the other filters (all must match) and applied before
+    /// <c>maxResults</c> so <c>totalCount</c> / <c>truncated</c> reflect the filtered set; no match gives empty
+    /// <c>symbols</c>, <c>totalCount</c> = 0, <c>truncated</c> = false. A non-boolean value (e.g. 'yes', the string
+    /// 'true', or 1) is rejected with <c>INTERNAL_ERROR</c>. CLI: bare <c>--sealed-filter</c> = <c>true</c>, and a
+    /// value other than true/false (case-insensitive) is rejected.
     /// </summary>
     public bool? SealedFilter { get; init; }
 }
