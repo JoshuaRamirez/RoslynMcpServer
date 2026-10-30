@@ -113,26 +113,35 @@ public sealed class GetDocumentOutlineParams
     public bool? StaticFilter { get; init; }
 
     /// <summary>
-    /// Optional abstract filter. <c>true</c> keeps outline entries whose declared symbol has
-    /// <c>ISymbol.IsAbstract</c> true (<c>abstract</c> classes and records, interfaces, <c>abstract</c> methods /
-    /// properties / events in a class, and interface members without a default body, including
-    /// <c>static abstract</c> ones); <c>false</c> keeps entries whose declared symbol is not abstract (concrete,
-    /// <c>sealed</c> and <c>static</c> classes, structs, enums, delegates, members with a body, <c>virtual</c> /
-    /// <c>override</c> members, fields, constants, enum members, constructors, and default interface members);
-    /// <c>null</c> keeps every entry. Namespaces never match either value. A matching type keeps only its matching
-    /// children; a non-matching type (or namespace) is kept only as a container for matching descendants (a block
-    /// namespace that syntactically encloses a match is kept too, as with <see cref="StaticFilter"/>), and subtrees
-    /// with no match are dropped, exactly like <see cref="KindFilter"/>. The outline never lists indexers,
-    /// operators, finalizers, accessors, local functions, or delegates declared inside a type, so
-    /// <see cref="AbstractFilter"/> can never return them (an abstract indexer or <c>static abstract</c> operator is
-    /// not listed). Same <c>ISymbol.IsAbstract</c> test, judged on each entry's own declared symbol, as
-    /// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>search_symbols</c> / <c>get_symbol_info</c>
-    /// <c>abstractFilter</c>. Combined with <see cref="KindFilter"/> / <see cref="NameFilter"/> /
-    /// <see cref="AccessibilityFilter"/> / <see cref="NamespaceFilter"/> / <see cref="StaticFilter"/>, an entry
-    /// matches only when it satisfies all of them. Applied before <see cref="MaxDepth"/> and
-    /// <see cref="MaxResults"/>, so <c>TotalCount</c> / <c>Truncated</c> reflect the filtered tree; no match
-    /// returns an empty outline. A non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>)
-    /// is rejected by the <c>get_document_outline</c> tool with <c>INTERNAL_ERROR</c>.
+    /// Optional abstract filter; <c>null</c> keeps every entry. When set, keeps only entries whose declared
+    /// symbol has <c>ISymbol.IsAbstract</c> equal to the value (<c>true</c>: abstract classes / records, interfaces,
+    /// abstract members, interface members without a default body including <c>static abstract</c> ones; <c>false</c>:
+    /// concrete / <c>sealed</c> / <c>static</c> types, structs, enums, delegates, members with bodies, <c>virtual</c> /
+    /// <c>override</c> members, fields, constants, enum members, constructors, default interface members), plus the
+    /// namespaces/types that contain them (a block namespace enclosing a match is kept too). Namespaces never match
+    /// either value. A matching type keeps only its matching children; a non-matching type is kept only as a container
+    /// for matching descendants (e.g. a concrete class is kept for <c>true</c> only to hold an abstract nested type).
+    /// An abstract class with no abstract members matches <c>true</c> itself and drops its concrete members; under
+    /// <c>false</c> it is kept only as a container for its concrete members (and dropped if it has none). Edge kinds: a
+    /// field-like event is <c>false</c>, while abstract and interface field-like events are <c>true</c>; an override
+    /// event is <c>false</c>; a <c>sealed override</c> is <c>false</c>; a <c>static abstract</c> interface member is
+    /// <c>true</c>; <c>static virtual</c> and default interface members are <c>false</c>; explicit interface
+    /// implementations are listed and <c>false</c>, while interface re-abstractions (<c>abstract void IRun.Run();</c>)
+    /// are listed and <c>true</c>; abstract indexers and operators (including <c>static abstract</c> operators) are
+    /// never listed, because the outline never lists indexers, operators, finalizers, accessors, local functions, or
+    /// delegates declared inside a type. Peer <c>abstractFilter</c> differences: <c>get_document_outline</c> judges
+    /// only one document's syntax entries and never lists indexers or operators; <c>get_symbol_info</c> filters only
+    /// one target's <c>Members</c>, never removes the target, and works on metadata targets; <c>search_symbols</c> is
+    /// source-only via <c>GetSymbolsWithName</c> and drops namespaces when the filter is set; <c>get_type_hierarchy</c>
+    /// judges only derived types (including metadata types) and returns empty for an interface root;
+    /// <c>find_implementations</c> counts metadata implementers in <c>totalCount</c> before skipping them as not in
+    /// source (when no <c>implementationFile</c> / <c>projectPath</c> is set), and a class target returns nothing.
+    /// Combined (AND) with <c>kindFilter</c> / <c>nameFilter</c> / <c>accessibilityFilter</c> / <c>namespaceFilter</c>
+    /// / <c>staticFilter</c>; applied before <c>maxDepth</c> / <c>maxResults</c> so <c>totalCount</c> /
+    /// <c>truncated</c> reflect the filtered tree; no match returns an empty outline; omitted = no abstract filter. A
+    /// non-boolean MCP value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>) is rejected with
+    /// <c>INTERNAL_ERROR</c>; on the CLI a bare <c>--abstract-filter</c> means <c>true</c> and a value other than
+    /// <c>true</c> / <c>false</c> (case-insensitive) is rejected.
     /// </summary>
     public bool? AbstractFilter { get; init; }
 }
