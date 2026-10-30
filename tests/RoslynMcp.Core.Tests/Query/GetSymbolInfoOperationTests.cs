@@ -2094,4 +2094,265 @@ public class GetSymbolInfoOperationTests
     }
 
     #endregion
+
+    #region SealedFilter (#3356)
+
+    private const string SealedMixSource = """
+        using System;
+
+        public class Base
+        {
+            public virtual void Run() { }
+            public virtual int Count => 0;
+            public virtual event EventHandler? Fired;
+            public virtual int this[int i] => i;
+            public virtual void Other() { }
+        }
+
+        public class Derived : Base
+        {
+            public sealed override void Run() { }
+            public sealed override int Count => 1;
+            public sealed override event EventHandler? Fired;
+            public sealed override int this[int i] => i + 1;
+            public override void Other() { }
+            public void Plain() { }
+            protected int state;
+            public const int Max = 4;
+            public sealed class Leaf { }
+            public sealed record LeafRecord;
+            public struct Point { }
+            public readonly struct RoPoint { }
+            public record struct RecPoint;
+            public enum Mode { A }
+            public delegate void Handler();
+            public class Open { }
+            public abstract class AbstractInner { }
+            public static class Helpers { }
+            public interface INested { }
+            public record OpenRecord;
+        }
+
+        public interface IShape
+        {
+            void Draw();
+            sealed void Describe() { }
+            virtual void Hook() { }
+        }
+
+        public struct Vec
+        {
+            public int X;
+            public void Move() { }
+            public override string ToString() => "";
+        }
+
+        public sealed class Final
+        {
+            public void Go() { }
+        }
+        """;
+
+    private static async Task<IReadOnlyList<string>> GetSealedMembersAsync(
+        TempWorkspace workspace, string symbolName, bool? sealedFilter,
+        bool? staticFilter = null, bool? abstractFilter = null)
+    {
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = symbolName,
+            SealedFilter = sealedFilter,
+            StaticFilter = staticFilter,
+            AbstractFilter = abstractFilter
+        });
+        Assert.True(result.Success);
+        Assert.Equal(symbolName, result.Data!.Name);
+        Assert.Equal(result.Data.Members!.Count, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+        return result.Data.Members!;
+    }
+
+    [Fact]
+    public void GetSymbolInfoParams_SealedFilter_DefaultsToNull()
+    {
+        var @params = new GetSymbolInfoParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.SealedFilter);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_OmittedSealedFilter_ReturnsAllMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+
+        // 3 sealed overrides (the indexer is never a Member) + Other/Plain/state/Max + 12 nested types.
+        var members = await GetSealedMembersAsync(workspace, "Derived", sealedFilter: null);
+        Assert.Equal(19, members.Count);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_SealedFilterTrue_KeepsSealedOverridesAndSealedNestedTypes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+
+        var members = await GetSealedMembersAsync(workspace, "Derived", sealedFilter: true);
+        AssertMembers(members, "Run", "Count", "Fired", "Leaf", "LeafRecord", "Point", "RoPoint", "RecPoint",
+            "Mode", "Handler");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_SealedFilterFalse_KeepsUnsealedMembersAndOpenNestedTypes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+
+        var members = await GetSealedMembersAsync(workspace, "Derived", sealedFilter: false);
+        AssertMembers(members, "Other", "Plain", "state", "Max", "Open", "AbstractInner", "Helpers", "INested",
+            "OpenRecord");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_SealedFilter_NeverReturnsIndexersOperatorsConstructorsOrAccessors()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+
+        foreach (var filter in new bool?[] { true, false, null })
+        {
+            var members = await GetSealedMembersAsync(workspace, "Derived", sealedFilter: filter);
+            Assert.DoesNotContain(members, m => m.Contains("this[", StringComparison.Ordinal));
+            Assert.DoesNotContain(members, m => m.Contains("Derived()", StringComparison.Ordinal));
+            Assert.DoesNotContain(members, m => m.Contains(".get", StringComparison.Ordinal));
+            Assert.DoesNotContain(members, m => m.Contains("add_", StringComparison.Ordinal));
+        }
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_SealedFilter_InterfaceMembersAreNeverSealed()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+
+        Assert.Empty(await GetSealedMembersAsync(workspace, "IShape", sealedFilter: true));
+        AssertMembers(await GetSealedMembersAsync(workspace, "IShape", sealedFilter: false),
+            "Draw", "Describe", "Hook");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_SealedFilter_StructAndSealedClassTargetsAreAlwaysReturned()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+
+        Assert.Empty(await GetSealedMembersAsync(workspace, "Vec", sealedFilter: true));
+        AssertMembers(await GetSealedMembersAsync(workspace, "Vec", sealedFilter: false), "X", "Move", "ToString");
+        Assert.Empty(await GetSealedMembersAsync(workspace, "Final", sealedFilter: true));
+        AssertMembers(await GetSealedMembersAsync(workspace, "Final", sealedFilter: false), "Go");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_SealedFilter_CombinesWithStaticAndAbstractFilters()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+
+        AssertMembers(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: false, staticFilter: true),
+            "Max", "Helpers");
+        Assert.Empty(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: true, staticFilter: true));
+        Assert.Empty(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: true, abstractFilter: true));
+        AssertMembers(await GetSealedMembersAsync(workspace, "Derived", sealedFilter: false, abstractFilter: true),
+            "AbstractInner", "INested");
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_SealedFilterCombinedWithKindFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Derived",
+            KindFilter = "Method",
+            SealedFilter = true
+        });
+
+        Assert.True(result.Success);
+        var members = result.Data!.Members!;
+        Assert.Single(members);
+        Assert.Contains("Run", members[0], StringComparison.Ordinal);
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_SealedFilterAppliedBeforeMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Derived",
+            SealedFilter = true,
+            MaxResults = 3
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(3, result.Data!.Members!.Count);
+        Assert.Equal(10, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_SealedFilter_MetadataTargetJudgesEachMemberOnItsOwnIsSealed()
+    {
+        const string source = """
+            public class Holder
+            {
+                public System.Collections.Generic.List<int>? Target;
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        async Task<IReadOnlyList<string>> ListMembersAsync(bool? sealedFilter)
+        {
+            var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 3,
+                Column = source.Split('\n')[2].IndexOf("List", StringComparison.Ordinal) + 1,
+                SealedFilter = sealedFilter
+            });
+            Assert.True(result.Success);
+            Assert.Equal("List", result.Data!.Name);
+            return result.Data.Members!;
+        }
+
+        // Named members, not counts, so the test does not depend on the reference-assembly version.
+        var sealedMembers = await ListMembersAsync(true);
+        Assert.Contains("Enumerator", sealedMembers);
+        Assert.DoesNotContain(sealedMembers, m => m.Contains(".Add(", StringComparison.Ordinal));
+
+        var unsealedMembers = await ListMembersAsync(false);
+        Assert.Contains(unsealedMembers, m => m.Contains(".Add(", StringComparison.Ordinal));
+        Assert.DoesNotContain("Enumerator", unsealedMembers);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_SealedFilter_NoEffectOnNonTypeSymbol()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SealedMixSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Plain",
+            SealedFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Null(result.Data!.Members);
+        Assert.Null(result.Data.TotalCount);
+    }
+
+    #endregion
 }

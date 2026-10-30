@@ -55,7 +55,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         var symbol = resolved.Symbol;
         var info = BuildDetailedInfo(
             symbol, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter,
-            @params.NameFilter, @params.NamespaceFilter, @params.StaticFilter, @params.AbstractFilter);
+            @params.NameFilter, @params.NamespaceFilter, @params.StaticFilter, @params.AbstractFilter, @params.SealedFilter);
 
         return QueryResult<DetailedSymbolInfo>.Succeeded(operationId, info);
     }
@@ -68,17 +68,19 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         string? nameFilter,
         string? namespaceFilter,
         bool? staticFilter,
-        bool? abstractFilter)
+        bool? abstractFilter,
+        bool? sealedFilter)
     {
         var modifiers = GetModifiers(symbol);
         var location = GetLocation(symbol);
-        // Optional kindFilter / accessibilityFilter / nameFilter / namespaceFilter / staticFilter / abstractFilter (same
+        // Optional kindFilter / accessibilityFilter / nameFilter / namespaceFilter / staticFilter / abstractFilter / sealedFilter (same
         // values / parsing as search_symbols / find_implementations / get_type_hierarchy), judged on each
         // member of a type target: reported Kind (SymbolKindMapper.Map), exact DeclaredAccessibility
         // (implicit defaults count), simple Name (ordinal case-insensitive contains), containing namespace
         // equal to or nested in the filter (members share their type's namespace, nested types included)
         // ISymbol.IsStatic (Roslyn reports const fields as static) and ISymbol.IsAbstract (interface members
-        // without a default body and nested interfaces count as abstract). Omitted / blank values impose no filter; invalid kind / accessibility values are
+        // without a default body and nested interfaces count as abstract) and ISymbol.IsSealed (sealed override members,
+        // nested sealed types, structs, enums and delegates count as sealed; struct members and static classes do not). Omitted / blank values impose no filter; invalid kind / accessibility values are
         // already rejected in ValidateParams.
         var memberFilter = ResultSymbolFilter.Create(
             namespaceFilter,
@@ -86,7 +88,8 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             kindFilter,
             nameFilter,
             staticFilter,
-            abstractFilter);
+            abstractFilter,
+            sealedFilter);
 
         // Gather type-specific fields
         string? baseType = null;
@@ -111,7 +114,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                 .Select(m => m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
                 .ToList();
 
-            // The member filters (kindFilter / accessibilityFilter / nameFilter / namespaceFilter / staticFilter / abstractFilter) apply first; maxResults
+            // The member filters (kindFilter / accessibilityFilter / nameFilter / namespaceFilter / staticFilter / abstractFilter / sealedFilter) apply first; maxResults
             // caps only Members (first N in today's enumeration order); TotalCount stays the filtered
             // member count.
             totalCount = allMembers.Count;

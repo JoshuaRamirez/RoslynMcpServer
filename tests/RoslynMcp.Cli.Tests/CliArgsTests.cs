@@ -271,6 +271,22 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void GetSymbolInfo_SealedFilterFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-symbol-info", "--source-file", "/src/Foo.cs", "--symbol-name", "Derived", "--sealed-filter"]);
+        Assert.Equal("get-symbol-info", result.ToolName);
+        Assert.Equal("true", result.Options["sealed-filter"]);
+    }
+
+    [Fact]
+    public void GetSymbolInfo_SealedFilterExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-symbol-info", "--source-file", "/src/Foo.cs", "--sealed-filter", "false", "--abstract-filter"]);
+        Assert.Equal("false", result.Options["sealed-filter"]);
+        Assert.Equal("true", result.Options["abstract-filter"]);
+    }
+
+    [Fact]
     public void GetDocumentOutline_AbstractFilterFlag_ParsesAsTrue()
     {
         var result = CliArgs.Parse(["My.sln", "get-document-outline", "--source-file", "/src/Foo.cs", "--abstract-filter"]);
