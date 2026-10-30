@@ -159,9 +159,10 @@ public sealed class SearchSymbolsParams
     /// is never returned), operators and conversion operators, accessors, constructors, or explicit interface
     /// implementations, so <c>sealedFilter</c> can never return them; a finalizer is returned (as an instance method
     /// named <c>Finalize</c>) and counts as unsealed. Peer differences: <c>sealedFilter</c> exists only on
-    /// <c>search_symbols</c>; <c>get_symbol_info</c>, <c>get_document_outline</c>, <c>get_type_hierarchy</c> and
-    /// <c>find_implementations</c> have <c>abstractFilter</c> but no <c>sealedFilter</c>, and all of them except
-    /// <c>get_type_hierarchy</c> also have <c>staticFilter</c>.
+    /// <c>search_symbols</c> and <c>get_symbol_info</c> (which filters only one target's <c>Members</c>);
+    /// <c>get_document_outline</c>, <c>get_type_hierarchy</c> and <c>find_implementations</c> have
+    /// <c>abstractFilter</c> but no <c>sealedFilter</c>, and all of them also have <c>staticFilter</c> except
+    /// <c>get_type_hierarchy</c>.
     /// Versus <c>abstractFilter</c> in <c>search_symbols</c>: interfaces and body-less interface members are abstract
     /// but not sealed; static classes are neither; structs, enums and delegates are sealed but not abstract; no symbol
     /// is both, so <c>abstractFilter</c> = <c>true</c> with <c>sealedFilter</c> = <c>true</c> is always empty.
