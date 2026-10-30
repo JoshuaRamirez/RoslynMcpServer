@@ -306,4 +306,64 @@ public class GetDocumentOutlineToolTests
         var text = result.Content.FirstOrDefault()?.Text ?? "";
         Assert.Contains("Workspace creation should not have been attempted", text, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void GetDefinition_AbstractFilter_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var abstractFilter = doc.RootElement.GetProperty("properties").GetProperty("abstractFilter");
+
+        Assert.Equal("boolean", abstractFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("abstractFilter", required);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsAbstractFilter()
+    {
+        Assert.Contains("abstractFilter", _tool.Description, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("\"yes\"")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    public async Task ExecuteAsync_AbstractFilterNonBoolean_ReturnsInternalError(string rawValue)
+    {
+        // A non-boolean abstractFilter fails deserialization before workspace creation.
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Foo.cs",
+                "abstractFilter": {{rawValue}}
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = result.Content.FirstOrDefault()?.Text ?? "";
+        Assert.Contains("INTERNAL_ERROR", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AbstractFilterBoolean_ParsesAndReachesWorkspace()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Foo.cs",
+                "abstractFilter": false
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = result.Content.FirstOrDefault()?.Text ?? "";
+        Assert.Contains("Workspace creation should not have been attempted", text, StringComparison.Ordinal);
+    }
 }

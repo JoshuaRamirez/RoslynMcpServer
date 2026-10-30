@@ -111,4 +111,28 @@ public sealed class GetDocumentOutlineParams
     /// <c>1</c>) is rejected by the <c>get_document_outline</c> tool with <c>INTERNAL_ERROR</c>.
     /// </summary>
     public bool? StaticFilter { get; init; }
+
+    /// <summary>
+    /// Optional abstract filter. <c>true</c> keeps outline entries whose declared symbol has
+    /// <c>ISymbol.IsAbstract</c> true (<c>abstract</c> classes and records, interfaces, <c>abstract</c> methods /
+    /// properties / events in a class, and interface members without a default body, including
+    /// <c>static abstract</c> ones); <c>false</c> keeps entries whose declared symbol is not abstract (concrete,
+    /// <c>sealed</c> and <c>static</c> classes, structs, enums, delegates, members with a body, <c>virtual</c> /
+    /// <c>override</c> members, fields, constants, enum members, constructors, and default interface members);
+    /// <c>null</c> keeps every entry. Namespaces never match either value. A matching type keeps only its matching
+    /// children; a non-matching type (or namespace) is kept only as a container for matching descendants (a block
+    /// namespace that syntactically encloses a match is kept too, as with <see cref="StaticFilter"/>), and subtrees
+    /// with no match are dropped, exactly like <see cref="KindFilter"/>. The outline never lists indexers,
+    /// operators, finalizers, accessors, local functions, or delegates declared inside a type, so
+    /// <see cref="AbstractFilter"/> can never return them (an abstract indexer or <c>static abstract</c> operator is
+    /// not listed). Same <c>ISymbol.IsAbstract</c> test, judged on each entry's own declared symbol, as
+    /// <c>find_implementations</c> / <c>get_type_hierarchy</c> / <c>search_symbols</c> / <c>get_symbol_info</c>
+    /// <c>abstractFilter</c>. Combined with <see cref="KindFilter"/> / <see cref="NameFilter"/> /
+    /// <see cref="AccessibilityFilter"/> / <see cref="NamespaceFilter"/> / <see cref="StaticFilter"/>, an entry
+    /// matches only when it satisfies all of them. Applied before <see cref="MaxDepth"/> and
+    /// <see cref="MaxResults"/>, so <c>TotalCount</c> / <c>Truncated</c> reflect the filtered tree; no match
+    /// returns an empty outline. A non-boolean value (e.g. <c>"yes"</c>, the string <c>"true"</c>, or <c>1</c>)
+    /// is rejected by the <c>get_document_outline</c> tool with <c>INTERNAL_ERROR</c>.
+    /// </summary>
+    public bool? AbstractFilter { get; init; }
 }

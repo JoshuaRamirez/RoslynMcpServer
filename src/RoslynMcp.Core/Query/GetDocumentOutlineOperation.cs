@@ -14,9 +14,9 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Gets a structured outline of all declarations in a document.
 /// Pure syntax traversal; the semantic model is requested only when
-/// <see cref="GetDocumentOutlineParams.AccessibilityFilter"/>, <see cref="GetDocumentOutlineParams.NamespaceFilter"/>
-/// or <see cref="GetDocumentOutlineParams.StaticFilter"/> is set, to resolve declared accessibility / the declared
-/// symbol's namespace / whether it is static.
+/// <see cref="GetDocumentOutlineParams.AccessibilityFilter"/>, <see cref="GetDocumentOutlineParams.NamespaceFilter"/>,
+/// <see cref="GetDocumentOutlineParams.StaticFilter"/> or <see cref="GetDocumentOutlineParams.AbstractFilter"/> is set,
+/// to resolve declared accessibility / the declared symbol's namespace / whether it is static / whether it is abstract.
 /// </summary>
 public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocumentOutlineParams, GetDocumentOutlineResult>
 {
@@ -70,7 +70,9 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
         var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
         var staticFilter = @params.StaticFilter;
-        var declarations = accessibilityFilter.HasValue || namespaceFilter != null || staticFilter.HasValue
+        var abstractFilter = @params.AbstractFilter;
+        var declarations = accessibilityFilter.HasValue || namespaceFilter != null || staticFilter.HasValue ||
+                           abstractFilter.HasValue
             ? new Dictionary<OutlineEntry, SyntaxNode>(ReferenceEqualityComparer.Instance)
             : null;
 
@@ -109,6 +111,7 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         Func<OutlineEntry, bool>? accessibilityMatches = null;
         Func<OutlineEntry, bool>? namespaceMatches = null;
         Func<OutlineEntry, bool>? staticMatches = null;
+        Func<OutlineEntry, bool>? abstractMatches = null;
         if (declarations != null)
         {
             var semanticModel = await document.GetSemanticModelAsync(cancellationToken)
@@ -130,17 +133,24 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
                 staticMatches = entry => OutlineStaticMatches(
                     entry, staticFilter.Value, declarations, semanticModel, cancellationToken);
             }
+
+            if (abstractFilter.HasValue)
+            {
+                abstractMatches = entry => OutlineAbstractMatches(
+                    entry, abstractFilter.Value, declarations, semanticModel, cancellationToken);
+            }
         }
 
         if (kindFilter.HasValue || nameFilter != null || accessibilityMatches != null || namespaceMatches != null ||
-            staticMatches != null)
+            staticMatches != null || abstractMatches != null)
         {
             Func<OutlineEntry, bool> matches = entry =>
                 OutlineEntryMatches(entry, kindFilter, nameFilter) &&
                 (accessibilityMatches == null || accessibilityMatches(entry)) &&
                 (namespaceMatches == null || namespaceMatches(entry)) &&
-                (staticMatches == null || staticMatches(entry));
-            if ((namespaceMatches != null || staticMatches != null) && declarations != null)
+                (staticMatches == null || staticMatches(entry)) &&
+                (abstractMatches == null || abstractMatches(entry));
+            if ((namespaceMatches != null || staticMatches != null || abstractMatches != null) && declarations != null)
                 matches = WithEnclosingNamespaceContainers(matches, declarations);
 
             returned = FilterOutlineForest(entries, matches);
@@ -220,7 +230,7 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
     /// Extends <paramref name="matches"/> so a namespace entry whose declaration syntactically encloses a
     /// matching declaration is also kept as a container. Block-scoped nested namespaces
     /// (<c>namespace Outer { namespace Inner { ... } }</c>) are emitted as sibling outline roots rather than
-    /// as children, so without this <c>namespaceFilter</c> <c>Outer.Inner</c> (or a <c>staticFilter</c> match inside
+    /// as children, so without this <c>namespaceFilter</c> <c>Outer.Inner</c> (or a <c>staticFilter</c> / <c>abstractFilter</c> match inside
     /// <c>Inner</c>) would drop the containing <c>Outer</c> entry. Only true syntactic ancestors qualify: a sibling dotted declaration such as
     /// <c>namespace App</c> next to <c>namespace App.Services</c> does not enclose it and is not kept.
     /// Each entry's match is evaluated once up front.
@@ -317,9 +327,27 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
     }
 
     /// <summary>
+    /// Whether an outline entry's declared symbol has <see cref="ISymbol.IsAbstract"/> equal to
+    /// <paramref name="wantAbstract"/> (the same test as <c>find_implementations</c> / <c>get_type_hierarchy</c> /
+    /// <c>search_symbols</c> / <c>get_symbol_info</c> <c>abstractFilter</c>; interfaces and interface members without
+    /// a default body count as abstract). Namespaces and entries without a tracked declaration or a declared symbol
+    /// never match.
+    /// </summary>
+    private static bool OutlineAbstractMatches(
+        OutlineEntry entry,
+        bool wantAbstract,
+        IReadOnlyDictionary<OutlineEntry, SyntaxNode> declarations,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var symbol = GetTrackedDeclaredSymbol(entry, declarations, semanticModel, cancellationToken);
+        return symbol is not null and not INamespaceSymbol && symbol.IsAbstract == wantAbstract;
+    }
+
+    /// <summary>
     /// The symbol declared by the syntax node <see cref="Track"/> recorded for <paramref name="entry"/>, or
     /// <c>null</c> when the entry has no tracked declaration or the node declares no symbol. Shared by the
-    /// accessibilityFilter / namespaceFilter / staticFilter outline predicates, which all treat <c>null</c> as
+    /// accessibilityFilter / namespaceFilter / staticFilter / abstractFilter outline predicates, which all treat <c>null</c> as
     /// "never matches".
     /// </summary>
     private static ISymbol? GetTrackedDeclaredSymbol(
@@ -333,7 +361,8 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
 
     /// <summary>
     /// Records <paramref name="node"/> as the declaration of <paramref name="entry"/> when
-    /// <paramref name="declarations"/> is tracked (accessibilityFilter, namespaceFilter or staticFilter set) and returns the entry.
+    /// <paramref name="declarations"/> is tracked (accessibilityFilter, namespaceFilter, staticFilter or abstractFilter set) and
+    /// returns the entry.
     /// </summary>
     private static OutlineEntry Track(OutlineEntry entry, SyntaxNode node, Dictionary<OutlineEntry, SyntaxNode>? declarations)
     {

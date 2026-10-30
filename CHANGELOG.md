@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- `get_document_outline` now honors optional **`abstractFilter`** (#3328): a boolean that keeps only outline entries whose declared symbol has `ISymbol.IsAbstract` equal to the value (`true`: `abstract` classes / records, interfaces, `abstract` methods / properties / events, interface members without a default body including `static abstract` ones; `false`: concrete / `sealed` / `static` types, structs, enums, delegates, members with bodies, `virtual` / `override` members, fields, constants, enum members, constructors, default interface members), plus their containing types/namespaces (a block namespace enclosing a match is kept too). Namespaces never match either value. Same `IsAbstract` test as `find_implementations` (#3136) / `get_type_hierarchy` (#3124) / `search_symbols` (#3172) / `get_symbol_info` (#3247) `abstractFilter`. Combined (AND) with `kindFilter` / `nameFilter` / `accessibilityFilter` / `namespaceFilter` / `staticFilter`; applied before `maxDepth` / `maxResults` so `TotalCount` / `Truncated` reflect the filtered tree; no match returns an empty outline. MCP tool schema `type: boolean` (a non-boolean value fails with `INTERNAL_ERROR`); CLI `get-document-outline --abstract-filter [true|false]`. Omitted = today's behavior.
+
 ## [0.14.0] - 2026-10-30
 
 ### Added

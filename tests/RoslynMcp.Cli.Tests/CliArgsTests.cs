@@ -271,6 +271,22 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void GetDocumentOutline_AbstractFilterFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-document-outline", "--source-file", "/src/Foo.cs", "--abstract-filter"]);
+        Assert.Equal("get-document-outline", result.ToolName);
+        Assert.Equal("true", result.Options["abstract-filter"]);
+    }
+
+    [Fact]
+    public void GetDocumentOutline_AbstractFilterExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-document-outline", "--source-file", "/src/Foo.cs", "--abstract-filter", "false", "--static-filter"]);
+        Assert.Equal("false", result.Options["abstract-filter"]);
+        Assert.Equal("true", result.Options["static-filter"]);
+    }
+
+    [Fact]
     public void SearchSymbols_AbstractFilterFlag_ParsesAsTrue()
     {
         var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Widget", "--abstract-filter"]);
