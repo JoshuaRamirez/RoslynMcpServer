@@ -306,4 +306,93 @@ public class GetDocumentOutlineToolTests
         var text = result.Content.FirstOrDefault()?.Text ?? "";
         Assert.Contains("Workspace creation should not have been attempted", text, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void GetDefinition_AbstractFilter_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var abstractFilter = doc.RootElement.GetProperty("properties").GetProperty("abstractFilter");
+
+        Assert.Equal("boolean", abstractFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("abstractFilter", required);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsAbstractFilter()
+    {
+        Assert.Contains("abstractFilter", _tool.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetDefinition_AbstractFilter_DocumentsEdgeSemanticsAndCliRules()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var schemaText = doc.RootElement.GetProperty("properties").GetProperty("abstractFilter")
+            .GetProperty("description").GetString();
+        Assert.NotNull(schemaText);
+
+        foreach (var text in new[] { schemaText, _tool.Description })
+        {
+            Assert.Contains("on the CLI a bare --abstract-filter means true", text, StringComparison.Ordinal);
+            Assert.Contains("a value other than true / false (case-insensitive) is rejected", text, StringComparison.Ordinal);
+            Assert.Contains("a field-like event is false, while abstract and interface field-like events are true", text, StringComparison.Ordinal);
+            Assert.Contains("an override event is false", text, StringComparison.Ordinal);
+            Assert.Contains("a sealed override is false", text, StringComparison.Ordinal);
+            Assert.Contains("static virtual and default interface members are false", text, StringComparison.Ordinal);
+            Assert.Contains("explicit interface implementations are listed and false, while interface re-abstractions", text, StringComparison.Ordinal);
+            Assert.Contains("abstract indexers and operators (including static abstract operators) are never listed", text, StringComparison.Ordinal);
+            Assert.Contains("A matching type keeps only its matching children; a non-matching type is kept only as a container for matching descendants", text, StringComparison.Ordinal);
+            Assert.Contains("An abstract class with no abstract members matches true itself and drops its concrete members", text, StringComparison.Ordinal);
+            Assert.Contains("get_symbol_info filters only one target's Members, never removes the target, and works on metadata targets", text, StringComparison.Ordinal);
+            Assert.Contains("search_symbols is source-only via GetSymbolsWithName and drops namespaces when the filter is set", text, StringComparison.Ordinal);
+            Assert.Contains("get_type_hierarchy judges only derived types (including metadata types) and returns empty for an interface root", text, StringComparison.Ordinal);
+            Assert.Contains("find_implementations counts metadata implementers in totalCount", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("same IsAbstract test", text, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Theory]
+    [InlineData("\"yes\"")]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    public async Task ExecuteAsync_AbstractFilterNonBoolean_ReturnsInternalError(string rawValue)
+    {
+        // A non-boolean abstractFilter fails deserialization before workspace creation.
+        var args = JsonDocument.Parse($$"""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Foo.cs",
+                "abstractFilter": {{rawValue}}
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = result.Content.FirstOrDefault()?.Text ?? "";
+        Assert.Contains("INTERNAL_ERROR", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AbstractFilterBoolean_ParsesAndReachesWorkspace()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Foo.cs",
+                "abstractFilter": false
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        var text = result.Content.FirstOrDefault()?.Text ?? "";
+        Assert.Contains("Workspace creation should not have been attempted", text, StringComparison.Ordinal);
+    }
 }

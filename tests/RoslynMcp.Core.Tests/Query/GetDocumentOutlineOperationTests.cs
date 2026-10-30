@@ -2391,6 +2391,501 @@ public class GetDocumentOutlineOperationTests
 
     #endregion
 
+    #region Execute abstractFilter
+
+    private const string AbstractSource = """
+        namespace App
+        {
+            public abstract class Shape
+            {
+                protected Shape() { }
+                public abstract double Area();
+                public virtual string Describe() => "";
+                public abstract string Name { get; }
+                public int Id { get; set; }
+                protected int _seed;
+                public abstract event System.EventHandler? Changed;
+                public abstract class Part { }
+            }
+
+            public sealed class Circle : Shape
+            {
+                public override double Area() => 0;
+                public override string Name => "c";
+                public override event System.EventHandler? Changed;
+            }
+
+            public interface IRender
+            {
+                void Render();
+                static abstract IRender Make();
+                void Reset() { }
+            }
+
+            public enum Mode { A }
+
+            public delegate void Handler();
+        }
+        """;
+
+    [Fact]
+    public void AbstractFilter_DefaultsToNull()
+    {
+        var @params = new GetDocumentOutlineParams { SourceFile = "/tmp/x.cs" };
+        Assert.Null(@params.AbstractFilter);
+    }
+
+    [SkippableFact]
+    public async Task Execute_AbstractFilterOmitted_ReturnsFullOutline()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams { SourceFile = workspace.SourcePath });
+
+        Assert.True(result.Success);
+        Assert.Equal(21, result.Data!.TotalCount);
+        Assert.Equal(21, Flatten(result.Data.Entries).Count);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task Execute_AbstractFilterTrue_KeepsAbstractEntriesPlusContainers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = true
+        });
+
+        Assert.True(result.Success);
+        // Abstract class Shape and interface IRender match themselves and keep only their abstract children
+        // (the nested abstract class, abstract members, and interface members without a default body, including
+        // the static abstract one). Sealed Circle (overrides only), the default interface member, the enum and the
+        // delegate are dropped.
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace"), ("Shape", "Class"), ("Part", "Class"), ("Area", "Method"),
+                ("Name", "Property"), ("Changed", "Event"),
+                ("IRender", "Interface"), ("Render", "Method"), ("Make", "Method")
+            },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
+        Assert.Equal(9, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task Execute_AbstractFilterFalse_KeepsNonAbstractEntriesPlusContainers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = false
+        });
+
+        Assert.True(result.Success);
+        // Shape and IRender are kept only as containers; the constructor, virtual / override members, the
+        // auto-property, the field, the default interface member, the enum (and its member) and the delegate
+        // are not abstract. The nested abstract class Part is dropped.
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace"), ("Shape", "Class"), ("Shape", "Constructor"), ("Describe", "Method"),
+                ("Id", "Property"), ("_seed", "Field"),
+                ("Circle", "Class"), ("Area", "Method"), ("Name", "Property"), ("Changed", "Event"),
+                ("IRender", "Interface"), ("Reset", "Method"),
+                ("Mode", "Enum"), ("A", "EnumMember"), ("Handler", "Delegate")
+            },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
+        Assert.Equal(15, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task Execute_AbstractFilterCombinedWithKindFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Method",
+            AbstractFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace"), ("Shape", "Class"), ("Area", "Method"),
+                ("IRender", "Interface"), ("Render", "Method"), ("Make", "Method")
+            },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
+        Assert.Equal(6, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task Execute_AbstractFilterCombinedWithStaticFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            StaticFilter = true,
+            AbstractFilter = true
+        });
+
+        Assert.True(result.Success);
+        // Only the static abstract interface member is both static and abstract.
+        Assert.Equal(
+            new[] { ("App", "Namespace"), ("IRender", "Interface"), ("Make", "Method") },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task Execute_AbstractFilterAppliedBeforeMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = true,
+            MaxResults = 3
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "App", "Shape", "Part" }, Flatten(result.Data!.Entries).Select(e => e.Name));
+        Assert.Equal(9, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task Execute_AbstractFilterNoMatch_NamespacesNeverMatch_ReturnsEmptyOutline()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace N
+            {
+                public class C
+                {
+                    public void M() { }
+                }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Entries);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData(true, "Abstract")]
+    [InlineData(false, "Concrete")]
+    public async Task Execute_AbstractFilter_KeepsEnclosingBlockScopedNamespaces(bool abstractFilter, string expectedClass)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace Outer
+            {
+                namespace Inner
+                {
+                    public abstract class Abstract { }
+                    public class Concrete { }
+                }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        // Block-scoped nested namespaces are sibling roots; Outer syntactically encloses the match.
+        Assert.Equal(
+            new[] { ("Outer", "Namespace"), ("Inner", "Namespace"), (expectedClass, "Class") },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+
+    // Named-member edge cases for abstractFilter (#3328): each test asserts the exact entries returned.
+
+    [SkippableTheory]
+    [InlineData(true, new[] { "E", "IEvents", "Fired", "AbstractEvents", "Abstracted" })]
+    [InlineData(false, new[] { "E", "Plain", "Changed", "Derived", "Abstracted" })]
+    public async Task Execute_AbstractFilter_FieldLikeEvents_JudgedOnOwnSymbol(bool abstractFilter, string[] expected)
+    {
+        // A field-like event in a class is not abstract; an abstract field-like event and an interface
+        // field-like event are; an override event is not.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace E
+            {
+                public class Plain
+                {
+                    public event System.EventHandler? Changed;
+                }
+
+                public interface IEvents
+                {
+                    event System.EventHandler? Fired;
+                }
+
+                public abstract class AbstractEvents
+                {
+                    public abstract event System.EventHandler? Abstracted;
+                }
+
+                public sealed class Derived : AbstractEvents
+                {
+                    public override event System.EventHandler? Abstracted;
+                }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, Flatten(result.Data!.Entries).Select(e => e.Name));
+    }
+
+    [SkippableFact]
+    public async Task Execute_AbstractFilterTrue_AbstractClassWithNoAbstractMembers_MatchesItselfAndDropsConcreteMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace N
+            {
+                public abstract class Base
+                {
+                    public void Work() { }
+                    public int Count;
+                }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            new[] { ("N", "Namespace", 1), ("Base", "Class", 2) },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+    }
+
+    [SkippableFact]
+    public async Task Execute_AbstractFilterFalse_AbstractClassWithNoAbstractMembers_KeptOnlyAsContainer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace N
+            {
+                public abstract class Base
+                {
+                    public void Work() { }
+                    public int Count;
+                }
+
+                public abstract class Empty { }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = false
+        });
+
+        Assert.True(result.Success);
+        // Base is kept only because its concrete members match; Empty has no matching descendants and is dropped.
+        Assert.Equal(
+            new[] { ("N", "Namespace", 1), ("Base", "Class", 2), ("Work", "Method", 3), ("Count", "Field", 3) },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+    }
+
+    [SkippableTheory]
+    [InlineData(true, new[] { "S", "Root", "Step", "Mid" })]
+    [InlineData(false, new[] { "S", "Mid", "Step", "Leaf", "Step" })]
+    public async Task Execute_AbstractFilter_SealedOverrideIsNotAbstract(bool abstractFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace S
+            {
+                public abstract class Root
+                {
+                    public abstract void Step();
+                }
+
+                public abstract class Mid : Root
+                {
+                    public override void Step() { }
+                }
+
+                public class Leaf : Mid
+                {
+                    public sealed override void Step() { }
+                }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        // true: abstract Root with its abstract Step, and abstract Mid itself (its override is dropped). false: Mid
+        // is kept only as a container for its override; Leaf and its sealed override match.
+        Assert.Equal(expected, Flatten(result.Data!.Entries).Select(e => e.Name));
+    }
+
+    [SkippableTheory]
+    [InlineData(true, new[] { "X", "IRun", "Run", "IReRun", "Run" })]
+    [InlineData(false, new[] { "X", "Runner", "Run" })]
+    public async Task Execute_AbstractFilter_ExplicitImplementationAndReAbstraction(bool abstractFilter, string[] expected)
+    {
+        // An explicit interface implementation is listed and not abstract; an interface re-abstraction
+        // (abstract void IRun.Run();) is listed and abstract.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace X
+            {
+                public interface IRun
+                {
+                    void Run();
+                }
+
+                public interface IReRun : IRun
+                {
+                    abstract void IRun.Run();
+                }
+
+                public class Runner : IRun
+                {
+                    void IRun.Run() { }
+                }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, Flatten(result.Data!.Entries).Select(e => e.Name));
+    }
+
+    [SkippableFact]
+    public async Task Execute_AbstractFilterTrue_NonMatchingTypeKeptAsContainerForAbstractNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace H
+            {
+                public class Host
+                {
+                    public void Go() { }
+                    public abstract class Inner
+                    {
+                        public abstract void Do();
+                        public void Helper() { }
+                    }
+                }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = true
+        });
+
+        Assert.True(result.Success);
+        // Host is not abstract, so it is kept only as the container of Inner; its concrete Go is dropped.
+        Assert.Equal(
+            new[] { ("H", "Namespace", 1), ("Host", "Class", 2), ("Inner", "Class", 3), ("Do", "Method", 4) },
+            Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+    }
+
+    [SkippableTheory]
+    [InlineData(true, new[] { "V", "IShape", "Make", "IAdd", "Node" })]
+    [InlineData(false, new[] { "V", "IShape", "Version", "Describe", "Node", "Visit" })]
+    public async Task Execute_AbstractFilter_StaticVirtualDefaultMembersIndexersAndOperators(bool abstractFilter, string[] expected)
+    {
+        // static abstract interface members are abstract; static virtual and default interface members are not;
+        // abstract indexers and static abstract operators are never listed.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace V
+            {
+                public interface IShape
+                {
+                    static abstract IShape Make();
+                    static virtual int Version() => 1;
+                    string Describe() => "";
+                    int this[int i] { get; }
+                }
+
+                public interface IAdd<TSelf> where TSelf : IAdd<TSelf>
+                {
+                    static abstract TSelf operator +(TSelf left, TSelf right);
+                }
+
+                public abstract class Node
+                {
+                    public abstract int this[int i] { get; }
+                    public virtual void Visit() { }
+                }
+            }
+            """);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AbstractFilter = abstractFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, Flatten(result.Data!.Entries).Select(e => e.Name));
+    }
+
+    #endregion
+
     private static List<(string Name, string Kind, int Line, int Column, string? Accessibility, string? ReturnType, int Depth)> Flatten(
         IReadOnlyList<OutlineEntry> entries, int depth = 1)
     {
