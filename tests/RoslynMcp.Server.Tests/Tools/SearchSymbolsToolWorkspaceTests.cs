@@ -118,6 +118,50 @@ public class SearchSymbolsToolWorkspaceTests
         }
     }
 
+    [Theory]
+    [InlineData(true, new[] { "WidgetLeaf" }, new[] { "Widget", "WidgetBase", "WidgetDraw", "WidgetPaint" })]
+    [InlineData(false, new[] { "Widget", "WidgetBase", "WidgetDraw", "WidgetPaint" }, new[] { "WidgetLeaf" })]
+    public async Task ExecuteAsync_SealedFilter_IsMappedToOperation(bool sealedFilter, string[] expected, string[] excluded)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpSearchSymbolsTool_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var projectPath = Path.Combine(directory, "TestApp.csproj");
+            await File.WriteAllTextAsync(projectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(Path.Combine(directory, "Widget.cs"), Source + "\npublic sealed class WidgetLeaf { }\n");
+
+            var tool = new SearchSymbolsTool(new MSBuildWorkspaceProvider());
+            var args = JsonSerializer.SerializeToElement(new
+            {
+                solutionPath = projectPath,
+                query = "Widget",
+                sealedFilter
+            });
+
+            var result = await tool.ExecuteAsync(args);
+            var text = result.Content.FirstOrDefault()?.Text ?? string.Empty;
+            Assert.False(result.IsError, text);
+
+            var names = CollectSymbolNames(JsonDocument.Parse(text).RootElement);
+            foreach (var name in expected)
+                Assert.Contains(name, names);
+            foreach (var name in excluded)
+                Assert.DoesNotContain(name, names);
+        }
+        finally
+        {
+            try { Directory.Delete(directory, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
     private static HashSet<string> CollectSymbolNames(JsonElement element)
     {
         var names = new HashSet<string>(StringComparer.Ordinal);

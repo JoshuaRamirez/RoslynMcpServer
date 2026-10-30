@@ -287,6 +287,22 @@ public class CliArgsTests
     }
 
     [Fact]
+    public void SearchSymbols_SealedFilterFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Widget", "--sealed-filter"]);
+        Assert.Equal("search-symbols", result.ToolName);
+        Assert.Equal("true", result.Options["sealed-filter"]);
+    }
+
+    [Fact]
+    public void SearchSymbols_SealedFilterExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Widget", "--sealed-filter", "false", "--abstract-filter"]);
+        Assert.Equal("false", result.Options["sealed-filter"]);
+        Assert.Equal("true", result.Options["abstract-filter"]);
+    }
+
+    [Fact]
     public void SearchSymbols_AbstractFilterFlag_ParsesAsTrue()
     {
         var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Widget", "--abstract-filter"]);

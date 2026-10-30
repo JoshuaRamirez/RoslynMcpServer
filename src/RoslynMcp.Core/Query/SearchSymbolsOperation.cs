@@ -13,7 +13,7 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Searches for symbols by name pattern across all projects in the solution (or one project when
 /// <see cref="SearchSymbolsParams.ProjectPath"/> is set), optionally restricted by kind, file, namespace,
-/// declared accessibility, static / instance, and abstract / non-abstract.
+/// declared accessibility, static / instance, abstract / non-abstract, and sealed / unsealed.
 /// Uses Roslyn's Compilation.GetSymbolsWithName for efficient symbol lookup.
 /// </summary>
 public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsParams, SearchSymbolsResult>
@@ -59,7 +59,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             : StringComparison.OrdinalIgnoreCase;
         var exactMatch = @params.ExactMatch == true;
 
-        // kindFilter / namespaceFilter / accessibilityFilter / staticFilter / abstractFilter, applied to each
+        // kindFilter / namespaceFilter / accessibilityFilter / staticFilter / abstractFilter / sealedFilter, applied to each
         // found symbol before maxResults so TotalCount / Truncated reflect them (the query is the only name
         // filter, so no nameFilter).
         var resultFilter = ResultSymbolFilter.Create(
@@ -68,7 +68,8 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             @params.KindFilter,
             nameFilter: null,
             @params.StaticFilter,
-            @params.AbstractFilter);
+            @params.AbstractFilter,
+            @params.SealedFilter);
 
         var entries = new List<SymbolSearchEntry>();
         var totalCount = 0;
@@ -110,9 +111,10 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
 
                 // Apply kind / namespace / accessibility (declared, so implicit defaults count; exact match) /
                 // static (const fields and enum members count as static) / abstract (interfaces and body-less
-                // interface members count as abstract, static classes do not) filters. Namespaces have no
-                // modifiers (Roslyn reports them as Public), so they never match an accessibility, static or
-                // abstract filter.
+                // interface members count as abstract, static classes do not) / sealed (structs, enums, delegates and
+                // sealed override members count as sealed; static classes and struct members do not) filters.
+                // Namespaces have no modifiers (Roslyn reports them as Public), so they never match an
+                // accessibility, static, abstract or sealed filter.
                 if (!resultFilter.Matches(symbol) ||
                     (symbol is INamespaceSymbol && resultFilter.ConstrainsModifiers))
                     continue;
