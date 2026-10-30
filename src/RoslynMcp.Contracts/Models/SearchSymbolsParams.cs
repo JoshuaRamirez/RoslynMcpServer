@@ -153,7 +153,8 @@ public sealed class SearchSymbolsParams
     /// sealed, and <c>sealed override</c> methods / properties / events. <c>false</c> keeps only symbols whose
     /// <c>IsSealed</c> is <c>false</c>: unsealed classes and records, including abstract and static classes
     /// (Roslyn reports <c>IsSealed = false</c> for a static class), interfaces, every interface member
-    /// (instance, default-bodied and <c>static abstract</c>), ordinary, <c>virtual</c>, <c>abstract</c> and
+    /// (instance, default-bodied, explicitly <c>sealed</c> default-bodied and <c>static abstract</c>; Roslyn
+    /// reports an interface member declared <c>sealed</c> as non-virtual, not <c>IsSealed</c>), ordinary, <c>virtual</c>, <c>abstract</c> and
     /// non-sealed <c>override</c> members, members of structs (which are not themselves sealed), fields,
     /// <c>const</c> fields and enum members. Namespaces are returned when this is omitted but dropped when it
     /// is set to either value. Results are source-only (a metadata name such as <c>String</c> gives an empty

@@ -2567,7 +2567,7 @@ public class SearchSymbolsOperationTests
             public record SealOpenRecord;
             public enum SealKind { SealA }
             public delegate void SealHandler();
-            public interface ISealIface { void SealRun(); void SealDefault() { } static abstract void SealMake(); }
+            public interface ISealIface { void SealRun(); void SealDefault() { } sealed void SealLocked() { } static abstract void SealMake(); }
             public class SealOuter { private sealed class SealNested { } }
             public sealed class SealGen<T> { }
         }
@@ -2591,6 +2591,7 @@ public class SearchSymbolsOperationTests
     [
         "SealSpace.ISealIface",
         "SealSpace.ISealIface.SealDefault()",
+        "SealSpace.ISealIface.SealLocked()",
         "SealSpace.ISealIface.SealMake()",
         "SealSpace.ISealIface.SealRun()",
         "SealSpace.SealAbs",
@@ -2681,8 +2682,10 @@ public class SearchSymbolsOperationTests
 
         Assert.True(result.Success);
         Assert.NotNull(result.Data);
-        // Static classes, abstract classes, interfaces and their members, struct members, non-sealed
-        // overrides, fields, consts and enum members report IsSealed = false; namespaces never match.
+        // Static classes, abstract classes, interfaces and their members (including an explicitly
+        // `sealed` default interface method, which Roslyn reports as non-virtual rather than sealed),
+        // struct members, non-sealed overrides, fields, consts and enum members report IsSealed = false;
+        // namespaces never match.
         Assert.Equal(Sorted(UnsealedSealNames), SortedFqns(result.Data));
         Assert.Equal(UnsealedSealNames.Length, result.Data.TotalCount);
         Assert.False(result.Data.Truncated);
