@@ -2,6 +2,13 @@ using RoslynMcp.Core.Workspace;
 using RoslynMcp.Server;
 using RoslynMcp.Server.Logging;
 
+if (args.Length > 0 && (args[0] is "--version" or "-v"))
+{
+    var version = typeof(McpServerHost).Assembly.GetName().Version;
+    Console.WriteLine(version is not null ? $"{version.Major}.{version.Minor}.{version.Build}" : "1.0.0");
+    return;
+}
+
 // Log startup
 FileLogger.Log($"RoslynMcp Server starting. Log file: {FileLogger.LogFilePath}");
 FileLogger.Log($"Process ID: {Environment.ProcessId}");
