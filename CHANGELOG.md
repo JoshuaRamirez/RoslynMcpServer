@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-02
+
+### Added
+
+- **Layer 1 `TargetCoordinate` (`DocumentScope × Anchor × EnclosingNormalization`)**: Universal 3-part coordinate system (`TargetCoordinate`, `DocumentScope`, `Anchor`, `EnclosingNormalization`) and `TargetCoordinateResolver` resolving file paths, project names, directory globs, line spans, text spans, symbol paths (`Namespace.Type.Member`), syntax indices, and enclosing normalizations (`Exact`, `EnclosingStatement`, `EnclosingBlock`, `EnclosingMember`, `EnclosingType`).
+- **Layer 2 `SymbolPredicate` AST & `SymbolPredicateEvaluator`**: Composable symbol predicate tree (`All`, `Any`, `Not`, `SymbolKindIn`, `AccessibilityIn`, `NameMatches`, `NamespaceMatches`, `HasAttribute`, `ImplementsOrInherits`, `CallerCountRange`, `ReferencesCountRange`, `InDocumentScope`) evaluated in a single compilation pass per project with lazy `SymbolFinder` reference/caller resolution.
+- **Layer 3 Warm `SolutionSessionManager` & Atomic `SolutionTransaction` (`roslyn_transaction`)**: Persistent in-memory `WarmSolutionSession` keyed by canonical `.sln` path with `FileSystemWatcher` and incremental `WithDocumentText` updates (`InvalidateOrUpdateDocument`), immutable `Solution` fork-and-fold transaction pipeline (`SolutionTransactionEngine`), `PreviewDiffOnly` unified diff generation, and `RollbackOnCompilationErrors` atomic commit/rollback.
+- **Layer 4 `CodeActionHostOperation`, `SyntaxGeneratorRunner` & `IOperationSemanticRewriter`**: Built-in Roslyn code-fix/refactoring host (`CodeActionHostRunner` supporting `Document`, `Project`, and `Solution` scopes), `SyntaxGenerator`/`SymbolEditor` declaration mutations (`SyntaxGeneratorRunner`), and `IOperation`-guided semantic pattern rewriter (`IOperationSemanticRewriter`).
+- **Layer 5 Compact `$defs` MCP Schema (`roslyn_transaction`, `roslyn_query_symbols`) & CLI (`transaction`, `query-symbols`)**: Shared `$defs` (`CompactSchemaDefs`) for `TargetCoordinate`, `SymbolPredicate`, and `SolutionOperation`, bringing the unified tool surface to 68 tools.
+
 ## [0.15.0] - 2026-10-31
 
 ### Added

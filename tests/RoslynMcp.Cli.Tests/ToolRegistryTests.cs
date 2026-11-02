@@ -10,7 +10,7 @@ public class ToolRegistryTests
     {
         var registry = ToolRegistry.BuildDefault();
         var tools = registry.GetAllTools();
-        Assert.Equal(66, tools.Count);
+        Assert.Equal(68, tools.Count);
     }
 
     [Fact]
@@ -117,6 +117,8 @@ public class ToolRegistryTests
     [InlineData("add-missing-usings", "Refactoring")]
     [InlineData("format-document", "Refactoring")]
     [InlineData("get-symbol-info", "Query")]
+    [InlineData("transaction", "Refactoring")]
+    [InlineData("query-symbols", "Query")]
     public void ToolCategories_CorrectlyAssigned(string name, string expectedCategory)
     {
         var registry = ToolRegistry.BuildDefault();
@@ -130,7 +132,7 @@ public class ToolRegistryTests
     {
         var registry = ToolRegistry.BuildDefault();
         var count = registry.GetAllTools().Count(t => t.Category == "Refactoring");
-        Assert.Equal(53, count);
+        Assert.Equal(54, count);
     }
 
     [Fact]
@@ -138,7 +140,7 @@ public class ToolRegistryTests
     {
         var registry = ToolRegistry.BuildDefault();
         var count = registry.GetAllTools().Count(t => t.Category == "Query");
-        Assert.Equal(12, count);
+        Assert.Equal(13, count);
     }
 
     [Fact]
