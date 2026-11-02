@@ -208,22 +208,23 @@ public static class SyntaxGeneratorRunner
             case SyntaxGeneratorActionKind.AddInterfaceImplementation:
             {
                 var typeDecl = FindTargetTypeDeclaration(target.Node);
-                var interfaceTypeSyntax = ParseTypeSyntax(generator, payload.Name);
-                var updatedType = (TypeDeclarationSyntax)generator.AddInterfaceType(typeDecl, interfaceTypeSyntax);
+                var interfaceTypeSyntax = (TypeSyntax)ParseTypeSyntax(generator, payload.Name);
+                var hasInterfaceAlready = typeDecl.BaseList?.Types.Any(
+                    t => string.Equals(t.Type.ToString(), payload.Name.Trim(), StringComparison.Ordinal)) == true;
+                var updatedType = hasInterfaceAlready
+                    ? typeDecl
+                    : (TypeDeclarationSyntax)typeDecl.AddBaseListTypes(SyntaxFactory.SimpleBaseType(interfaceTypeSyntax));
 
                 // Discover interface symbol in compilation and synthesize missing member stubs
                 var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
                 if (semanticModel is not null)
                 {
                     var ifaceSymbol = FindInterfaceSymbol(semanticModel.Compilation, payload.Name);
-                    var existingNames = typeDecl.Members
-                        .Select(m => generator.GetName(m))
-                        .Where(n => !string.IsNullOrEmpty(n))
-                        .ToHashSet(StringComparer.Ordinal);
+                    var existingNames = GetExistingMemberNames(typeDecl);
 
                     if (ifaceSymbol is not null)
                     {
-                        var stubMembers = new List<SyntaxNode>();
+                        var stubMembers = new List<MemberDeclarationSyntax>();
                         foreach (var member in ifaceSymbol.GetMembers())
                         {
                             if (existingNames.Contains(member.Name))
@@ -233,31 +234,34 @@ public static class SyntaxGeneratorRunner
 
                             if (member is IMethodSymbol { MethodKind: MethodKind.Ordinary } method)
                             {
-                                var parameters = method.Parameters
-                                    .Select(p => generator.ParameterDeclaration(p.Name, generator.TypeExpression(p.Type)))
-                                    .ToArray();
-                                var returnType = method.ReturnsVoid ? null : generator.TypeExpression(method.ReturnType);
-                                var bodyStmt = method.ReturnsVoid
-                                    ? []
-                                    : new SyntaxNode[] { generator.ReturnStatement(generator.DefaultExpression(method.ReturnType)) };
-                                stubMembers.Add(generator.MethodDeclaration(
-                                    method.Name,
-                                    parameters,
-                                    returnType: returnType,
-                                    accessibility: Accessibility.Public,
-                                    statements: bodyStmt));
+                                var returnTypeText = method.ReturnsVoid
+                                    ? "void"
+                                    : method.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+                                var paramsText = string.Join(
+                                    ", ",
+                                    method.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}"));
+                                var bodyText = method.ReturnsVoid
+                                    ? "{ }"
+                                    : $"{{ return default({returnTypeText}); }}";
+                                if (SyntaxFactory.ParseMemberDeclaration($"public {returnTypeText} {method.Name}({paramsText}) {bodyText}") is { } methodStub)
+                                {
+                                    stubMembers.Add(methodStub);
+                                }
                             }
                             else if (member is IPropertySymbol prop)
                             {
                                 var propTypeText = prop.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
                                 var accessors = prop.IsReadOnly ? "{ get; }" : "{ get; set; }";
-                                stubMembers.Add(SyntaxFactory.ParseMemberDeclaration($"public {propTypeText} {prop.Name} {accessors}")!);
+                                if (SyntaxFactory.ParseMemberDeclaration($"public {propTypeText} {prop.Name} {accessors}") is { } propStub)
+                                {
+                                    stubMembers.Add(propStub);
+                                }
                             }
                         }
 
                         if (stubMembers.Count > 0)
                         {
-                            updatedType = (TypeDeclarationSyntax)generator.AddMembers(updatedType, stubMembers);
+                            updatedType = updatedType.AddMembers(stubMembers.ToArray());
                         }
                     }
                 }
@@ -289,6 +293,40 @@ public static class SyntaxGeneratorRunner
     private static TypeDeclarationSyntax FindTargetTypeDeclaration(SyntaxNode node) =>
         node.AncestorsAndSelf().OfType<TypeDeclarationSyntax>().FirstOrDefault()
         ?? throw new RefactoringException(ErrorCodes.SymbolNotFound, "Target coordinate did not resolve within a TypeDeclarationSyntax.");
+
+    private static HashSet<string> GetExistingMemberNames(TypeDeclarationSyntax typeDecl)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var member in typeDecl.Members)
+        {
+            switch (member)
+            {
+                case MethodDeclarationSyntax m:
+                    names.Add(m.Identifier.ValueText);
+                    break;
+                case PropertyDeclarationSyntax p:
+                    names.Add(p.Identifier.ValueText);
+                    break;
+                case EventDeclarationSyntax e:
+                    names.Add(e.Identifier.ValueText);
+                    break;
+                case FieldDeclarationSyntax f:
+                    foreach (var v in f.Declaration.Variables)
+                    {
+                        names.Add(v.Identifier.ValueText);
+                    }
+                    break;
+                case EventFieldDeclarationSyntax ef:
+                    foreach (var v in ef.Declaration.Variables)
+                    {
+                        names.Add(v.Identifier.ValueText);
+                    }
+                    break;
+            }
+        }
+
+        return names;
+    }
 
     private static SyntaxNode ParseTypeSyntax(SyntaxGenerator generator, string typeName) =>
         typeName.Trim() switch

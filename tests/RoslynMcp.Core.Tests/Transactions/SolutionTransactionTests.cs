@@ -182,7 +182,7 @@ public sealed class SolutionTransactionTests
         Assert.Equal("Modified", diff.ChangeKind);
         Assert.Contains("--- a/", diff.UnifiedDiff, StringComparison.Ordinal);
         Assert.Contains("+++ b/", diff.UnifiedDiff, StringComparison.Ordinal);
-        Assert.Contains("+            public int PreviewRenamedMethod(int grossAmount)", diff.UnifiedDiff, StringComparison.Ordinal);
+        Assert.Contains("+    public int PreviewRenamedMethod(int grossAmount)", diff.UnifiedDiff, StringComparison.Ordinal);
 
         // Verify warm session state was NOT mutated
         Assert.Equal(initialRevision, session.Revision);
@@ -240,7 +240,8 @@ public sealed class SolutionTransactionTests
         using var manager = new SolutionSessionManager();
         var session = manager.RegisterInMemorySession("/repo/Acme.sln", CreateLedgerSolution());
 
-        // Warm up compilation and evaluator caches once
+        // Warm up compilation, document update path, and evaluator caches once
+        _ = manager.InvalidateOrUpdateDocument("/repo/Acme.sln", "AccountCalculator.cs", InitialAccountCode);
         _ = await SymbolPredicateEvaluator.EvaluateAsync(
             session.CurrentSolution,
             SymbolPredicate.WithName("CalculateNet"));

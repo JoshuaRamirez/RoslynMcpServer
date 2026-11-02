@@ -79,13 +79,19 @@ public sealed class CodeActionHostTests
     {
         var workspace = new AdhocWorkspace();
         var projectId = ProjectId.CreateNewId("Acme.Pipeline");
+        var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
         var metadataRefs = new[]
         {
-            MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(List<>).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(System.Text.StringBuilder).Assembly.Location)
-        };
+            typeof(object).Assembly.Location,
+            typeof(Enumerable).Assembly.Location,
+            typeof(List<>).Assembly.Location,
+            typeof(System.Text.StringBuilder).Assembly.Location,
+            Path.Combine(runtimeDir, "System.Runtime.dll")
+        }
+        .Where(File.Exists)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Select(path => MetadataReference.CreateFromFile(path))
+        .ToArray();
 
         var solution = workspace.CurrentSolution.AddProject(ProjectInfo.Create(
             projectId,
@@ -93,6 +99,7 @@ public sealed class CodeActionHostTests
             "Acme.Pipeline",
             "Acme.Pipeline",
             LanguageNames.CSharp,
+            compilationOptions: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary),
             metadataReferences: metadataRefs));
 
         var docId = DocumentId.CreateNewId(projectId, "TelemetryProcessor.cs");

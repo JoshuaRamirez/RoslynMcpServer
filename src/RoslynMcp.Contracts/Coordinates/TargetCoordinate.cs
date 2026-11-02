@@ -106,6 +106,13 @@ public sealed record TextSpanAnchor(
 public sealed record Anchor
 {
     /// <summary>
+    /// Optional compact-schema discriminator kind (<c>LineSpan</c>, <c>TextSpan</c>, <c>SymbolPath</c>, <c>SyntaxIndex</c>).
+    /// </summary>
+    [JsonPropertyName("kind")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>
     /// Optional 1-based line/column span anchor.
     /// </summary>
     [JsonPropertyName("lineSpan")]
@@ -124,10 +131,44 @@ public sealed record Anchor
     public string? SymbolPath { get; init; }
 
     /// <summary>
+    /// Compact-schema alias for <see cref="SymbolPath"/> (<c>path</c>).
+    /// </summary>
+    [JsonPropertyName("path")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Path
+    {
+        get => null;
+        init
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                SymbolPath = value;
+            }
+        }
+    }
+
+    /// <summary>
     /// Optional 0-based preorder index into the document's syntax tree (filtered by <see cref="SyntaxKind"/> when set).
     /// </summary>
     [JsonPropertyName("syntaxIndex")]
     public int? SyntaxIndex { get; init; }
+
+    /// <summary>
+    /// Compact-schema alias for <see cref="SyntaxIndex"/> (<c>index</c>).
+    /// </summary>
+    [JsonPropertyName("index")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Index
+    {
+        get => null;
+        init
+        {
+            if (value.HasValue)
+            {
+                SyntaxIndex = value;
+            }
+        }
+    }
 
     /// <summary>
     /// Optional Roslyn <c>SyntaxKind</c> name used to filter nodes before indexing with <see cref="SyntaxIndex"/>.

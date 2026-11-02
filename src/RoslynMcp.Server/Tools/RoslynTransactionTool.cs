@@ -99,8 +99,9 @@ public sealed class RoslynTransactionTool : IToolHandler
                 return ToolResult.Error("Arguments required");
             }
 
+            var normalizedJson = NormalizeRequestJson(arguments.Value);
             var request = JsonSerializer.Deserialize<SolutionTransactionRequest>(
-                arguments.Value.GetRawText(),
+                normalizedJson,
                 _jsonOptions);
 
             if (request is null || string.IsNullOrWhiteSpace(request.SolutionPath))
@@ -134,5 +135,41 @@ public sealed class RoslynTransactionTool : IToolHandler
             };
             return ToolResult.Error(JsonSerializer.Serialize(failure, _jsonOptions));
         }
+    }
+
+    private static string NormalizeRequestJson(JsonElement element)
+    {
+        var node = System.Text.Json.Nodes.JsonNode.Parse(element.GetRawText());
+        if (node is System.Text.Json.Nodes.JsonObject rootObj &&
+            rootObj["operations"] is System.Text.Json.Nodes.JsonArray opsArray)
+        {
+            foreach (var item in opsArray)
+            {
+                if (item is System.Text.Json.Nodes.JsonObject opObj &&
+                    !opObj.ContainsKey("kind") &&
+                    opObj.TryGetPropertyValue("op", out var opValue) &&
+                    opValue is not null)
+                {
+                    var kindStr = opValue.GetValue<string>();
+                    opObj.Remove("op");
+                    var rewritten = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["kind"] = kindStr
+                    };
+                    foreach (var kv in opObj.ToList())
+                    {
+                        opObj.Remove(kv.Key);
+                        rewritten[kv.Key] = kv.Value;
+                    }
+                    foreach (var kv in rewritten.ToList())
+                    {
+                        rewritten.Remove(kv.Key);
+                        opObj[kv.Key] = kv.Value;
+                    }
+                }
+            }
+        }
+
+        return node?.ToJsonString() ?? element.GetRawText();
     }
 }
