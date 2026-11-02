@@ -26,16 +26,19 @@ public static class SolutionTransactionEngine
     /// Handler delegate for Layer 4 <see cref="SyntaxGeneratorOperation"/> steps.
     /// </summary>
     public static Func<Solution, SyntaxGeneratorOperation, CancellationToken, Task<Solution>>? SyntaxGeneratorHandler { get; set; }
+        = SyntaxGeneratorRunner.ExecuteAsync;
 
     /// <summary>
     /// Handler delegate for Layer 4 <see cref="CodeActionHostOperation"/> steps.
     /// </summary>
     public static Func<Solution, CodeActionHostOperation, CancellationToken, Task<Solution>>? CodeActionHostHandler { get; set; }
+        = CodeActionHostRunner.ExecuteAsync;
 
     /// <summary>
     /// Handler delegate for Layer 4 <see cref="SemanticPatternRewriteOperation"/> steps.
     /// </summary>
     public static Func<Solution, SemanticPatternRewriteOperation, CancellationToken, Task<Solution>>? SemanticPatternRewriteHandler { get; set; }
+        = IOperationSemanticRewriter.ExecuteAsync;
 
     /// <summary>
     /// Executes a <see cref="SolutionTransactionRequest"/> against a warm <see cref="WarmSolutionSession"/>.
