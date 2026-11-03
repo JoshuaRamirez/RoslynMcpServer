@@ -994,6 +994,11 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             MemberAccessExpressionSyntax memberAccess => memberAccess.Expression == original,
             ElementAccessExpressionSyntax elementAccess => elementAccess.Expression == original,
             ConditionalAccessExpressionSyntax conditional => conditional.Expression == original,
+            // `-X` or `a-X` with a negative literal would print `--5` / `a--5`, which reparses as a decrement.
+            PrefixUnaryExpressionSyntax prefix when prefix.IsKind(SyntaxKind.UnaryMinusExpression) =>
+                prefix.Operand == original,
+            BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.SubtractExpression) =>
+                binary.Right == original,
             _ => false
         };
     }

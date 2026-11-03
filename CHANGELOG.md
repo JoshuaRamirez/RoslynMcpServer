@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
-- `inline_constant` no longer drops the sign of a negative-zero `decimal` constant (#3423). `const decimal NoRefund = -0.00m` used to be pasted as `0.00M`, which reported success and built clean but flipped `decimal.IsNegative` from true to false and `decimal.CopySign(5m, x)` from -5 to 5. The inlined literal is now `-0.00M` (scale kept), and it is parenthesized like any other negative literal when used as a receiver (`(-0.00M).ToString()`). Single-site, allFiles and preview all use the same literal.
+- `inline_constant` no longer drops the sign of a negative-zero `decimal` constant (#3423). `const decimal NoRefund = -0.00m` used to be pasted as `0.00M`, which reported success and built clean but flipped `decimal.IsNegative` from true to false and `decimal.CopySign(5m, x)` from -5 to 5. The inlined literal is now `-0.00M` (scale kept), and it is parenthesized like any other negative literal when used as a receiver (`(-0.00M).ToString()`). Any negative literal (e.g. `-5` or `-0.00M`) inlined under unary minus or on the right of a subtraction is now parenthesized too (`-(-5)`, `x-(-0.00M)`), so `-X` and `x-X` no longer become `--5` / `x--0.00M`, which reparsed as a decrement and broke the build while the tool reported success. Single-site, allFiles and preview all use the same literal.
 
 ## [0.16.0] - 2026-11-02
 

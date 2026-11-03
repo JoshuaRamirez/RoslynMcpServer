@@ -844,6 +844,57 @@ public class InlineConstantOperationTests
         Assert.Contains("public string Text() => (-0.00M).ToString();", text);
     }
 
+    [SkippableFact]
+    public async Task InlineConstant_NegativeDecimalUnderMinus_ParenthesizesAndCompiles()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const decimal NoRefund = -0.00m;
+                private const int Offset = -5;
+
+                public decimal Negated() => -NoRefund;
+
+                public decimal Subtracted(decimal x) => x-NoRefund;
+
+                public int NegatedInt() => -Offset;
+
+                public int SubtractedInt(int x) => x-Offset;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var refund = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "NoRefund"
+        });
+        Assert.True(refund.Success);
+
+        var offset = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "Offset"
+        });
+        Assert.True(offset.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public decimal Negated() => -(-0.00M);", text);
+        Assert.Contains("public decimal Subtracted(decimal x) => x-(-0.00M);", text);
+        Assert.Contains("public int NegatedInt() => -(-5);", text);
+        Assert.Contains("public int SubtractedInt(int x) => x-(-5);", text);
+        Assert.DoesNotContain("--", text);
+
+        var tree = CSharpSyntaxTree.ParseText(text);
+        Assert.DoesNotContain(tree.GetRoot().DescendantNodes(),
+            n => n.IsKind(SyntaxKind.PreDecrementExpression)
+              || n.IsKind(SyntaxKind.PostDecrementExpression));
+    }
+
     #endregion
 
     #region Rejects
@@ -2119,7 +2170,7 @@ public class InlineConstantOperationTests
         Assert.Equal(2, fields.Count);
         Assert.All(fields, d => Assert.True(
             d.Parent?.Parent is FieldDeclarationSyntax field &&
-            field.Modifiers.Any(Microsoft.CodeAnalysis.CSharp.SyntaxKind.ConstKeyword)));
+            field.Modifiers.Any(SyntaxKind.ConstKeyword)));
         Assert.Contains(fields, d => d.Identifier.Text == "MaxRetries");
         Assert.Contains(fields, d => d.Identifier.Text == "Greeting");
         Assert.DoesNotContain(fields, d => d.Identifier.Text == "skipped");
