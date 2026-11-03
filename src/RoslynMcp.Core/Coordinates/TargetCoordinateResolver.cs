@@ -242,42 +242,42 @@ public static class TargetCoordinateResolver
                 return (node, initialSpan);
 
             case EnclosingNormalization.EnclosingStatement:
-            {
-                var nonBlockStmt = node.AncestorsAndSelf()
-                    .OfType<StatementSyntax>()
-                    .FirstOrDefault(s => s is not BlockSyntax);
-                var stmt = nonBlockStmt ?? node.AncestorsAndSelf().OfType<StatementSyntax>().FirstOrDefault();
-                return stmt is not null ? (stmt, stmt.Span) : null;
-            }
+                {
+                    var nonBlockStmt = node.AncestorsAndSelf()
+                        .OfType<StatementSyntax>()
+                        .FirstOrDefault(s => s is not BlockSyntax);
+                    var stmt = nonBlockStmt ?? node.AncestorsAndSelf().OfType<StatementSyntax>().FirstOrDefault();
+                    return stmt is not null ? (stmt, stmt.Span) : null;
+                }
 
             case EnclosingNormalization.EnclosingBlock:
-            {
-                var block = node.AncestorsAndSelf().OfType<BlockSyntax>().FirstOrDefault();
-                return block is not null ? (block, block.Span) : null;
-            }
+                {
+                    var block = node.AncestorsAndSelf().OfType<BlockSyntax>().FirstOrDefault();
+                    return block is not null ? (block, block.Span) : null;
+                }
 
             case EnclosingNormalization.EnclosingMember:
-            {
-                var callableOrFieldMember = node.AncestorsAndSelf()
-                    .OfType<MemberDeclarationSyntax>()
-                    .FirstOrDefault(m => m is not BaseTypeDeclarationSyntax
-                                         and not BaseNamespaceDeclarationSyntax
-                                         and not DelegateDeclarationSyntax);
-
-                var member = callableOrFieldMember
-                    ?? node.AncestorsAndSelf()
+                {
+                    var callableOrFieldMember = node.AncestorsAndSelf()
                         .OfType<MemberDeclarationSyntax>()
-                        .FirstOrDefault(m => m is not BaseNamespaceDeclarationSyntax);
+                        .FirstOrDefault(m => m is not BaseTypeDeclarationSyntax
+                                             and not BaseNamespaceDeclarationSyntax
+                                             and not DelegateDeclarationSyntax);
 
-                return member is not null ? (member, member.Span) : null;
-            }
+                    var member = callableOrFieldMember
+                        ?? node.AncestorsAndSelf()
+                            .OfType<MemberDeclarationSyntax>()
+                            .FirstOrDefault(m => m is not BaseNamespaceDeclarationSyntax);
+
+                    return member is not null ? (member, member.Span) : null;
+                }
 
             case EnclosingNormalization.EnclosingType:
-            {
-                var typeDecl = node.AncestorsAndSelf()
-                    .FirstOrDefault(n => n is BaseTypeDeclarationSyntax or DelegateDeclarationSyntax);
-                return typeDecl is not null ? (typeDecl, typeDecl.Span) : null;
-            }
+                {
+                    var typeDecl = node.AncestorsAndSelf()
+                        .FirstOrDefault(n => n is BaseTypeDeclarationSyntax or DelegateDeclarationSyntax);
+                    return typeDecl is not null ? (typeDecl, typeDecl.Span) : null;
+                }
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(normalization), normalization, "Unknown normalization mode.");

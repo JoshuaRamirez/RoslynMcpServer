@@ -3,7 +3,6 @@ using System.Text.Json.Serialization;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Contracts.Predicates;
 using RoslynMcp.Core.Query;
-using SolutionTransactionRequest = RoslynMcp.Contracts.Transactions.SolutionTransactionRequest;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Base;
@@ -19,6 +18,7 @@ using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Refactoring.Signature;
 using RoslynMcp.Core.Transactions;
 using RoslynMcp.Core.Workspace;
+using SolutionTransactionRequest = RoslynMcp.Contracts.Transactions.SolutionTransactionRequest;
 
 namespace RoslynMcp.Cli;
 

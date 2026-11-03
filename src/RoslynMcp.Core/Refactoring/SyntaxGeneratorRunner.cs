@@ -39,251 +39,251 @@ public static class SyntaxGeneratorRunner
         switch (payload.Action)
         {
             case SyntaxGeneratorActionKind.AddField:
-            {
-                var typeDecl = FindTargetTypeDeclaration(target.Node);
-                var fieldType = ParseTypeSyntax(generator, payload.TypeName ?? "object");
-                var accessibility = ParseAccessibility(payload.Accessibility, Accessibility.Private);
-                var modifiers = ParseModifiers(payload.Modifiers);
-                var initializer = !string.IsNullOrWhiteSpace(payload.InitializerExpression)
-                    ? SyntaxFactory.ParseExpression(payload.InitializerExpression!)
-                    : null;
-
-                var fieldDecl = generator.FieldDeclaration(
-                    payload.Name,
-                    fieldType,
-                    accessibility,
-                    modifiers,
-                    initializer);
-
-                var updatedType = generator.AddMembers(typeDecl, fieldDecl);
-                var newRoot = root.ReplaceNode(typeDecl, updatedType).NormalizeWhitespace();
-                return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
-            }
-
-            case SyntaxGeneratorActionKind.AddProperty:
-            {
-                var typeDecl = FindTargetTypeDeclaration(target.Node);
-                var propType = ParseTypeSyntax(generator, payload.TypeName ?? "object");
-                var accessibility = ParseAccessibility(payload.Accessibility, Accessibility.Public);
-                var modifiers = ParseModifiers(payload.Modifiers);
-
-                SyntaxNode propDecl;
-                if (payload.Statements is { Count: > 0 })
                 {
-                    var getAccessors = payload.Statements.Select(s => SyntaxFactory.ParseStatement(s)).ToArray();
-                    propDecl = generator.PropertyDeclaration(
+                    var typeDecl = FindTargetTypeDeclaration(target.Node);
+                    var fieldType = ParseTypeSyntax(generator, payload.TypeName ?? "object");
+                    var accessibility = ParseAccessibility(payload.Accessibility, Accessibility.Private);
+                    var modifiers = ParseModifiers(payload.Modifiers);
+                    var initializer = !string.IsNullOrWhiteSpace(payload.InitializerExpression)
+                        ? SyntaxFactory.ParseExpression(payload.InitializerExpression!)
+                        : null;
+
+                    var fieldDecl = generator.FieldDeclaration(
                         payload.Name,
-                        propType,
+                        fieldType,
                         accessibility,
                         modifiers,
-                        getAccessorStatements: getAccessors);
-                }
-                else
-                {
-                    var accessModifier = AccessibilityToText(accessibility);
-                    var modText = ModifiersToText(modifiers);
-                    var initSuffix = !string.IsNullOrWhiteSpace(payload.InitializerExpression)
-                        ? $" = {payload.InitializerExpression};"
-                        : string.Empty;
-                    propDecl = SyntaxFactory.ParseMemberDeclaration(
-                        $"{accessModifier}{modText}{payload.TypeName ?? "object"} {payload.Name} {{ get; set; }}{initSuffix}")!;
+                        initializer);
+
+                    var updatedType = generator.AddMembers(typeDecl, fieldDecl);
+                    var newRoot = root.ReplaceNode(typeDecl, updatedType).NormalizeWhitespace();
+                    return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
                 }
 
-                var updatedType = generator.AddMembers(typeDecl, propDecl);
-                var newRoot = root.ReplaceNode(typeDecl, updatedType).NormalizeWhitespace();
-                return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
-            }
+            case SyntaxGeneratorActionKind.AddProperty:
+                {
+                    var typeDecl = FindTargetTypeDeclaration(target.Node);
+                    var propType = ParseTypeSyntax(generator, payload.TypeName ?? "object");
+                    var accessibility = ParseAccessibility(payload.Accessibility, Accessibility.Public);
+                    var modifiers = ParseModifiers(payload.Modifiers);
+
+                    SyntaxNode propDecl;
+                    if (payload.Statements is { Count: > 0 })
+                    {
+                        var getAccessors = payload.Statements.Select(s => SyntaxFactory.ParseStatement(s)).ToArray();
+                        propDecl = generator.PropertyDeclaration(
+                            payload.Name,
+                            propType,
+                            accessibility,
+                            modifiers,
+                            getAccessorStatements: getAccessors);
+                    }
+                    else
+                    {
+                        var accessModifier = AccessibilityToText(accessibility);
+                        var modText = ModifiersToText(modifiers);
+                        var initSuffix = !string.IsNullOrWhiteSpace(payload.InitializerExpression)
+                            ? $" = {payload.InitializerExpression};"
+                            : string.Empty;
+                        propDecl = SyntaxFactory.ParseMemberDeclaration(
+                            $"{accessModifier}{modText}{payload.TypeName ?? "object"} {payload.Name} {{ get; set; }}{initSuffix}")!;
+                    }
+
+                    var updatedType = generator.AddMembers(typeDecl, propDecl);
+                    var newRoot = root.ReplaceNode(typeDecl, updatedType).NormalizeWhitespace();
+                    return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+                }
 
             case SyntaxGeneratorActionKind.AddMethod:
-            {
-                var typeDecl = FindTargetTypeDeclaration(target.Node);
-                var accessibility = ParseAccessibility(payload.Accessibility, Accessibility.Public);
-                var modifiers = ParseModifiers(payload.Modifiers);
-                var parameters = (payload.Parameters ?? [])
-                    .Select(p => CreateParameterDeclaration(generator, p))
-                    .ToArray();
+                {
+                    var typeDecl = FindTargetTypeDeclaration(target.Node);
+                    var accessibility = ParseAccessibility(payload.Accessibility, Accessibility.Public);
+                    var modifiers = ParseModifiers(payload.Modifiers);
+                    var parameters = (payload.Parameters ?? [])
+                        .Select(p => CreateParameterDeclaration(generator, p))
+                        .ToArray();
 
-                var statements = (payload.Statements ?? [])
-                    .Select(s => (SyntaxNode)SyntaxFactory.ParseStatement(s.EndsWith(';') || s.EndsWith('}') ? s : s + ";"))
-                    .ToArray();
+                    var statements = (payload.Statements ?? [])
+                        .Select(s => (SyntaxNode)SyntaxFactory.ParseStatement(s.EndsWith(';') || s.EndsWith('}') ? s : s + ";"))
+                        .ToArray();
 
-                var returnType = string.IsNullOrWhiteSpace(payload.TypeName) ||
-                                 string.Equals(payload.TypeName, "void", StringComparison.OrdinalIgnoreCase)
-                    ? null
-                    : ParseTypeSyntax(generator, payload.TypeName!);
+                    var returnType = string.IsNullOrWhiteSpace(payload.TypeName) ||
+                                     string.Equals(payload.TypeName, "void", StringComparison.OrdinalIgnoreCase)
+                        ? null
+                        : ParseTypeSyntax(generator, payload.TypeName!);
 
-                var methodDecl = generator.MethodDeclaration(
-                    payload.Name,
-                    parameters,
-                    typeParameters: null,
-                    returnType: returnType,
-                    accessibility: accessibility,
-                    modifiers: modifiers,
-                    statements: statements);
+                    var methodDecl = generator.MethodDeclaration(
+                        payload.Name,
+                        parameters,
+                        typeParameters: null,
+                        returnType: returnType,
+                        accessibility: accessibility,
+                        modifiers: modifiers,
+                        statements: statements);
 
-                var updatedType = generator.AddMembers(typeDecl, methodDecl);
-                var newRoot = root.ReplaceNode(typeDecl, updatedType).NormalizeWhitespace();
-                return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
-            }
+                    var updatedType = generator.AddMembers(typeDecl, methodDecl);
+                    var newRoot = root.ReplaceNode(typeDecl, updatedType).NormalizeWhitespace();
+                    return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+                }
 
             case SyntaxGeneratorActionKind.AddParameter:
-            {
-                var memberNode = target.Node.AncestorsAndSelf()
-                    .FirstOrDefault(n => n is MethodDeclarationSyntax or ConstructorDeclarationSyntax)
-                    ?? throw new RefactoringException(ErrorCodes.SymbolNotFound, "AddParameter target must resolve to a method or constructor.");
+                {
+                    var memberNode = target.Node.AncestorsAndSelf()
+                        .FirstOrDefault(n => n is MethodDeclarationSyntax or ConstructorDeclarationSyntax)
+                        ?? throw new RefactoringException(ErrorCodes.SymbolNotFound, "AddParameter target must resolve to a method or constructor.");
 
-                var paramSpec = payload.Parameters?.FirstOrDefault()
-                    ?? new ParameterSpec(payload.Name, payload.TypeName ?? "object", payload.InitializerExpression);
-                var paramDecl = CreateParameterDeclaration(generator, paramSpec);
+                    var paramSpec = payload.Parameters?.FirstOrDefault()
+                        ?? new ParameterSpec(payload.Name, payload.TypeName ?? "object", payload.InitializerExpression);
+                    var paramDecl = CreateParameterDeclaration(generator, paramSpec);
 
-                var updatedMember = generator.AddParameters(memberNode, [paramDecl]);
-                var newRoot = root.ReplaceNode(memberNode, updatedMember).NormalizeWhitespace();
-                return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
-            }
+                    var updatedMember = generator.AddParameters(memberNode, [paramDecl]);
+                    var newRoot = root.ReplaceNode(memberNode, updatedMember).NormalizeWhitespace();
+                    return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+                }
 
             case SyntaxGeneratorActionKind.AddAttribute:
-            {
-                var declNode = target.Node.AncestorsAndSelf().OfType<MemberDeclarationSyntax>().FirstOrDefault()
-                    ?? target.Node;
-                var attrName = !string.IsNullOrWhiteSpace(payload.AttributeName) ? payload.AttributeName! : payload.Name;
-                var attrArgs = (payload.AttributeArguments ?? [])
-                    .Select(a => generator.AttributeArgument(SyntaxFactory.ParseExpression(a)))
-                    .ToArray();
+                {
+                    var declNode = target.Node.AncestorsAndSelf().OfType<MemberDeclarationSyntax>().FirstOrDefault()
+                        ?? target.Node;
+                    var attrName = !string.IsNullOrWhiteSpace(payload.AttributeName) ? payload.AttributeName! : payload.Name;
+                    var attrArgs = (payload.AttributeArguments ?? [])
+                        .Select(a => generator.AttributeArgument(SyntaxFactory.ParseExpression(a)))
+                        .ToArray();
 
-                var attrNode = generator.Attribute(attrName, attrArgs);
-                var updatedDecl = generator.AddAttributes(declNode, attrNode);
-                var newRoot = root.ReplaceNode(declNode, updatedDecl).NormalizeWhitespace();
-                return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
-            }
+                    var attrNode = generator.Attribute(attrName, attrArgs);
+                    var updatedDecl = generator.AddAttributes(declNode, attrNode);
+                    var newRoot = root.ReplaceNode(declNode, updatedDecl).NormalizeWhitespace();
+                    return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+                }
 
             case SyntaxGeneratorActionKind.SetModifiers:
-            {
-                var declNode = target.Node.AncestorsAndSelf().OfType<MemberDeclarationSyntax>().FirstOrDefault()
-                    ?? throw new RefactoringException(ErrorCodes.SymbolNotFound, "SetModifiers target must resolve to a member or type declaration.");
-
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                var declaredSymbol = semanticModel?.GetDeclaredSymbol(declNode, cancellationToken);
-
-                // Use SymbolEditor when modifying a multi-declaration symbol across partial definitions
-                if (declaredSymbol is not null && declaredSymbol.DeclaringSyntaxReferences.Length > 1)
                 {
-                    var symbolEditor = SymbolEditor.Create(solution);
-                    await symbolEditor.EditAllDeclarationsAsync(
-                        declaredSymbol,
-                        (docEditor, syntaxNode) =>
-                        {
-                            var updated = syntaxNode;
-                            if (!string.IsNullOrWhiteSpace(payload.Accessibility))
+                    var declNode = target.Node.AncestorsAndSelf().OfType<MemberDeclarationSyntax>().FirstOrDefault()
+                        ?? throw new RefactoringException(ErrorCodes.SymbolNotFound, "SetModifiers target must resolve to a member or type declaration.");
+
+                    var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                    var declaredSymbol = semanticModel?.GetDeclaredSymbol(declNode, cancellationToken);
+
+                    // Use SymbolEditor when modifying a multi-declaration symbol across partial definitions
+                    if (declaredSymbol is not null && declaredSymbol.DeclaringSyntaxReferences.Length > 1)
+                    {
+                        var symbolEditor = SymbolEditor.Create(solution);
+                        await symbolEditor.EditAllDeclarationsAsync(
+                            declaredSymbol,
+                            (docEditor, syntaxNode) =>
                             {
-                                updated = docEditor.Generator.WithAccessibility(updated, ParseAccessibility(payload.Accessibility, Accessibility.NotApplicable));
-                            }
+                                var updated = syntaxNode;
+                                if (!string.IsNullOrWhiteSpace(payload.Accessibility))
+                                {
+                                    updated = docEditor.Generator.WithAccessibility(updated, ParseAccessibility(payload.Accessibility, Accessibility.NotApplicable));
+                                }
 
-                            if (payload.Modifiers is not null)
-                            {
-                                updated = docEditor.Generator.WithModifiers(updated, ParseModifiers(payload.Modifiers));
-                            }
+                                if (payload.Modifiers is not null)
+                                {
+                                    updated = docEditor.Generator.WithModifiers(updated, ParseModifiers(payload.Modifiers));
+                                }
 
-                            docEditor.ReplaceNode(syntaxNode, updated);
-                        },
-                        cancellationToken).ConfigureAwait(false);
+                                docEditor.ReplaceNode(syntaxNode, updated);
+                            },
+                            cancellationToken).ConfigureAwait(false);
 
-                    return symbolEditor.ChangedSolution;
+                        return symbolEditor.ChangedSolution;
+                    }
+
+                    var modifiedNode = (SyntaxNode)declNode;
+                    if (!string.IsNullOrWhiteSpace(payload.Accessibility))
+                    {
+                        modifiedNode = generator.WithAccessibility(modifiedNode, ParseAccessibility(payload.Accessibility, Accessibility.Public));
+                    }
+
+                    if (payload.Modifiers is not null)
+                    {
+                        modifiedNode = generator.WithModifiers(modifiedNode, ParseModifiers(payload.Modifiers));
+                    }
+
+                    var newRoot = root.ReplaceNode(declNode, modifiedNode).NormalizeWhitespace();
+                    return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
                 }
-
-                var modifiedNode = (SyntaxNode)declNode;
-                if (!string.IsNullOrWhiteSpace(payload.Accessibility))
-                {
-                    modifiedNode = generator.WithAccessibility(modifiedNode, ParseAccessibility(payload.Accessibility, Accessibility.Public));
-                }
-
-                if (payload.Modifiers is not null)
-                {
-                    modifiedNode = generator.WithModifiers(modifiedNode, ParseModifiers(payload.Modifiers));
-                }
-
-                var newRoot = root.ReplaceNode(declNode, modifiedNode).NormalizeWhitespace();
-                return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
-            }
 
             case SyntaxGeneratorActionKind.AddInterfaceImplementation:
-            {
-                var typeDecl = FindTargetTypeDeclaration(target.Node);
-                var interfaceTypeSyntax = (TypeSyntax)ParseTypeSyntax(generator, payload.Name);
-                var hasInterfaceAlready = typeDecl.BaseList?.Types.Any(
-                    t => string.Equals(t.Type.ToString(), payload.Name.Trim(), StringComparison.Ordinal)) == true;
-                var updatedType = hasInterfaceAlready
-                    ? typeDecl
-                    : (TypeDeclarationSyntax)typeDecl.AddBaseListTypes(SyntaxFactory.SimpleBaseType(interfaceTypeSyntax));
-
-                // Discover interface symbol in compilation and synthesize missing member stubs
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                if (semanticModel is not null)
                 {
-                    var ifaceSymbol = FindInterfaceSymbol(semanticModel.Compilation, payload.Name);
-                    var existingNames = GetExistingMemberNames(typeDecl);
+                    var typeDecl = FindTargetTypeDeclaration(target.Node);
+                    var interfaceTypeSyntax = (TypeSyntax)ParseTypeSyntax(generator, payload.Name);
+                    var hasInterfaceAlready = typeDecl.BaseList?.Types.Any(
+                        t => string.Equals(t.Type.ToString(), payload.Name.Trim(), StringComparison.Ordinal)) == true;
+                    var updatedType = hasInterfaceAlready
+                        ? typeDecl
+                        : (TypeDeclarationSyntax)typeDecl.AddBaseListTypes(SyntaxFactory.SimpleBaseType(interfaceTypeSyntax));
 
-                    if (ifaceSymbol is not null)
+                    // Discover interface symbol in compilation and synthesize missing member stubs
+                    var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                    if (semanticModel is not null)
                     {
-                        var stubMembers = new List<MemberDeclarationSyntax>();
-                        foreach (var member in ifaceSymbol.GetMembers())
-                        {
-                            if (existingNames.Contains(member.Name))
-                            {
-                                continue;
-                            }
+                        var ifaceSymbol = FindInterfaceSymbol(semanticModel.Compilation, payload.Name);
+                        var existingNames = GetExistingMemberNames(typeDecl);
 
-                            if (member is IMethodSymbol { MethodKind: MethodKind.Ordinary } method)
+                        if (ifaceSymbol is not null)
+                        {
+                            var stubMembers = new List<MemberDeclarationSyntax>();
+                            foreach (var member in ifaceSymbol.GetMembers())
                             {
-                                var returnTypeText = method.ReturnsVoid
-                                    ? "void"
-                                    : method.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-                                var paramsText = string.Join(
-                                    ", ",
-                                    method.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}"));
-                                var bodyText = method.ReturnsVoid
-                                    ? "{ }"
-                                    : $"{{ return default({returnTypeText}); }}";
-                                if (SyntaxFactory.ParseMemberDeclaration($"public {returnTypeText} {method.Name}({paramsText}) {bodyText}") is { } methodStub)
+                                if (existingNames.Contains(member.Name))
                                 {
-                                    stubMembers.Add(methodStub);
+                                    continue;
+                                }
+
+                                if (member is IMethodSymbol { MethodKind: MethodKind.Ordinary } method)
+                                {
+                                    var returnTypeText = method.ReturnsVoid
+                                        ? "void"
+                                        : method.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+                                    var paramsText = string.Join(
+                                        ", ",
+                                        method.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}"));
+                                    var bodyText = method.ReturnsVoid
+                                        ? "{ }"
+                                        : $"{{ return default({returnTypeText}); }}";
+                                    if (SyntaxFactory.ParseMemberDeclaration($"public {returnTypeText} {method.Name}({paramsText}) {bodyText}") is { } methodStub)
+                                    {
+                                        stubMembers.Add(methodStub);
+                                    }
+                                }
+                                else if (member is IPropertySymbol prop)
+                                {
+                                    var propTypeText = prop.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+                                    var accessors = prop.IsReadOnly ? "{ get; }" : "{ get; set; }";
+                                    if (SyntaxFactory.ParseMemberDeclaration($"public {propTypeText} {prop.Name} {accessors}") is { } propStub)
+                                    {
+                                        stubMembers.Add(propStub);
+                                    }
                                 }
                             }
-                            else if (member is IPropertySymbol prop)
-                            {
-                                var propTypeText = prop.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-                                var accessors = prop.IsReadOnly ? "{ get; }" : "{ get; set; }";
-                                if (SyntaxFactory.ParseMemberDeclaration($"public {propTypeText} {prop.Name} {accessors}") is { } propStub)
-                                {
-                                    stubMembers.Add(propStub);
-                                }
-                            }
-                        }
 
-                        if (stubMembers.Count > 0)
-                        {
-                            updatedType = updatedType.AddMembers(stubMembers.ToArray());
+                            if (stubMembers.Count > 0)
+                            {
+                                updatedType = updatedType.AddMembers(stubMembers.ToArray());
+                            }
                         }
                     }
+
+                    var newRoot = root.ReplaceNode(typeDecl, updatedType).NormalizeWhitespace();
+                    return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
                 }
 
-                var newRoot = root.ReplaceNode(typeDecl, updatedType).NormalizeWhitespace();
-                return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
-            }
-
             case SyntaxGeneratorActionKind.ReplaceMember:
-            {
-                var memberNode = target.Node.AncestorsAndSelf().OfType<MemberDeclarationSyntax>().FirstOrDefault()
-                    ?? throw new RefactoringException(ErrorCodes.SymbolNotFound, "ReplaceMember target must resolve to a member declaration.");
-                var replacementSource = payload.Statements is { Count: > 0 }
-                    ? string.Join(Environment.NewLine, payload.Statements)
-                    : payload.InitializerExpression ?? throw new RefactoringException(ErrorCodes.MissingRequiredParam, "ReplaceMember requires Statements or InitializerExpression.");
+                {
+                    var memberNode = target.Node.AncestorsAndSelf().OfType<MemberDeclarationSyntax>().FirstOrDefault()
+                        ?? throw new RefactoringException(ErrorCodes.SymbolNotFound, "ReplaceMember target must resolve to a member declaration.");
+                    var replacementSource = payload.Statements is { Count: > 0 }
+                        ? string.Join(Environment.NewLine, payload.Statements)
+                        : payload.InitializerExpression ?? throw new RefactoringException(ErrorCodes.MissingRequiredParam, "ReplaceMember requires Statements or InitializerExpression.");
 
-                var replacementMember = SyntaxFactory.ParseMemberDeclaration(replacementSource)
-                    ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse replacement member declaration.");
+                    var replacementMember = SyntaxFactory.ParseMemberDeclaration(replacementSource)
+                        ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse replacement member declaration.");
 
-                var newRoot = root.ReplaceNode(memberNode, replacementMember).NormalizeWhitespace();
-                return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
-            }
+                    var newRoot = root.ReplaceNode(memberNode, replacementMember).NormalizeWhitespace();
+                    return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+                }
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(operation), payload.Action, "Unsupported SyntaxGeneratorActionKind.");
