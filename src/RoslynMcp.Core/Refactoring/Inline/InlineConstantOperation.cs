@@ -603,9 +603,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 SyntaxKind.NumericLiteralExpression,
                 SyntaxFactory.Literal(System.Convert.ToDouble(value))),
 
-            SpecialType.System_Decimal => SyntaxFactory.LiteralExpression(
-                SyntaxKind.NumericLiteralExpression,
-                SyntaxFactory.Literal(System.Convert.ToDecimal(value))),
+            SpecialType.System_Decimal => CreateDecimalLiteral(System.Convert.ToDecimal(value)),
 
             SpecialType.System_String => SyntaxFactory.LiteralExpression(
                 SyntaxKind.StringLiteralExpression,
@@ -622,6 +620,18 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 ErrorCodes.NotCompileTimeConstant,
                 $"Cannot inline constant of type {type}")
         };
+    }
+
+    private static LiteralExpressionSyntax CreateDecimalLiteral(decimal value)
+    {
+        var token = SyntaxFactory.Literal(value);
+
+        // decimal.ToString never prints a sign for zero, so SyntaxFactory.Literal(-0.00m)
+        // yields "0.00M" and silently drops the sign bit (#3423). Keep it explicit.
+        if (value == 0m && decimal.IsNegative(value) && !token.Text.StartsWith('-'))
+            token = SyntaxFactory.Literal("-" + token.Text, value);
+
+        return SyntaxFactory.LiteralExpression(SyntaxKind.NumericLiteralExpression, token);
     }
 
     private static bool TryGetConstantValue(
@@ -1005,7 +1015,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             long value => value < 0,
             float value => value < 0,
             double value => value < 0,
-            decimal value => value < 0,
+            decimal value => decimal.IsNegative(value),
             _ => false
         };
     }

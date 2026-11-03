@@ -813,6 +813,37 @@ public class InlineConstantOperationTests
         Assert.Contains("public decimal DecimalValue() => 2.5M;", text);
     }
 
+    [SkippableFact]
+    public async Task InlineConstant_DecimalNegativeZero_KeepsSign()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const decimal NoRefund = -0.00m;
+
+                public decimal Value() => NoRefund;
+
+                public string Text() => NoRefund.ToString();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "NoRefund"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public decimal Value() => -0.00M;", text);
+        Assert.Contains("public string Text() => (-0.00M).ToString();", text);
+    }
+
     #endregion
 
     #region Rejects
