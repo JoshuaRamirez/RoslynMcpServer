@@ -1,16 +1,16 @@
-# Roslyn MCP Server — Feature Catalog (`v1.0.0`)
+# Roslyn MCP Server — Feature Catalog (`v0.16.0`)
 
 Authoritative catalog of every user-facing capability in `RoslynMcpServer` (`roslyn-mcp` and `roslyn-cli`).
 
-## 1. 5-Layer Action Algebra (`v1.0.0`)
+## 1. 5-Layer Action Algebra (`v0.16.0`)
 
 | Layer | Feature | Contract / Engine Types | MCP / CLI Surface |Since |
 |---|---|---|---|---|
-| **Layer 1** | Universal `TargetCoordinate` (`DocumentScope × Anchor × EnclosingNormalization`) | `TargetCoordinate`, `DocumentScope`, `Anchor`, `EnclosingNormalization`, `TargetCoordinateResolver` | `$defs/TargetCoordinate` | `1.0.0` |
-| **Layer 2** | Composable `SymbolPredicate` AST & Single-Pass Evaluator | `SymbolPredicate`, `IntRange`, `QuerySymbolsRequest`, `SymbolQueryResult`, `SymbolPredicateEvaluator` | `roslyn_query_symbols` / `query-symbols` | `1.0.0` |
-| **Layer 3** | Warm `SolutionSessionManager` & Atomic `SolutionTransaction` Pipeline | `SolutionSessionManager`, `WarmSolutionSession`, `SolutionTransactionRequest`, `SolutionTransactionResult`, `SolutionTransactionEngine` | `roslyn_transaction` / `transaction` | `1.0.0` |
-| **Layer 4** | `CodeActionHost`, `SyntaxGenerator` / `SymbolEditor` & `IOperationSemanticRewriter` | `CodeActionHostRunner`, `SyntaxGeneratorRunner`, `IOperationSemanticRewriter`, `SemanticPatternKind` | `SolutionOperation` (`code_action_host`, `syntax_generator`, `semantic_pattern_rewrite`) | `1.0.0` |
-| **Layer 5** | Compact `$defs` JSON Schema & 68-Tool Registry | `CompactSchemaDefs`, `RoslynTransactionTool`, `RoslynQuerySymbolsTool` | `roslyn_transaction`, `roslyn_query_symbols`, `roslyn-cli` | `1.0.0` |
+| **Layer 1** | Universal `TargetCoordinate` (`DocumentScope × Anchor × EnclosingNormalization`) | `TargetCoordinate`, `DocumentScope`, `Anchor`, `EnclosingNormalization`, `TargetCoordinateResolver` | `$defs/TargetCoordinate` | `0.16.0` |
+| **Layer 2** | Composable `SymbolPredicate` AST & Single-Pass Evaluator | `SymbolPredicate`, `IntRange`, `QuerySymbolsRequest`, `SymbolQueryResult`, `SymbolPredicateEvaluator` | `roslyn_query_symbols` / `query-symbols` | `0.16.0` |
+| **Layer 3** | Warm `SolutionSessionManager` & Atomic `SolutionTransaction` Pipeline | `SolutionSessionManager`, `WarmSolutionSession`, `SolutionTransactionRequest`, `SolutionTransactionResult`, `SolutionTransactionEngine` | `roslyn_transaction` / `transaction` | `0.16.0` |
+| **Layer 4** | `CodeActionHost`, `SyntaxGenerator` / `SymbolEditor` & `IOperationSemanticRewriter` | `CodeActionHostRunner`, `SyntaxGeneratorRunner`, `IOperationSemanticRewriter`, `SemanticPatternKind` | `SolutionOperation` (`code_action_host`, `syntax_generator`, `semantic_pattern_rewrite`) | `0.16.0` |
+| **Layer 5** | Compact `$defs` JSON Schema & 68-Tool Registry | `CompactSchemaDefs`, `RoslynTransactionTool`, `RoslynQuerySymbolsTool` | `roslyn_transaction`, `roslyn_query_symbols`, `roslyn-cli` | `0.16.0` |
 
 ## 2. Refactoring Operations (`54` Tools)
 

@@ -110,7 +110,7 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new ConvertToPatternMatchingTool(workspaceProvider));
         _toolRegistry.Register(new ConvertToInterpolatedStringTool(workspaceProvider));
 
-        // Layer 5 Action Algebra Tools (v1.0.0)
+        // Layer 5 Action Algebra Tools (v0.16.0)
         _toolRegistry.Register(new RoslynTransactionTool(_sessionManager));
         _toolRegistry.Register(new RoslynQuerySymbolsTool(_sessionManager));
 

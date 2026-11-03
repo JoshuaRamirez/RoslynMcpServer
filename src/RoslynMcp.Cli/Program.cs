@@ -14,7 +14,7 @@ const int ExitEnvironmentError = 3;
 if (args.Length > 0 && (args[0] is "--version" or "-v"))
 {
     var version = typeof(CliArgs).Assembly.GetName().Version;
-    Console.WriteLine(version is not null ? $"{version.Major}.{version.Minor}.{version.Build}" : "1.0.0");
+    Console.WriteLine(version is not null ? $"{version.Major}.{version.Minor}.{version.Build}" : "0.16.0");
     return ExitSuccess;
 }
 
