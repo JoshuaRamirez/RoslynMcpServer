@@ -822,10 +822,16 @@ public class InlineConstantOperationTests
             public class Numbers
             {
                 private const decimal NoRefund = -0.00m;
+                private const decimal OneDigit = -0.0m;
+                private const decimal Bare = -0m;
 
                 public decimal Value() => NoRefund;
 
                 public string Text() => NoRefund.ToString();
+
+                public decimal OneDigitValue() => OneDigit;
+
+                public decimal BareValue() => Bare;
             }
             """;
 
@@ -839,9 +845,107 @@ public class InlineConstantOperationTests
         });
 
         Assert.True(result.Success);
+
+        foreach (var name in new[] { "OneDigit", "Bare" })
+        {
+            var inlined = await operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = name
+            });
+            Assert.True(inlined.Success);
+        }
+
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.Contains("public decimal Value() => -0.00M;", text);
         Assert.Contains("public string Text() => (-0.00M).ToString();", text);
+        Assert.Contains("public decimal OneDigitValue() => -0.0M;", text);
+        Assert.Contains("public decimal BareValue() => -0M;", text);
+        AssertCompiles(text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_FloatingNegativeZero_ParenthesizesAndCompiles()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const double DZ = -0.0;
+                private const float FZ = -0.0f;
+
+                public double NegatedDouble() => -DZ;
+
+                public string DoubleText() => DZ.ToString();
+
+                public float NegatedFloat() => -FZ;
+
+                public string FloatText() => FZ.ToString();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        foreach (var name in new[] { "DZ", "FZ" })
+        {
+            var inlined = await operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = name
+            });
+            Assert.True(inlined.Success);
+        }
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public float NegatedFloat() => -(-0F);", text);
+        Assert.Contains("public string FloatText() => (-0F).ToString();", text);
+        Assert.DoesNotContain("--", text);
+
+        // The exact double spelling of -0 is not pinned here (#2224 may change it);
+        // only require that it stays parenthesized.
+        var root = CSharpSyntaxTree.ParseText(text).GetRoot();
+        var methods = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .ToDictionary(m => m.Identifier.Text);
+        var negatedDouble = Assert.IsType<PrefixUnaryExpressionSyntax>(methods["NegatedDouble"].ExpressionBody!.Expression);
+        Assert.IsType<ParenthesizedExpressionSyntax>(negatedDouble.Operand);
+        var doubleText = Assert.IsType<InvocationExpressionSyntax>(methods["DoubleText"].ExpressionBody!.Expression);
+        var receiver = Assert.IsType<MemberAccessExpressionSyntax>(doubleText.Expression);
+        Assert.IsType<ParenthesizedExpressionSyntax>(receiver.Expression);
+
+        AssertCompiles(text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_NegativeLiteralUnderCast_ParenthesizesAndCompiles()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public enum Color { Red = -1, Green = 0 }
+
+            public class Numbers
+            {
+                private const int IN = -1;
+
+                public Color Value() => (Color)IN;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "IN"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public Color Value() => (Color)(-1);", text);
+        AssertCompiles(text);
     }
 
     [SkippableFact]
@@ -893,6 +997,7 @@ public class InlineConstantOperationTests
         Assert.DoesNotContain(tree.GetRoot().DescendantNodes(),
             n => n.IsKind(SyntaxKind.PreDecrementExpression)
               || n.IsKind(SyntaxKind.PostDecrementExpression));
+        AssertCompiles(text);
     }
 
     #endregion
@@ -2439,4 +2544,18 @@ public class InlineConstantOperationTests
     }
 
     #endregion
+
+    private static void AssertCompiles(string source)
+    {
+        var compilation = CSharpCompilation.Create(
+                "InlineConstantCompileTest",
+                new[] { CSharpSyntaxTree.ParseText(source) },
+                new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) },
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Inlined source did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
+    }
 }

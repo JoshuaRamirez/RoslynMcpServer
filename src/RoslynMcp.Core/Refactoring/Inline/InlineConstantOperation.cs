@@ -999,6 +999,8 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 prefix.Operand == original,
             BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.SubtractExpression) =>
                 binary.Right == original,
+            // `(Color)X` with a negative literal would print `(Color)-1`, which parses as `Color - 1`.
+            CastExpressionSyntax cast => cast.Expression == original,
             _ => false
         };
     }
@@ -1018,8 +1020,9 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         {
             int value => value < 0,
             long value => value < 0,
-            float value => value < 0,
-            double value => value < 0,
+            // IsNegative (not `< 0`) so negative zero (-0F, -0) is treated as negative too.
+            float value => float.IsNegative(value),
+            double value => double.IsNegative(value),
             decimal value => decimal.IsNegative(value),
             _ => false
         };
