@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Contracts.Predicates;
 using RoslynMcp.Core.Query;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
@@ -15,7 +16,9 @@ using RoslynMcp.Core.Refactoring.Inline;
 using RoslynMcp.Core.Refactoring.Organize;
 using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Refactoring.Signature;
+using RoslynMcp.Core.Transactions;
 using RoslynMcp.Core.Workspace;
+using SolutionTransactionRequest = RoslynMcp.Contracts.Transactions.SolutionTransactionRequest;
 
 namespace RoslynMcp.Cli;
 
@@ -330,6 +333,30 @@ public sealed class ToolRegistry
                     "Diagnose is handled directly in Program.cs, not via generic dispatch.");
             },
             requiresWorkspace: false);
+
+        // ── Layer 5 Action Algebra (2) ───────────────────────────────
+        r.RegisterManual("transaction",
+            "Execute an atomic multi-step SolutionTransaction pipeline across the solution with previewDiffOnly and rollbackOnCompilationErrors",
+            typeof(SolutionTransactionRequest), "Refactoring",
+            async (ctx, json, ct) =>
+            {
+                var req = JsonSerializer.Deserialize<SolutionTransactionRequest>(json, JsonOpts)!;
+                using var sessionManager = new SolutionSessionManager();
+                var key = string.IsNullOrWhiteSpace(req.SolutionPath)
+                    ? (ctx!.LoadedPath ?? "cli-solution")
+                    : req.SolutionPath;
+                var session = sessionManager.RegisterInMemorySession(key, ctx!.Solution);
+                return await SolutionTransactionEngine.ExecuteAsync(session, req, persistToDisk: !req.PreviewDiffOnly, ct);
+            });
+
+        r.RegisterManual("query-symbols",
+            "Evaluate a composable SymbolPredicate AST across the solution in a single pass",
+            typeof(QuerySymbolsRequest), "Query",
+            async (ctx, json, ct) =>
+            {
+                var req = JsonSerializer.Deserialize<QuerySymbolsRequest>(json, JsonOpts)!;
+                return await SymbolPredicateEvaluator.EvaluateAsync(ctx!.Solution, req.Predicate, req.MaxResults, ct);
+            });
 
         return r;
     }

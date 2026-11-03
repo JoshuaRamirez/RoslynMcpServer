@@ -13,6 +13,7 @@ public sealed class McpServerHost : IAsyncDisposable
 {
     private readonly StdioTransport _transport;
     private readonly ToolRegistry _toolRegistry;
+    private readonly SolutionSessionManager _sessionManager;
     private readonly JsonSerializerOptions _jsonOptions;
 
     /// <summary>
@@ -23,6 +24,7 @@ public sealed class McpServerHost : IAsyncDisposable
     {
         _transport = new StdioTransport();
         _toolRegistry = new ToolRegistry();
+        _sessionManager = new SolutionSessionManager(workspaceProvider);
 
         // Register tools
         _toolRegistry.Register(new MoveTypeToFileTool(workspaceProvider));
@@ -107,6 +109,10 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new ConvertTupleToStructTool(workspaceProvider));
         _toolRegistry.Register(new ConvertToPatternMatchingTool(workspaceProvider));
         _toolRegistry.Register(new ConvertToInterpolatedStringTool(workspaceProvider));
+
+        // Layer 5 Action Algebra Tools (v0.16.0)
+        _toolRegistry.Register(new RoslynTransactionTool(_sessionManager));
+        _toolRegistry.Register(new RoslynQuerySymbolsTool(_sessionManager));
 
         _jsonOptions = new JsonSerializerOptions
         {
@@ -279,6 +285,7 @@ public sealed class McpServerHost : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        _sessionManager.Dispose();
         _transport.Dispose();
         await Task.CompletedTask;
     }
