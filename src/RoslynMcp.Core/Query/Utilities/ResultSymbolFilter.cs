@@ -5,7 +5,7 @@ namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
 /// The optional <c>namespaceFilter</c> / <c>accessibilityFilter</c> / <c>kindFilter</c> / <c>nameFilter</c> /
-/// <c>staticFilter</c> / <c>abstractFilter</c> (and, for <c>search_symbols</c> only, <c>sealedFilter</c>) combination that <c>find_implementations</c>,
+/// <c>staticFilter</c> / <c>abstractFilter</c> (and, for <c>search_symbols</c> and <c>get_symbol_info</c> only, <c>sealedFilter</c>) combination that <c>find_implementations</c>,
 /// <c>get_type_hierarchy</c>, <c>get_symbol_info</c>, <c>find_callers</c> and <c>search_symbols</c> apply to each
 /// returned symbol (an implementation, a derived type, a member of the target type, a call site's calling symbol,
 /// or a found declaration) before <c>maxResults</c>. <c>search_symbols</c> passes no nameFilter (its query is the
