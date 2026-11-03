@@ -1001,6 +1001,10 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 binary.Right == original,
             // `(Color)X` with a negative literal would print `(Color)-1`, which parses as `Color - 1`.
             CastExpressionSyntax cast => cast.Expression == original,
+            // `X!.ToString()` with a negative literal would print `-0.00M!.ToString()`, so unary minus
+            // binds to the string result (CS0023); keep the literal grouped as `(-0.00M)!`.
+            PostfixUnaryExpressionSyntax postfix when postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression) =>
+                postfix.Operand == original,
             _ => false
         };
     }

@@ -949,6 +949,43 @@ public class InlineConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task InlineConstant_NegativeLiteralBeforeNullForgiving_ParenthesizesAndCompiles()
+    {
+        const string source = """
+            #nullable enable
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const decimal NoRefund = -0.00m;
+                private const int Offset = -5;
+
+                public string Text() => NoRefund!.ToString();
+
+                public string IntText() => Offset!.ToString();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        foreach (var name in new[] { "NoRefund", "Offset" })
+        {
+            var inlined = await operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = name
+            });
+            Assert.True(inlined.Success);
+        }
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public string Text() => (-0.00M)!.ToString();", text);
+        Assert.Contains("public string IntText() => (-5)!.ToString();", text);
+        AssertCompiles(text);
+    }
+
+    [SkippableFact]
     public async Task InlineConstant_NegativeDecimalUnderMinus_ParenthesizesAndCompiles()
     {
         const string source = """
