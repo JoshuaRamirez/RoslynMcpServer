@@ -1550,6 +1550,96 @@ public class GenerateMethodStubOperationTests
         Assert.Contains("private int Mystery()", updated);
     }
 
+    [SkippableFact]
+    public async Task GenerateMethodStub_ExplicitVoidReturnType_ConditionalAccessCall_GeneratesVoidStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class C
+            {
+            }
+
+            public static class P
+            {
+                public static void Main()
+                {
+                    C? c = new C();
+                    c?.Run();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Run");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ReturnType = "void"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public void Run()", updated);
+        AssertCompiles("#nullable enable\n" + updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ExplicitVoidReturnType_ActionLambdaCall_GeneratesVoidStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public static class P
+            {
+                public static void Main()
+                {
+                    System.Action a = () => Helper();
+                    a();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Helper");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ReturnType = "void",
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static void Helper()", updated);
+        AssertCompiles(updated);
+    }
+
+    [Theory]
+    [InlineData("void")]
+    [InlineData(" void ")]
+    public void GenerateMethodStub_IsValidTypeName_AcceptsVoid(string typeName)
+    {
+        Assert.True(GenerateMethodStubOperation.IsValidTypeName(typeName));
+    }
+
+    [Theory]
+    [InlineData("void[]")]
+    [InlineData("void?")]
+    [InlineData("List<void>")]
+    public void GenerateMethodStub_IsValidTypeName_RejectsVoidCompositions(string typeName)
+    {
+        Assert.False(GenerateMethodStubOperation.IsValidTypeName(typeName));
+    }
+
     #endregion
 
     #region Review Fold
