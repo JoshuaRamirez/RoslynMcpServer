@@ -595,9 +595,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 SyntaxKind.NumericLiteralExpression,
                 SyntaxFactory.Literal(System.Convert.ToInt64(value))),
 
-            SpecialType.System_Single => SyntaxFactory.LiteralExpression(
-                SyntaxKind.NumericLiteralExpression,
-                SyntaxFactory.Literal(System.Convert.ToSingle(value))),
+            SpecialType.System_Single => CreateSingleLiteral(System.Convert.ToSingle(value)),
 
             SpecialType.System_Double => CreateDoubleLiteral(System.Convert.ToDouble(value)),
 
@@ -620,8 +618,17 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         };
     }
 
-    private static LiteralExpressionSyntax CreateDoubleLiteral(double value)
+    private static ExpressionSyntax CreateDoubleLiteral(double value)
     {
+        // SyntaxFactory.Literal(double.NaN / ±Infinity) emits identifier-like token text
+        // ("NaN", "Infinity", "-Infinity") that is not legal C# (#1985). Prefer the named members.
+        if (double.IsNaN(value))
+            return CreateFloatingMemberAccess(SyntaxKind.DoubleKeyword, "NaN");
+        if (double.IsPositiveInfinity(value))
+            return CreateFloatingMemberAccess(SyntaxKind.DoubleKeyword, "PositiveInfinity");
+        if (double.IsNegativeInfinity(value))
+            return CreateFloatingMemberAccess(SyntaxKind.DoubleKeyword, "NegativeInfinity");
+
         var token = SyntaxFactory.Literal(value);
 
         // SyntaxFactory.Literal(double) prints integral values with no decimal point, exponent or
@@ -632,6 +639,32 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             token = SyntaxFactory.Literal(token.Text + ".0", value);
 
         return SyntaxFactory.LiteralExpression(SyntaxKind.NumericLiteralExpression, token);
+    }
+
+    private static ExpressionSyntax CreateSingleLiteral(float value)
+    {
+        // Same non-finite issue as double: Literal(float.NaN / ±Infinity) emits "NaNF" /
+        // "InfinityF" / "-InfinityF", which are not legal C# tokens (#1985).
+        if (float.IsNaN(value))
+            return CreateFloatingMemberAccess(SyntaxKind.FloatKeyword, "NaN");
+        if (float.IsPositiveInfinity(value))
+            return CreateFloatingMemberAccess(SyntaxKind.FloatKeyword, "PositiveInfinity");
+        if (float.IsNegativeInfinity(value))
+            return CreateFloatingMemberAccess(SyntaxKind.FloatKeyword, "NegativeInfinity");
+
+        return SyntaxFactory.LiteralExpression(
+            SyntaxKind.NumericLiteralExpression,
+            SyntaxFactory.Literal(value));
+    }
+
+    private static MemberAccessExpressionSyntax CreateFloatingMemberAccess(
+        SyntaxKind typeKeyword,
+        string memberName)
+    {
+        return SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            SyntaxFactory.PredefinedType(SyntaxFactory.Token(typeKeyword)),
+            SyntaxFactory.IdentifierName(memberName));
     }
 
     private static bool IsBareIntegerText(string text)
