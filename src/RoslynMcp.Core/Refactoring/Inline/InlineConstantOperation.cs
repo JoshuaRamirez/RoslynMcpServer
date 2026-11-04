@@ -599,13 +599,9 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 SyntaxKind.NumericLiteralExpression,
                 SyntaxFactory.Literal(System.Convert.ToSingle(value))),
 
-            SpecialType.System_Double => SyntaxFactory.LiteralExpression(
-                SyntaxKind.NumericLiteralExpression,
-                SyntaxFactory.Literal(System.Convert.ToDouble(value))),
+            SpecialType.System_Double => CreateDoubleLiteral(System.Convert.ToDouble(value)),
 
-            SpecialType.System_Decimal => SyntaxFactory.LiteralExpression(
-                SyntaxKind.NumericLiteralExpression,
-                SyntaxFactory.Literal(System.Convert.ToDecimal(value))),
+            SpecialType.System_Decimal => CreateDecimalLiteral(System.Convert.ToDecimal(value)),
 
             SpecialType.System_String => SyntaxFactory.LiteralExpression(
                 SyntaxKind.StringLiteralExpression,
@@ -622,6 +618,47 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 ErrorCodes.NotCompileTimeConstant,
                 $"Cannot inline constant of type {type}")
         };
+    }
+
+    private static LiteralExpressionSyntax CreateDoubleLiteral(double value)
+    {
+        var token = SyntaxFactory.Literal(value);
+
+        // SyntaxFactory.Literal(double) prints integral values with no decimal point, exponent or
+        // suffix (2.0 -> "2", 1e10 -> "10000000000", -0.0 -> "-0"), which C# reparses as an int or
+        // long literal: integer division, a different overload, CS0266, and a lost negative-zero sign
+        // (#2224, #3423). Append ".0" so the pasted token is always a double and round-trips exactly.
+        if (IsBareIntegerText(token.Text))
+            token = SyntaxFactory.Literal(token.Text + ".0", value);
+
+        return SyntaxFactory.LiteralExpression(SyntaxKind.NumericLiteralExpression, token);
+    }
+
+    private static bool IsBareIntegerText(string text)
+    {
+        var start = text.StartsWith('-') ? 1 : 0;
+        if (text.Length == start)
+            return false;
+
+        for (var i = start; i < text.Length; i++)
+        {
+            if (!char.IsAsciiDigit(text[i]))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static LiteralExpressionSyntax CreateDecimalLiteral(decimal value)
+    {
+        var token = SyntaxFactory.Literal(value);
+
+        // decimal.ToString never prints a sign for zero, so SyntaxFactory.Literal(-0.00m)
+        // yields "0.00M" and silently drops the sign bit (#3423). Keep it explicit.
+        if (value == 0m && decimal.IsNegative(value) && !token.Text.StartsWith('-'))
+            token = SyntaxFactory.Literal("-" + token.Text, value);
+
+        return SyntaxFactory.LiteralExpression(SyntaxKind.NumericLiteralExpression, token);
     }
 
     private static bool TryGetConstantValue(
@@ -979,13 +1016,42 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         if (!IsNegativeNumeric(replacement))
             return false;
 
+        // `x-X switch { ... }` or `x-X * 2` with a negative literal would print `x--1 ...`, gluing the
+        // literal's sign onto a preceding `-` with no whitespace between them (reparses as a decrement).
+        if (GluesToPrecedingMinus(original))
+            return true;
+
         return original.Parent switch
         {
+            // `-1 switch { ... }` already parses as `(-1) switch`, but keep the governing expression
+            // explicitly grouped as `(-1) switch` so it never depends on the surrounding tokens.
+            SwitchExpressionSyntax switchExpression => switchExpression.GoverningExpression == original,
             MemberAccessExpressionSyntax memberAccess => memberAccess.Expression == original,
             ElementAccessExpressionSyntax elementAccess => elementAccess.Expression == original,
             ConditionalAccessExpressionSyntax conditional => conditional.Expression == original,
+            // `-X` or `a-X` with a negative literal would print `--5` / `a--5`, which reparses as a decrement.
+            PrefixUnaryExpressionSyntax prefix when prefix.IsKind(SyntaxKind.UnaryMinusExpression) =>
+                prefix.Operand == original,
+            BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.SubtractExpression) =>
+                binary.Right == original,
+            // `(Color)X` with a negative literal would print `(Color)-1`, which parses as `Color - 1`.
+            CastExpressionSyntax cast => cast.Expression == original,
+            // `X!.ToString()` with a negative literal would print `-0.00M!.ToString()`, so unary minus
+            // binds to the string result (CS0023); keep the literal grouped as `(-0.00M)!`.
+            PostfixUnaryExpressionSyntax postfix when postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression) =>
+                postfix.Operand == original,
             _ => false
         };
+    }
+
+    private static bool GluesToPrecedingMinus(ExpressionSyntax original)
+    {
+        if (original.HasLeadingTrivia)
+            return false;
+
+        var previous = original.GetFirstToken().GetPreviousToken();
+        return !previous.HasTrailingTrivia &&
+            (previous.IsKind(SyntaxKind.MinusToken) || previous.IsKind(SyntaxKind.MinusMinusToken));
     }
 
     private static bool IsNegativeNumeric(ExpressionSyntax expression)
@@ -1003,9 +1069,10 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         {
             int value => value < 0,
             long value => value < 0,
-            float value => value < 0,
-            double value => value < 0,
-            decimal value => value < 0,
+            // IsNegative (not `< 0`) so negative zero (-0F, -0) is treated as negative too.
+            float value => float.IsNegative(value),
+            double value => double.IsNegative(value),
+            decimal value => decimal.IsNegative(value),
             _ => false
         };
     }
