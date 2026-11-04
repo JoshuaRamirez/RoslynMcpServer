@@ -599,9 +599,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 SyntaxKind.NumericLiteralExpression,
                 SyntaxFactory.Literal(System.Convert.ToSingle(value))),
 
-            SpecialType.System_Double => SyntaxFactory.LiteralExpression(
-                SyntaxKind.NumericLiteralExpression,
-                SyntaxFactory.Literal(System.Convert.ToDouble(value))),
+            SpecialType.System_Double => CreateDoubleLiteral(System.Convert.ToDouble(value)),
 
             SpecialType.System_Decimal => CreateDecimalLiteral(System.Convert.ToDecimal(value)),
 
@@ -620,6 +618,35 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 ErrorCodes.NotCompileTimeConstant,
                 $"Cannot inline constant of type {type}")
         };
+    }
+
+    private static LiteralExpressionSyntax CreateDoubleLiteral(double value)
+    {
+        var token = SyntaxFactory.Literal(value);
+
+        // SyntaxFactory.Literal(double) prints integral values with no decimal point, exponent or
+        // suffix (2.0 -> "2", 1e10 -> "10000000000", -0.0 -> "-0"), which C# reparses as an int or
+        // long literal: integer division, a different overload, CS0266, and a lost negative-zero sign
+        // (#2224, #3423). Append ".0" so the pasted token is always a double and round-trips exactly.
+        if (IsBareIntegerText(token.Text))
+            token = SyntaxFactory.Literal(token.Text + ".0", value);
+
+        return SyntaxFactory.LiteralExpression(SyntaxKind.NumericLiteralExpression, token);
+    }
+
+    private static bool IsBareIntegerText(string text)
+    {
+        var start = text.StartsWith('-') ? 1 : 0;
+        if (text.Length == start)
+            return false;
+
+        for (var i = start; i < text.Length; i++)
+        {
+            if (!char.IsAsciiDigit(text[i]))
+                return false;
+        }
+
+        return true;
     }
 
     private static LiteralExpressionSyntax CreateDecimalLiteral(decimal value)

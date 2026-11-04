@@ -899,22 +899,186 @@ public class InlineConstantOperationTests
         }
 
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        AssertCompiles(text);
+        AssertSameResults(source, text,
+            ("NegatedDouble", Array.Empty<object>()),
+            ("DoubleText", Array.Empty<object>()),
+            ("NegatedFloat", Array.Empty<object>()),
+            ("FloatText", Array.Empty<object>()));
+
+        Assert.Contains("public double NegatedDouble() => -(-0.0);", text);
+        Assert.Contains("public string DoubleText() => (-0.0).ToString();", text);
         Assert.Contains("public float NegatedFloat() => -(-0F);", text);
         Assert.Contains("public string FloatText() => (-0F).ToString();", text);
         Assert.DoesNotContain("--", text);
+    }
 
-        // The exact double spelling of -0 is not pinned here (#2224 may change it);
-        // only require that it stays parenthesized.
-        var root = CSharpSyntaxTree.ParseText(text).GetRoot();
-        var methods = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
-            .ToDictionary(m => m.Identifier.Text);
-        var negatedDouble = Assert.IsType<PrefixUnaryExpressionSyntax>(methods["NegatedDouble"].ExpressionBody!.Expression);
-        Assert.IsType<ParenthesizedExpressionSyntax>(negatedDouble.Operand);
-        var doubleText = Assert.IsType<InvocationExpressionSyntax>(methods["DoubleText"].ExpressionBody!.Expression);
-        var receiver = Assert.IsType<MemberAccessExpressionSyntax>(doubleText.Expression);
-        Assert.IsType<ParenthesizedExpressionSyntax>(receiver.Expression);
+    [SkippableFact]
+    public async Task InlineConstant_DoubleNegativeZero_StaysDoubleAndKeepsSign()
+    {
+        // PM review HOLD on #3431: SyntaxFactory.Literal(-0.0) spells "-0", an int literal, so the
+        // inlined code lost the double type (CS0266 / CS0121) and the sign of zero (-Infinity -> Infinity).
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const double DZ = -0.0;
+
+                public string Governing() => DZ switch { 0.0 => "zero", _ => "other" };
+
+                public string Overload() => S(DZ);
+
+                public double Divide() => 1.0 / DZ;
+
+                public double Negated() => -DZ;
+
+                public string Text() => DZ.ToString();
+
+                public long Bits() => System.BitConverter.DoubleToInt64Bits(DZ);
+
+                public bool IsNegative() => double.IsNegative(DZ);
+
+                private static string S(float value) => "float";
+
+                private static string S(double value) => "double";
+
+                private static string S(decimal value) => "decimal";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "DZ"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
 
         AssertCompiles(text);
+        AssertSameResults(source, text,
+            ("Governing", Array.Empty<object>()),
+            ("Overload", Array.Empty<object>()),
+            ("Divide", Array.Empty<object>()),
+            ("Negated", Array.Empty<object>()),
+            ("Text", Array.Empty<object>()),
+            ("Bits", Array.Empty<object>()),
+            ("IsNegative", Array.Empty<object>()));
+
+        Assert.Contains("public string Governing() => (-0.0) switch { 0.0 => \"zero\", _ => \"other\" };", text);
+        Assert.Contains("public string Overload() => S(-0.0);", text);
+        Assert.Contains("public double Divide() => 1.0 / -0.0;", text);
+        Assert.Contains("public double Negated() => -(-0.0);", text);
+        Assert.Contains("public string Text() => (-0.0).ToString();", text);
+        Assert.Contains("public long Bits() => System.BitConverter.DoubleToInt64Bits(-0.0);", text);
+        Assert.DoesNotContain("--", text);
+    }
+
+    private const string WholeNumberDoubleSource = """
+        namespace TestApp;
+
+        public class Numbers
+        {
+            private const double Divisor = 2;
+            private const double Ratio = 3.0;
+            private const double Start = 1.0;
+            private const double Big = 1e10;
+            private const double Half = 1.5;
+            private const double Huge = 1e20;
+            private const double Tiny = 1e-5;
+            private const double Negative = -4.0;
+
+            public double Divide(int total) => total / Divisor;
+
+            public string Overload() => Describe(Ratio);
+
+            public double Accumulate()
+            {
+                var x = Start;
+                x += 0.5;
+                return x;
+            }
+
+            public double BigDivide() => Big / 3;
+
+            public double HalfValue() => Half;
+
+            public double HugeValue() => Huge;
+
+            public double TinyValue() => Tiny;
+
+            public double NegativeDivide(int total) => total / Negative;
+
+            private static string Describe(int value) => "int " + value;
+
+            private static string Describe(double value) => "double " + value;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task InlineConstant_WholeNumberDouble_StaysDouble()
+    {
+        // #2224: SyntaxFactory.Literal(double) spells integral values as int/long literals
+        // ("2", "3", "1", "10000000000"), silently switching to integer division or an int overload.
+        await using var workspace = await TempWorkspace.CreateAsync(WholeNumberDoubleSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        foreach (var name in new[] { "Divisor", "Ratio", "Start", "Big", "Half", "Huge", "Tiny", "Negative" })
+        {
+            var inlined = await operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = name
+            });
+            Assert.True(inlined.Success);
+        }
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        AssertWholeNumberDoublesInlined(text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_WholeNumberDouble_AllFiles_StaysDouble()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WholeNumberDoubleSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        AssertWholeNumberDoublesInlined(text);
+    }
+
+    private static void AssertWholeNumberDoublesInlined(string text)
+    {
+        AssertCompiles(text);
+        AssertSameResults(WholeNumberDoubleSource, text,
+            ("Divide", new object[] { 7 }),
+            ("Overload", Array.Empty<object>()),
+            ("Accumulate", Array.Empty<object>()),
+            ("BigDivide", Array.Empty<object>()),
+            ("HalfValue", Array.Empty<object>()),
+            ("HugeValue", Array.Empty<object>()),
+            ("TinyValue", Array.Empty<object>()),
+            ("NegativeDivide", new object[] { 7 }));
+
+        Assert.Contains("public double Divide(int total) => total / 2.0;", text);
+        Assert.Contains("public string Overload() => Describe(3.0);", text);
+        Assert.Contains("var x = 1.0;", text);
+        Assert.Contains("public double BigDivide() => 10000000000.0 / 3;", text);
+        Assert.Contains("public double HalfValue() => 1.5;", text);
+        Assert.Contains("public double HugeValue() => 1E+20;", text);
+        Assert.Contains("public double TinyValue() => 1E-05;", text);
+        Assert.Contains("public double NegativeDivide(int total) => total / -4.0;", text);
     }
 
     [SkippableFact]
@@ -2763,6 +2927,8 @@ public class InlineConstantOperationTests
                 Convert.ToString(actual, System.Globalization.CultureInfo.InvariantCulture));
             if (expected is float f)
                 Assert.Equal(float.IsNegative(f), float.IsNegative((float)actual!));
+            if (expected is double dbl)
+                Assert.Equal(double.IsNegative(dbl), double.IsNegative((double)actual!));
             if (expected is decimal d)
                 Assert.Equal(decimal.IsNegative(d), decimal.IsNegative((decimal)actual!));
         }
