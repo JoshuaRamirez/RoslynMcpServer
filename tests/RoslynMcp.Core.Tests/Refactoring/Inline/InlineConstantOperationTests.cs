@@ -979,6 +979,262 @@ public class InlineConstantOperationTests
         Assert.DoesNotContain("--", text);
     }
 
+
+    [SkippableFact]
+    public async Task InlineConstant_DoubleNaN_EmitsDoubleNaNMemberAccess()
+    {
+        // #1985: SyntaxFactory.Literal(double.NaN) emits token text "NaN" → CS0103.
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const double Nan = double.NaN;
+
+                public bool IsNan() => double.IsNaN(Nan);
+
+                public string Text() => Nan.ToString();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "Nan"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        AssertCompiles(text);
+        AssertSameResults(source, text,
+            ("IsNan", Array.Empty<object>()),
+            ("Text", Array.Empty<object>()));
+
+        Assert.Contains("public bool IsNan() => double.IsNaN(double.NaN);", text);
+        Assert.Contains("public string Text() => double.NaN.ToString();", text);
+        Assert.DoesNotContain("IsNaN(NaN)", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_NegatedDoubleNaN_KeepsSameBits()
+    {
+        // #1985 review: C# constant folding normalizes every NaN constant (`-double.NaN`, `0.0/0.0`,
+        // `Inf - Inf`) to the same bits as double.NaN, so emitting double.NaN keeps
+        // BitConverter.DoubleToInt64Bits and double.IsNegative unchanged.
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const double NegNan = -double.NaN;
+
+                public long Bits() => System.BitConverter.DoubleToInt64Bits(NegNan);
+                public bool Neg() => double.IsNegative(NegNan);
+                public long Diff() => System.BitConverter.DoubleToInt64Bits(0.0-NegNan);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var result = await new InlineConstantOperation(workspace.Context).ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "NegNan"
+        });
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        AssertCompiles(text);
+        AssertSameResults(source, text,
+            ("Bits", Array.Empty<object>()),
+            ("Neg", Array.Empty<object>()),
+            ("Diff", Array.Empty<object>()));
+
+        Assert.Contains("DoubleToInt64Bits(double.NaN)", text);
+        Assert.Contains("double.IsNegative(double.NaN)", text);
+        Assert.Contains("0.0-double.NaN", text);
+        Assert.DoesNotContain("--", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_NegatedFloatNaN_KeepsSameBits()
+    {
+        // #1985 review: same as the double case; `-float.NaN` folds to the bits of float.NaN.
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const float FNegNan = -float.NaN;
+
+                public int Bits() => System.BitConverter.SingleToInt32Bits(FNegNan);
+                public bool Neg() => float.IsNegative(FNegNan);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var result = await new InlineConstantOperation(workspace.Context).ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "FNegNan"
+        });
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        AssertCompiles(text);
+        AssertSameResults(source, text,
+            ("Bits", Array.Empty<object>()),
+            ("Neg", Array.Empty<object>()));
+
+        Assert.Contains("SingleToInt32Bits(float.NaN)", text);
+        Assert.Contains("float.IsNegative(float.NaN)", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_DoublePositiveInfinity_EmitsMemberAccess()
+    {
+        // #1985: SyntaxFactory.Literal(double.PositiveInfinity) emits "Infinity" → CS0103.
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const double PosInf = double.PositiveInfinity;
+
+                public bool IsPosInf() => double.IsPositiveInfinity(PosInf);
+
+                public double Reciprocal() => 1.0 / PosInf;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "PosInf"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        AssertCompiles(text);
+        AssertSameResults(source, text,
+            ("IsPosInf", Array.Empty<object>()),
+            ("Reciprocal", Array.Empty<object>()));
+
+        Assert.Contains("public bool IsPosInf() => double.IsPositiveInfinity(double.PositiveInfinity);", text);
+        Assert.Contains("public double Reciprocal() => 1.0 / double.PositiveInfinity;", text);
+        Assert.DoesNotContain("IsPositiveInfinity(Infinity)", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_FloatNegativeInfinity_EmitsMemberAccess()
+    {
+        // #1985: SyntaxFactory.Literal(float.NegativeInfinity) emits "-InfinityF" → CS0103.
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const float NegInf = float.NegativeInfinity;
+
+                public bool IsNegInf() => float.IsNegativeInfinity(NegInf);
+
+                public string Text() => NegInf.ToString();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "NegInf"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        AssertCompiles(text);
+        AssertSameResults(source, text,
+            ("IsNegInf", Array.Empty<object>()),
+            ("Text", Array.Empty<object>()));
+
+        Assert.Contains("public bool IsNegInf() => float.IsNegativeInfinity(float.NegativeInfinity);", text);
+        Assert.Contains("public string Text() => float.NegativeInfinity.ToString();", text);
+        Assert.DoesNotContain("InfinityF", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_NonFiniteFloating_AllFiles_EmitsMemberAccess()
+    {
+        // #1985: allFiles path uses the same GetLiteralRepresentation as single-site.
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const double Nan = double.NaN;
+                private const double PosInf = double.PositiveInfinity;
+                private const double NegInf = double.NegativeInfinity;
+                private const float FNan = float.NaN;
+                private const float FPosInf = float.PositiveInfinity;
+                private const float FNegInf = float.NegativeInfinity;
+                private const double Finite = 1.5;
+                private const float FFinite = -2.5f;
+
+                public bool IsNan() => double.IsNaN(Nan);
+                public bool IsPosInf() => double.IsPositiveInfinity(PosInf);
+                public bool IsNegInf() => double.IsNegativeInfinity(NegInf);
+                public bool IsFNan() => float.IsNaN(FNan);
+                public bool IsFPosInf() => float.IsPositiveInfinity(FPosInf);
+                public bool IsFNegInf() => float.IsNegativeInfinity(FNegInf);
+                public double FiniteValue() => Finite;
+                public float FFiniteValue() => FFinite;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        AssertCompiles(text);
+        AssertSameResults(source, text,
+            ("IsNan", Array.Empty<object>()),
+            ("IsPosInf", Array.Empty<object>()),
+            ("IsNegInf", Array.Empty<object>()),
+            ("IsFNan", Array.Empty<object>()),
+            ("IsFPosInf", Array.Empty<object>()),
+            ("IsFNegInf", Array.Empty<object>()),
+            ("FiniteValue", Array.Empty<object>()),
+            ("FFiniteValue", Array.Empty<object>()));
+
+        Assert.Contains("public bool IsNan() => double.IsNaN(double.NaN);", text);
+        Assert.Contains("public bool IsPosInf() => double.IsPositiveInfinity(double.PositiveInfinity);", text);
+        Assert.Contains("public bool IsNegInf() => double.IsNegativeInfinity(double.NegativeInfinity);", text);
+        Assert.Contains("public bool IsFNan() => float.IsNaN(float.NaN);", text);
+        Assert.Contains("public bool IsFPosInf() => float.IsPositiveInfinity(float.PositiveInfinity);", text);
+        Assert.Contains("public bool IsFNegInf() => float.IsNegativeInfinity(float.NegativeInfinity);", text);
+        Assert.Contains("public double FiniteValue() => 1.5;", text);
+        Assert.Contains("public float FFiniteValue() => -2.5F;", text);
+        Assert.DoesNotContain("IsNaN(NaN)", text);
+        Assert.DoesNotContain("IsPositiveInfinity(Infinity)", text);
+        Assert.DoesNotContain("InfinityF", text);
+    }
+
     private const string WholeNumberDoubleSource = """
         namespace TestApp;
 
