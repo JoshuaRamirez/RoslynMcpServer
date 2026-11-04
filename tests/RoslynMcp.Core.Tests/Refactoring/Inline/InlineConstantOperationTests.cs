@@ -1037,6 +1037,153 @@ public class InlineConstantOperationTests
         AssertCompiles(text);
     }
 
+    [SkippableFact]
+    public async Task InlineConstant_NegativeLiteralAsSwitchGoverningExpression_KeepsMeaningAndCompiles()
+    {
+        // Copilot review on #3431: a negative literal inlined as a switch expression's governing
+        // expression must not change meaning. Roslyn parses `-1 switch { ... }` as `(-1) switch`
+        // (unary minus binds tighter than `switch`), and `x * N switch { ... }` as `x * (N switch)`,
+        // so the governing expression stays the whole literal; the inliner still parenthesizes it
+        // (`(-1) switch`) so the grouping is explicit and never depends on neighbouring tokens.
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const decimal NoRefund = -0.00m;
+                private const int N = -1;
+                private const float FZ = -0f;
+
+                public string DecimalGoverning() => NoRefund switch { 0m => "zero", _ => "other" };
+
+                public decimal DecimalTimesSwitch(decimal x) => x * NoRefund switch { 0m => 2m, _ => 3m };
+
+                public string DecimalSwitchReceiver() => (NoRefund switch { 0m => 1.5m, _ => 2.5m }).ToString();
+
+                public int IntGoverning() => N switch { -1 => 10, 1 => 20, _ => 30 };
+
+                public int IntTimesSwitch(int x) => x * N switch { -1 => 2, _ => 3 };
+
+                public int IntMinusSwitch(int x) => x - N switch { -1 => 2, _ => 3 };
+
+                public int NegatedIntSwitch() => -N switch { 1 => 100, -1 => 200, _ => 300 };
+
+                public string IntSwitchReceiver() => (N switch { -1 => 7, _ => 8 }).ToString();
+
+                public bool FloatGoverning() => FZ switch { var f when float.IsNegative(f) => true, _ => false };
+
+                public float FloatTimesSwitch(float x) => x * FZ switch { 0f => 2f, _ => 3f };
+
+                public int NegatedFloatSwitch() => -FZ switch { var f when float.IsNegative(f) => 1, _ => 2 };
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        foreach (var name in new[] { "NoRefund", "N", "FZ" })
+        {
+            var inlined = await operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = name
+            });
+            Assert.True(inlined.Success);
+        }
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        // Compile and run both versions first so a failure reports meaning/compile breaks
+        // before exact-text differences.
+        AssertCompiles(text);
+        AssertSameResults(source, text,
+            ("DecimalGoverning", Array.Empty<object>()),
+            ("DecimalTimesSwitch", new object[] { 5m }),
+            ("DecimalSwitchReceiver", Array.Empty<object>()),
+            ("IntGoverning", Array.Empty<object>()),
+            ("IntTimesSwitch", new object[] { 5 }),
+            ("IntMinusSwitch", new object[] { 5 }),
+            ("NegatedIntSwitch", Array.Empty<object>()),
+            ("IntSwitchReceiver", Array.Empty<object>()),
+            ("FloatGoverning", Array.Empty<object>()),
+            ("FloatTimesSwitch", new object[] { 5f }),
+            ("NegatedFloatSwitch", Array.Empty<object>()));
+
+        Assert.Contains("public string DecimalGoverning() => (-0.00M) switch { 0m => \"zero\", _ => \"other\" };", text);
+        Assert.Contains("public decimal DecimalTimesSwitch(decimal x) => x * (-0.00M) switch { 0m => 2m, _ => 3m };", text);
+        Assert.Contains("public string DecimalSwitchReceiver() => ((-0.00M) switch { 0m => 1.5m, _ => 2.5m }).ToString();", text);
+        Assert.Contains("public int IntGoverning() => (-1) switch { -1 => 10, 1 => 20, _ => 30 };", text);
+        Assert.Contains("public int IntTimesSwitch(int x) => x * (-1) switch { -1 => 2, _ => 3 };", text);
+        Assert.Contains("public int IntMinusSwitch(int x) => x - (-1) switch { -1 => 2, _ => 3 };", text);
+        Assert.Contains("public int NegatedIntSwitch() => -(-1) switch { 1 => 100, -1 => 200, _ => 300 };", text);
+        Assert.Contains("public string IntSwitchReceiver() => ((-1) switch { -1 => 7, _ => 8 }).ToString();", text);
+        Assert.Contains("public bool FloatGoverning() => (-0F) switch {", text);
+        Assert.Contains("public float FloatTimesSwitch(float x) => x * (-0F) switch { 0f => 2f, _ => 3f };", text);
+        Assert.Contains("public int NegatedFloatSwitch() => -(-0F) switch {", text);
+        Assert.DoesNotContain("--", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_NegativeLiteralAfterUnspacedMinus_ParenthesizesAndCompiles()
+    {
+        // `x-N switch { ... }` parses as `x - (N switch { ... })`, so N's parent is the switch, not the
+        // subtraction; a bare negative literal would print `x--1 switch`, which reparses as `x--`.
+        // The same token-gluing applies when N leads any operand after an unspaced `-` (`x-N * 2`).
+        const string source = """
+            namespace TestApp;
+
+            public class Numbers
+            {
+                private const decimal NoRefund = -0.00m;
+                private const int N = -1;
+                private const float FZ = -0f;
+
+                public decimal DecimalUnspaced(decimal x) => x-NoRefund switch { 0m => 2m, _ => 3m };
+
+                public int IntUnspaced(int x) => x-N switch { -1 => 2, _ => 3 };
+
+                public float FloatUnspaced(float x) => x-FZ switch { 0f => 2f, _ => 3f };
+
+                public int IntUnspacedTimes(int x) => x-N * 2;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        foreach (var name in new[] { "NoRefund", "N", "FZ" })
+        {
+            var inlined = await operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = name
+            });
+            Assert.True(inlined.Success);
+        }
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        // Compile and run both versions first so a failure reports meaning/compile breaks
+        // before exact-text differences.
+        AssertCompiles(text);
+        AssertSameResults(source, text,
+            ("DecimalUnspaced", new object[] { 5m }),
+            ("IntUnspaced", new object[] { 5 }),
+            ("FloatUnspaced", new object[] { 5f }),
+            ("IntUnspacedTimes", new object[] { 5 }));
+
+        Assert.Contains("public decimal DecimalUnspaced(decimal x) => x-(-0.00M) switch { 0m => 2m, _ => 3m };", text);
+        Assert.Contains("public int IntUnspaced(int x) => x-(-1) switch { -1 => 2, _ => 3 };", text);
+        Assert.Contains("public float FloatUnspaced(float x) => x-(-0F) switch { 0f => 2f, _ => 3f };", text);
+        Assert.Contains("public int IntUnspacedTimes(int x) => x-(-1) * 2;", text);
+        Assert.DoesNotContain("--", text);
+
+        var tree = CSharpSyntaxTree.ParseText(text);
+        Assert.DoesNotContain(tree.GetRoot().DescendantNodes(),
+            n => n.IsKind(SyntaxKind.PreDecrementExpression)
+              || n.IsKind(SyntaxKind.PostDecrementExpression));
+    }
+
     #endregion
 
     #region Rejects
@@ -2594,5 +2741,43 @@ public class InlineConstantOperationTests
             .Select(d => d.ToString())
             .ToList();
         Assert.True(errors.Count == 0, "Inlined source did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
+    }
+
+    /// <summary>
+    /// Compiles the original and inlined sources, invokes each named instance method on
+    /// <c>TestApp.Numbers</c> in both, and asserts identical results (value and text).
+    /// </summary>
+    private static void AssertSameResults(string before, string after, params (string Method, object[] Args)[] calls)
+    {
+        var beforeType = EmitNumbers(before);
+        var afterType = EmitNumbers(after);
+        var beforeInstance = Activator.CreateInstance(beforeType)!;
+        var afterInstance = Activator.CreateInstance(afterType)!;
+        foreach (var (method, args) in calls)
+        {
+            var expected = beforeType.GetMethod(method)!.Invoke(beforeInstance, args);
+            var actual = afterType.GetMethod(method)!.Invoke(afterInstance, args);
+            Assert.True(Equals(expected, actual), $"{method}: expected {expected}, got {actual}");
+            Assert.Equal(
+                Convert.ToString(expected, System.Globalization.CultureInfo.InvariantCulture),
+                Convert.ToString(actual, System.Globalization.CultureInfo.InvariantCulture));
+            if (expected is float f)
+                Assert.Equal(float.IsNegative(f), float.IsNegative((float)actual!));
+            if (expected is decimal d)
+                Assert.Equal(decimal.IsNegative(d), decimal.IsNegative((decimal)actual!));
+        }
+    }
+
+    private static Type EmitNumbers(string source)
+    {
+        var compilation = CSharpCompilation.Create(
+                "InlineConstantExecTest_" + Guid.NewGuid().ToString("N"),
+                new[] { CSharpSyntaxTree.ParseText(source) },
+                new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) },
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        using var stream = new MemoryStream();
+        var emit = compilation.Emit(stream);
+        Assert.True(emit.Success, string.Join("\n", emit.Diagnostics) + "\n\n" + source);
+        return System.Reflection.Assembly.Load(stream.ToArray()).GetType("TestApp.Numbers")!;
     }
 }

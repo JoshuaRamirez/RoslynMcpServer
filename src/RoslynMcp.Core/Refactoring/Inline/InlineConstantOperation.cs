@@ -989,8 +989,16 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         if (!IsNegativeNumeric(replacement))
             return false;
 
+        // `x-X switch { ... }` or `x-X * 2` with a negative literal would print `x--1 ...`, gluing the
+        // literal's sign onto a preceding `-` with no whitespace between them (reparses as a decrement).
+        if (GluesToPrecedingMinus(original))
+            return true;
+
         return original.Parent switch
         {
+            // `-1 switch { ... }` already parses as `(-1) switch`, but keep the governing expression
+            // explicitly grouped as `(-1) switch` so it never depends on the surrounding tokens.
+            SwitchExpressionSyntax switchExpression => switchExpression.GoverningExpression == original,
             MemberAccessExpressionSyntax memberAccess => memberAccess.Expression == original,
             ElementAccessExpressionSyntax elementAccess => elementAccess.Expression == original,
             ConditionalAccessExpressionSyntax conditional => conditional.Expression == original,
@@ -1007,6 +1015,16 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 postfix.Operand == original,
             _ => false
         };
+    }
+
+    private static bool GluesToPrecedingMinus(ExpressionSyntax original)
+    {
+        if (original.HasLeadingTrivia)
+            return false;
+
+        var previous = original.GetFirstToken().GetPreviousToken();
+        return !previous.HasTrailingTrivia &&
+            (previous.IsKind(SyntaxKind.MinusToken) || previous.IsKind(SyntaxKind.MinusMinusToken));
     }
 
     private static bool IsNegativeNumeric(ExpressionSyntax expression)
