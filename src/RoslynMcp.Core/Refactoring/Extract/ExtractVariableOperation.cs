@@ -670,6 +670,18 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         variableDeclaration = null;
         replacementCount = 0;
 
+        // Peer of ExtractConstantOperation: the bare operand of a special min-value
+        // negation (-2147483648, -0x80000000, -9223372036854775808, ...) is typed
+        // uint/ulong while the negation is int/long; extracting it alone reports
+        // SUCCESS but yields CS0266 / CS0023 or a silent int→long change (#3355).
+        if (expression is LiteralExpressionSyntax literal &&
+            ExtractConstantOperation.IsSpecialMinValueUnaryOperand(literal, semanticModel, cancellationToken))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidTargetType,
+                "Cannot extract the operand of a special minimum-value unary expression (e.g. -2147483648 / -9223372036854775808 / -0x80000000); extract the full expression or choose another literal.");
+        }
+
         var typeInfo = semanticModel.GetTypeInfo(expression, cancellationToken);
         if (typeInfo.Type == null)
             return null;
@@ -707,6 +719,16 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         var replacements = replaceAll
             ? FindEquivalentExpressions(expression, semanticModel, cancellationToken)
             : new List<ExpressionSyntax> { expression };
+
+        // ReplaceAll from a plain 2147483648 must not also rewrite the operand
+        // of a -2147483648 site (CS0266 / CS0023); skip those like extract_constant (#3355).
+        if (replaceAll)
+        {
+            replacements = replacements
+                .Where(r => r is not LiteralExpressionSyntax lit ||
+                            !ExtractConstantOperation.IsSpecialMinValueUnaryOperand(lit, semanticModel, cancellationToken))
+                .ToList();
+        }
 
         // Implicit `new()` cannot be the initializer of a `var` local (no
         // target type). Prefer the explicit converted/type display, or skip
