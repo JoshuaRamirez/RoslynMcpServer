@@ -719,6 +719,16 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             ? FindEquivalentExpressions(expression, semanticModel, cancellationToken)
             : new List<ExpressionSyntax> { expression };
 
+        // ReplaceAll from a plain 2147483648 must not also rewrite the operand
+        // of a -2147483648 site (CS0266 / CS0023); skip those like extract_constant (#3355).
+        if (replaceAll)
+        {
+            replacements = replacements
+                .Where(r => r is not LiteralExpressionSyntax lit ||
+                            !ExtractConstantOperation.IsSpecialMinValueUnaryOperand(lit))
+                .ToList();
+        }
+
         // Implicit `new()` cannot be the initializer of a `var` local (no
         // target type). Prefer the explicit converted/type display, or skip
         // when the type cannot be spelled (Copilot P1).

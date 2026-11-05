@@ -1146,6 +1146,17 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             return false;
         }
 
+        // C# applies the minimum-value special case only to decimal literals
+        // without a U suffix: -2147483648U and -0x80000000 are ordinary uint
+        // negation (result long), so their operands extract safely (#3355).
+        var text = literal.Token.Text;
+        if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("0b", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains('u', StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
         // Use the token's numeric value so spellings with digit separators
         // (e.g. -2_147_483_648) still match — Token.Text alone misses those.
         return literal.Token.Value switch

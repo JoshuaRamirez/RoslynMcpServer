@@ -1847,6 +1847,40 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_ExtractsHexUintNegationOperand()
+    {
+        // -0x80000000 is ordinary uint negation (result long), not the special
+        // decimal minimum-value form, so its operand is a valid uint const (#3355).
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public long Run()
+                {
+                    long x = -0x80000000;
+                    return x;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("const uint ", updated, StringComparison.Ordinal);
+        Assert.Contains("= 0x80000000;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("long x = -0x80000000;", updated, StringComparison.Ordinal);
+        Assert.Matches(@"long x = -\w+;", updated);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_Protected_SkipsInternalEnumType()
     {
         // protected vs internal are incomparable — do not emit protected const State.

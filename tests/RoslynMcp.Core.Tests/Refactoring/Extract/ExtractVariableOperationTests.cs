@@ -743,6 +743,110 @@ public class ExtractVariableOperationTests
             d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
     }
 
+    [SkippableTheory]
+    [InlineData("2147483648U")]
+    [InlineData("2147483648u")]
+    [InlineData("0x80000000")]
+    [InlineData("0X8000_0000")]
+    [InlineData("0b10000000000000000000000000000000")]
+    public async Task ExtractVariable_UnsignedOrHexMinValueOperand_Succeeds(string operand)
+    {
+        // Only unsuffixed decimal -2147483648 / -9223372036854775808 are special (#3355).
+        // Unsigned-suffixed, hex and binary operands are ordinary unsigned literals
+        // whose negation already has the same type, so extracting them stays legal.
+        var source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public object Run()
+                {
+                    var value = -OPERAND;
+                    return value;
+                }
+            }
+            """.Replace("OPERAND", operand, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "big"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("var big = " + operand + ";", updated, StringComparison.Ordinal);
+        Assert.Contains("var value = -big;", updated, StringComparison.Ordinal);
+        AssertCompilesWithoutErrors(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_ReplaceAllFromPlainLiteral_SkipsMinValueUnaryOperand()
+    {
+        // Selecting the plain 2147483648 with ReplaceAll must not rewrite the
+        // operand of -2147483648 into `-big` (CS0266 on int) (#3355).
+        const string source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public long Run()
+                {
+                    var upper = 2147483648;
+                    var again = 2147483648;
+                    int lower = -2147483648;
+                    return upper + again + lower;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "2147483648");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "big",
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("var big = 2147483648;", updated, StringComparison.Ordinal);
+        Assert.Contains("var upper = big;", updated, StringComparison.Ordinal);
+        Assert.Contains("var again = big;", updated, StringComparison.Ordinal);
+        Assert.Contains("int lower = -2147483648;", updated, StringComparison.Ordinal);
+        AssertCompilesWithoutErrors(updated);
+    }
+
+    private static void AssertCompilesWithoutErrors(string code)
+    {
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(code);
+        var trustedAssemblies = ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(path => Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(path));
+        var compilation = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(
+            "MinValueCheck",
+            new[] { tree },
+            trustedAssemblies,
+            new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary));
+        Assert.DoesNotContain(
+            compilation.GetDiagnostics(),
+            d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
+    }
+
     [SkippableFact]
     public async Task ExtractVariable_ExpressionWithTrailingComment_DoesNotDuplicateComment()
     {
