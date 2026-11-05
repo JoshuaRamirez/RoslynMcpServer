@@ -251,4 +251,62 @@ public class ExtractConstantParamsValidationTests
 
         Assert.Equal(expected, ExtractConstantOperation.DeriveConstantNameFromLiteral(literal));
     }
+
+    [Theory]
+    [InlineData("_")]
+    [InlineData("@_")]
+    public void Validate_ConstantNameIsDiscard_ThrowsInvalidSymbolName(string constantName)
+    {
+        // A constant named "_" captures every discard in the type (_ = Log(v) / out _):
+        // CS0131 / CS1510 (#3301).
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractConstantDiscardName.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractConstantOperation.Validate(new ExtractConstantParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 1,
+                    EndColumn = 5,
+                    ConstantName = constantName
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+            // "@_" is already refused by the identifier check; "_" gets the discard message.
+            if (constantName == "_")
+                Assert.Contains("discard", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Theory]
+    [InlineData("__")]
+    [InlineData("_rate")]
+    public void Validate_ConstantNameWithLeadingUnderscore_IsAccepted(string constantName)
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"RoslynMcpExtractConstantUnderscore{constantName.Length}.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            ExtractConstantOperation.Validate(new ExtractConstantParams
+            {
+                SourceFile = file,
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 5,
+                ConstantName = constantName
+            });
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
 }

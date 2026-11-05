@@ -251,6 +251,40 @@ public class GeneratePropertyOperationTests
         Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
     }
 
+    [Theory]
+    [InlineData("_")]
+    [InlineData("@_")]
+    public void Validate_PropertyNameIsDiscard_ThrowsInvalidSymbolName(string propertyName)
+    {
+        // A property named "_" captures every discard in the type (_ = Log(v) / out _):
+        // CS0206 / silent writes to the new property (#3301).
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                PropertyName = propertyName,
+                PropertyType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+        Assert.Contains("discard", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesPropertyNameIsDiscard_ThrowsInvalidSymbolName()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                AllFiles = true,
+                PropertyName = "_",
+                PropertyType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+    }
+
     [Fact]
     public void Validate_NamespaceKeywordPropertyName_Throws()
     {
