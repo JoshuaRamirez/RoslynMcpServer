@@ -744,16 +744,100 @@ public class ExtractVariableOperationTests
     }
 
     [SkippableTheory]
+    [InlineData("var x = -0x8000000000000000;", "0x8000000000000000")]
+    [InlineData("long x = -0x8000000000000000L;", "0x8000000000000000L")]
+    [InlineData("long x = -0x8000_0000_0000_0000;", "0x8000_0000_0000_0000")]
+    [InlineData("var x = -0b1000000000000000000000000000000000000000000000000000000000000000;", "0b1000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("int x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0b10000000000000000000000000000000;", "0b10000000000000000000000000000000")]
+    [InlineData("long x = -9223372036854775808L;", "9223372036854775808L")]
+    public async Task ExtractVariable_HexBinarySuffixedMinValueOperand_Fails3116(string declaration, string operand)
+    {
+        // The compiler applies the min-value special case by type, not spelling:
+        // hex / binary / L-suffixed / digit-separated operands typed uint (ulong)
+        // whose negation is int (long) break the same way when extracted alone
+        // (CS0023 / CS0266, or a silent int→long change under var) (#3355).
+        var source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public object Run()
+                {
+                    DECLARATION
+                    return x;
+                }
+            }
+            """.Replace("DECLARATION", declaration, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                VariableName = "big"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        Assert.Contains("special minimum-value unary expression", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData("var x = -0x8000000000000000;", "0x8000000000000000")]
+    [InlineData("long x = -0x8000000000000000L;", "0x8000000000000000L")]
+    [InlineData("long x = -0x8000_0000_0000_0000;", "0x8000_0000_0000_0000")]
+    [InlineData("var x = -0b1000000000000000000000000000000000000000000000000000000000000000;", "0b1000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("int x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0b10000000000000000000000000000000;", "0b10000000000000000000000000000000")]
+    [InlineData("long x = -9223372036854775808L;", "9223372036854775808L")]
+    public async Task ExtractVariable_AllFiles_HexBinarySuffixedMinValueOperand_NotExtractedAlone(string declaration, string operand)
+    {
+        // allFiles skips targets that single-site refuses with 3116 (#3355): the
+        // operand must never become its own local, and the result must compile.
+        var source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public object Run()
+                {
+                    DECLARATION
+                    return x;
+                }
+            }
+            """.Replace("DECLARATION", declaration, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("= " + operand + ";", updated, StringComparison.Ordinal);
+        Assert.Contains("-" + operand, updated, StringComparison.Ordinal);
+        AssertCompilesWithoutErrors(updated);
+    }
+
+    [SkippableTheory]
     [InlineData("2147483648U")]
     [InlineData("2147483648u")]
-    [InlineData("0x80000000")]
-    [InlineData("0X8000_0000")]
-    [InlineData("0b10000000000000000000000000000000")]
-    public async Task ExtractVariable_UnsignedOrHexMinValueOperand_Succeeds(string operand)
+    [InlineData("0x80000000u")]
+    public async Task ExtractVariable_UnsignedSuffixedMinValueOperand_Succeeds(string operand)
     {
-        // Only unsuffixed decimal -2147483648 / -9223372036854775808 are special (#3355).
-        // Unsigned-suffixed, hex and binary operands are ordinary unsigned literals
-        // whose negation already has the same type, so extracting them stays legal.
+        // A U suffix makes the negation ordinary uint negation (result long), so
+        // the operand is not the special min-value case and extracts safely (#3355).
         var source = """
             namespace TestApp;
 
@@ -784,6 +868,47 @@ public class ExtractVariableOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("var big = " + operand + ";", updated, StringComparison.Ordinal);
         Assert.Contains("var value = -big;", updated, StringComparison.Ordinal);
+        AssertCompilesWithoutErrors(updated);
+    }
+
+    [SkippableTheory]
+    [InlineData("0x80000000")]
+    [InlineData("2147483648")]
+    public async Task ExtractVariable_IntMinValueOperandConvertedToLong_Succeeds(string operand)
+    {
+        // `long x = -0x80000000;` types the negation as int and converts it to
+        // long; with the operand extracted, -big is ordinary uint negation (long)
+        // with the same value, so this stays extractable and compiles (#3355).
+        var source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public long Run()
+                {
+                    long x = -OPERAND;
+                    return x;
+                }
+            }
+            """.Replace("OPERAND", operand, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "big"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("var big = " + operand + ";", updated, StringComparison.Ordinal);
+        Assert.Contains("long x = -big;", updated, StringComparison.Ordinal);
         AssertCompilesWithoutErrors(updated);
     }
 
