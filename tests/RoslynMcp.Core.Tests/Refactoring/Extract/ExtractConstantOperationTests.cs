@@ -1966,6 +1966,51 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableTheory]
+    [InlineData("2147483648")]
+    [InlineData("0x80000000")]
+    public async Task ExtractConstant_SingleSite_IntMinValueOperandInLongArgument_Fails3116(string operand)
+    {
+        // Extracting the operand would make `-Big` a long argument and switch
+        // overload resolution to the generic M<T> (#3355, Copilot).
+        var source = """
+            namespace TestApp;
+
+            public static class Calls
+            {
+                public static string M(long x, object y) => "long";
+                public static string M<T>(T x, string y) where T : System.IEquatable<long> => "generic";
+            }
+
+            public class Host
+            {
+                public string Run()
+                {
+                    return Calls.M(-OPERAND, "");
+                }
+            }
+            """.Replace("OPERAND", operand, StringComparison.Ordinal);
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                ConstantName = "Big"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        Assert.Contains("special minimum-value unary expression", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
     [InlineData("var x = -0x8000000000000000;", "0x8000000000000000")]
     [InlineData("long x = -0x8000000000000000L;", "0x8000000000000000L")]
     [InlineData("long x = -0x8000_0000_0000_0000;", "0x8000_0000_0000_0000")]

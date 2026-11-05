@@ -1142,8 +1142,11 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     /// digit-separated and <c>L</c>-suffixed forms are covered, while
     /// <c>-2147483648U</c> (ordinary <c>uint</c> negation, result <c>long</c>)
     /// is not. A 32-bit form whose <c>int</c> result is immediately converted to
-    /// <c>long</c> (<c>long x = -0x80000000;</c>) is also allowed: <c>-operand</c>
-    /// is then <c>long</c> with the same value (#3355, Codex P2).
+    /// <c>long</c> by a fixed-type target (<c>long x = -0x80000000;</c>, a long
+    /// field/property initializer or a simple assignment) is also allowed:
+    /// <c>-operand</c> is then <c>long</c> with the same value. Arguments and
+    /// other inferred contexts stay refused because the int→long change can pick
+    /// a different overload (#3355, Codex P2, Copilot).
     /// </summary>
     internal static bool IsSpecialMinValueUnaryOperand(
         LiteralExpressionSyntax literal,
@@ -1180,8 +1183,34 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             outer = (ExpressionSyntax)outer.Parent;
         }
 
+        // Only a fixed-type target keeps semantics: an explicitly typed long
+        // declaration/field/property initializer or a simple assignment. In an
+        // argument, return or other inferred context the extracted `-operand`
+        // becomes long instead of int, which can change overload resolution or
+        // generic inference while still compiling (Copilot).
+        if (!IsFixedTypeInitializerOrAssignment(outer))
+        {
+            return true;
+        }
+
         return semanticModel.GetTypeInfo(outer, cancellationToken).ConvertedType?.SpecialType
             != SpecialType.System_Int64;
+    }
+
+    private static bool IsFixedTypeInitializerOrAssignment(ExpressionSyntax expression)
+    {
+        switch (expression.Parent)
+        {
+            case EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax { Parent: VariableDeclarationSyntax declaration } }:
+                return !declaration.Type.IsVar;
+            case EqualsValueClauseSyntax { Parent: PropertyDeclarationSyntax }:
+                return true;
+            case AssignmentExpressionSyntax assignment
+                when assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) && assignment.Right == expression:
+                return true;
+            default:
+                return false;
+        }
     }
 
     /// <summary>

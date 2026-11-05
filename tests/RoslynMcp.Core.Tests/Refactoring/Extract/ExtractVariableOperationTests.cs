@@ -912,6 +912,52 @@ public class ExtractVariableOperationTests
         AssertCompilesWithoutErrors(updated);
     }
 
+    [SkippableTheory]
+    [InlineData("2147483648")]
+    [InlineData("0x80000000")]
+    public async Task ExtractVariable_IntMinValueOperandInLongArgument_Fails3116(string operand)
+    {
+        // As an argument the int negation is converted to the long parameter, but
+        // extracting the operand would make `-big` a long, so the generic
+        // M<T>(T, string) where T : IEquatable<long> becomes applicable and wins:
+        // still compiles, different method runs. Refuse outside fixed-type targets (#3355, Copilot).
+        var source = """
+            namespace TestApp;
+
+            public static class Calls
+            {
+                public static string M(long x, object y) => "long";
+                public static string M<T>(T x, string y) where T : System.IEquatable<long> => "generic";
+            }
+
+            public class Host
+            {
+                public string Run()
+                {
+                    return Calls.M(-OPERAND, "");
+                }
+            }
+            """.Replace("OPERAND", operand, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                VariableName = "big"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        Assert.Contains("special minimum-value unary expression", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     [SkippableFact]
     public async Task ExtractVariable_ReplaceAllFromPlainLiteral_SkipsMinValueUnaryOperand()
     {
