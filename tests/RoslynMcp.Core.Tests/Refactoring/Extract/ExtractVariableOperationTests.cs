@@ -660,6 +660,89 @@ public class ExtractVariableOperationTests
             d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
     }
 
+    [SkippableTheory]
+    [InlineData("2147483648", "big")]
+    [InlineData("2_147_483_648", "big")]
+    [InlineData("9223372036854775808", "huge")]
+    [InlineData("9_223_372_036_854_775_808", "huge")]
+    public async Task ExtractVariable_SpecialMinValueUnaryOperand_Fails3116(string operand, string variableName)
+    {
+        // Selecting only the literal operand of -2147483648 / -9223372036854775808
+        // (or digit-separator spellings) must refuse like extract_constant (#3355):
+        // extracting it alone types the local as uint/ulong and breaks the build
+        // (CS0266 / CS0023) or silently widens int→long under var.
+        var source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public object Run()
+                {
+                    var value = -OPERAND;
+                    return value;
+                }
+            }
+            """.Replace("OPERAND", operand, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                VariableName = variableName
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        Assert.Contains("special minimum-value unary expression", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_FullIntMinValueUnaryExpression_Succeeds()
+    {
+        // Extracting the full -2147483648 expression (not just the operand) stays legal.
+        const string source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public int Run()
+                {
+                    int m = -2147483648;
+                    return m;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "-2147483648");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "min"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("var min = -2147483648;", updated, StringComparison.Ordinal);
+        Assert.Contains("int m = min;", updated, StringComparison.Ordinal);
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(updated);
+        Assert.DoesNotContain(
+            tree.GetDiagnostics(),
+            d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
+    }
+
     [SkippableFact]
     public async Task ExtractVariable_ExpressionWithTrailingComment_DoesNotDuplicateComment()
     {

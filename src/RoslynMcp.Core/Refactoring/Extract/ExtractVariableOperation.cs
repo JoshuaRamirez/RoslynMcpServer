@@ -670,6 +670,17 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         variableDeclaration = null;
         replacementCount = 0;
 
+        // Peer of ExtractConstantOperation: the bare operand of -2147483648 /
+        // -9223372036854775808 is typed uint/ulong; extracting it alone reports
+        // SUCCESS but yields CS0266 / CS0023 or a silent int→long change (#3355).
+        if (expression is LiteralExpressionSyntax literal &&
+            ExtractConstantOperation.IsSpecialMinValueUnaryOperand(literal))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidTargetType,
+                "Cannot extract the operand of a special minimum-value unary expression (-2147483648 / -9223372036854775808); extract the full expression or choose another literal.");
+        }
+
         var typeInfo = semanticModel.GetTypeInfo(expression, cancellationToken);
         if (typeInfo.Type == null)
             return null;
