@@ -275,6 +275,41 @@ public class ExtractVariableAllFilesOperationTests
         Assert.NotEqual(before, updated);
     }
 
+    [SkippableFact]
+    public async Task ExtractVariable_AllFilesTrue_ExpressionFollowedByWith_KeepsSeparatingSpace()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record Item(string Name, int Qty);
+
+            public class WithHost
+            {
+                public int Run()
+                {
+                    var copy = new Item("a", 2) with { Qty = 5 };
+                    return copy.Qty;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("WithHost.cs", source));
+        var operation = new ExtractVariableOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["WithHost.cs"]));
+        Assert.Contains(" with { Qty = 5 };", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("itemwith", updated, StringComparison.Ordinal);
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(updated);
+        Assert.DoesNotContain(
+            tree.GetDiagnostics(),
+            d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
+    }
+
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
 

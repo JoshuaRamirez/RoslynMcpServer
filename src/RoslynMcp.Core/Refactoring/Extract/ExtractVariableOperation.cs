@@ -927,7 +927,9 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         {
             variableDeclaration.NormalizeWhitespace()
                 .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed),
-            containingStatement.ReplaceNode(expression, variableRef)
+            // Keep the expression's trivia so a following keyword (is / as /
+            // switch / with) stays separated from the new local (#3295).
+            containingStatement.ReplaceNode(expression, variableRef.WithTriviaFrom(expression))
         };
 
         if (containingBlock != null)

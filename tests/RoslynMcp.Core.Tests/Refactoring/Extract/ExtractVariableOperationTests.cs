@@ -603,6 +603,63 @@ public class ExtractVariableOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    private const string KeywordFollowerSource = """
+        namespace TestApp;
+
+        public record Item(string Name, int Qty);
+
+        public static class P
+        {
+            static object Make() => "hello";
+
+            public static string Run()
+            {
+                var copy = new Item("a", 2) with { Qty = 5 };
+                bool isText = Make() is string;
+                string? asText = Make() as string;
+                int code = Make() switch { string => 1, _ => 0 };
+                return $"{copy.Qty} {isText} {asText} {code}";
+            }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData("Make() is", "Make()", "made", "bool isText = made is string;")]
+    [InlineData("Make() as", "Make()", "made", "string? asText = made as string;")]
+    [InlineData("Make() switch", "Make()", "made", "int code = made switch { string => 1, _ => 0 };")]
+    [InlineData("new Item(\"a\", 2) with", "new Item(\"a\", 2)", "item", "var copy = item with { Qty = 5 };")]
+    public async Task ExtractVariable_ExpressionFollowedByKeyword_KeepsSeparatingSpace(
+        string context,
+        string selection,
+        string variableName,
+        string expectedLine)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KeywordFollowerSource);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var contextIndex = KeywordFollowerSource.IndexOf(context, StringComparison.Ordinal);
+        Assert.True(contextIndex >= 0);
+        var occurrence = CountOccurrences(KeywordFollowerSource[..contextIndex], selection) + 1;
+        var span = FindSpan(KeywordFollowerSource, selection, occurrence);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = variableName
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains(expectedLine, updated, StringComparison.Ordinal);
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(updated);
+        Assert.DoesNotContain(
+            tree.GetDiagnostics(),
+            d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
+    }
+
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
 
