@@ -447,4 +447,16 @@ public class ExtractMethodParamsValidationTests
         };
         Assert.Equal("DoWork", ExtractMethodOperation.DeriveMethodNameFromStatements(statements));
     }
+
+    [Fact]
+    public void DeriveMethodNameFromStatements_DiscardOnlySeed_ReturnsNull()
+    {
+        // "_" would capture the extracted discards (CS1656), so allFiles must skip the run (#3299).
+        var statements = new[]
+        {
+            SyntaxFactory.ParseStatement("_ = s.Length;"),
+            SyntaxFactory.ParseStatement("Keep();")
+        };
+        Assert.Null(ExtractMethodOperation.DeriveMethodNameFromStatements(statements));
+    }
 }

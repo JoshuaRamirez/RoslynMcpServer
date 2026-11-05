@@ -689,6 +689,11 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         if (string.IsNullOrEmpty(seed))
             return null;
 
+        // A derived "_" (e.g. from `_ = s.Length;`) would capture the extracted discards and
+        // every other discard in the type (CS1656 / CS1657), so skip the run (#3299).
+        if (seed is "_" or "@_")
+            return null;
+
         var name = seed;
         if (char.IsDigit(name[0]))
             name = "M" + name;
