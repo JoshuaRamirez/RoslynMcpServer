@@ -735,7 +735,10 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             SyntaxFactory.VariableDeclaration(typeSyntax.WithTrailingTrivia(SyntaxFactory.Space))
                 .WithVariables(SyntaxFactory.SingletonSeparatedList(
                     SyntaxFactory.VariableDeclarator(variableName)
-                        .WithInitializer(SyntaxFactory.EqualsValueClause(expression)))));
+                        .WithInitializer(SyntaxFactory.EqualsValueClause(
+                            // The reference keeps the expression's outer trivia (#3295),
+                            // so strip it here to avoid copying comments twice.
+                            expression.WithoutTrivia())))));
 
         SyntaxNode newRoot;
         if (replacements.Count <= 1)

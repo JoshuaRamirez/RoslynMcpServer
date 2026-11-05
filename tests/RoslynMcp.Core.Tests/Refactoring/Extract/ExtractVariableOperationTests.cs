@@ -660,6 +660,49 @@ public class ExtractVariableOperationTests
             d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
     }
 
+    [SkippableFact]
+    public async Task ExtractVariable_ExpressionWithTrailingComment_DoesNotDuplicateComment()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private static object Make() => "x";
+
+                public bool Run()
+                {
+                    bool isText = Make() /* reason */ is string;
+                    return isText;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "Make() /*");
+        span = (span.StartLine, span.StartColumn, span.EndLine, span.EndColumn - 3);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "made"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(1, CountOccurrences(updated, "/* reason */"));
+        Assert.Contains("made /* reason */ is string;", updated, StringComparison.Ordinal);
+        Assert.Contains("= Make();", updated, StringComparison.Ordinal);
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(updated);
+        Assert.DoesNotContain(
+            tree.GetDiagnostics(),
+            d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
+    }
+
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
 
