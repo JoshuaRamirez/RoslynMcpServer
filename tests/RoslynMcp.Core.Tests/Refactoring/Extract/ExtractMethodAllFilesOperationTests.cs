@@ -412,6 +412,42 @@ public class ExtractMethodAllFilesOperationTests
         Assert.Empty(result.Changes!.FilesModified);
     }
 
+    private const string DiscardRunFile = """
+        namespace TestApp;
+
+        public class DiscardHost
+        {
+            public void Run(string s)
+            {
+                _ = s.Length;
+                Keep();
+                Keep();
+            }
+
+            private static void Keep() { }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task ExtractMethod_AllFilesTrue_SkipsRunWhoseDerivedNameIsDiscard()
+    {
+        // The run `_ = s.Length; Keep();` derives the name "_"; a method named "_" captures the
+        // discard it extracts (CS1656), so the run must be skipped, not rewritten (#3299).
+        await using var workspace = await TempWorkspace.CreateAsync(DiscardRunFile);
+        var operation = new ExtractMethodOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractMethodParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("void _(", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("void @_(", updated, StringComparison.Ordinal);
+        Assert.Contains("_ = s.Length;", updated, StringComparison.Ordinal);
+    }
+
     [SkippableFact]
     public async Task ExtractMethod_AllFilesTrue_MakeStatic_SkipsInstanceCapture()
     {
