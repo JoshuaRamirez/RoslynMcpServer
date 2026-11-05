@@ -1063,6 +1063,16 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             case AssignmentExpressionSyntax assignment:
                 {
                     var leftType = semanticModel.GetTypeInfo(assignment.Left, cancellationToken).Type;
+                    // An implicitly typed deconstruction (var (a, b) = M() / (var a, int b) = M())
+                    // types its targets from M's result, so the left side is a tuple whose 'var'
+                    // elements are error types. Never paste that tuple as the stub's return type.
+                    if (leftType != null && ContainsErrorType(leftType))
+                    {
+                        throw new RefactoringException(
+                            ErrorCodes.CannotInferReturnType,
+                            "Cannot infer return type; provide explicit returnType.");
+                    }
+
                     if (IsUsableType(leftType))
                         return leftType!.ToDisplayString();
                     break;
@@ -1803,6 +1813,19 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
 
     private static bool IsUsableType(ITypeSymbol? type) =>
         type != null && type.TypeKind != TypeKind.Error && type.SpecialType != SpecialType.System_Void;
+
+    /// <summary>
+    /// True when <paramref name="type"/> is an error type or is built from one
+    /// (tuple elements, generic type arguments, array or pointer element types).
+    /// </summary>
+    internal static bool ContainsErrorType(ITypeSymbol type) => type switch
+    {
+        { TypeKind: TypeKind.Error } => true,
+        IArrayTypeSymbol array => ContainsErrorType(array.ElementType),
+        IPointerTypeSymbol pointer => ContainsErrorType(pointer.PointedAtType),
+        INamedTypeSymbol named => named.TypeArguments.Any(ContainsErrorType),
+        _ => false
+    };
 
     private static bool IsSameType(INamedTypeSymbol left, INamedTypeSymbol right) =>
         SymbolEqualityComparer.Default.Equals(left.OriginalDefinition, right.OriginalDefinition);
