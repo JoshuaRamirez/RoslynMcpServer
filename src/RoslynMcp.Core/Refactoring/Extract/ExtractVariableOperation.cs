@@ -735,7 +735,10 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             SyntaxFactory.VariableDeclaration(typeSyntax.WithTrailingTrivia(SyntaxFactory.Space))
                 .WithVariables(SyntaxFactory.SingletonSeparatedList(
                     SyntaxFactory.VariableDeclarator(variableName)
-                        .WithInitializer(SyntaxFactory.EqualsValueClause(expression)))));
+                        .WithInitializer(SyntaxFactory.EqualsValueClause(
+                            // The reference keeps the expression's outer trivia (#3295),
+                            // so strip it here to avoid copying comments twice.
+                            expression.WithoutTrivia())))));
 
         SyntaxNode newRoot;
         if (replacements.Count <= 1)
@@ -927,7 +930,9 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         {
             variableDeclaration.NormalizeWhitespace()
                 .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed),
-            containingStatement.ReplaceNode(expression, variableRef)
+            // Keep the expression's trivia so a following keyword (is / as /
+            // switch / with) stays separated from the new local (#3295).
+            containingStatement.ReplaceNode(expression, variableRef.WithTriviaFrom(expression))
         };
 
         if (containingBlock != null)
