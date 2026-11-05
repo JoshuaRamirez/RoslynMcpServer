@@ -452,9 +452,13 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
             return false;
 
         // Lifted nullable relational ops: null > 0 and null <= 0 are both false,
-        // so flipping the operator is not negation.
+        // so flipping the operator is not negation. An operand that is not itself
+        // Nullable<T> can still bind to the lifted operator through an implicit
+        // conversion to T? (#3426), so check the converted types too.
         if (IsRelationalComparison(flippedKind) &&
-            (IsNullableValueType(leftType) || IsNullableValueType(rightType)))
+            (IsNullableValueType(leftType) || IsNullableValueType(rightType) ||
+             IsNullableValueType(model.GetTypeInfo(binary.Left).ConvertedType) ||
+             IsNullableValueType(model.GetTypeInfo(binary.Right).ConvertedType)))
             return false;
 
         return true;
