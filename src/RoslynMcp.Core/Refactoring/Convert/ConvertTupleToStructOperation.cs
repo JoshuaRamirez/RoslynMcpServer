@@ -515,6 +515,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                             assignment.Right,
                             aliases,
                             semanticModel,
+                            root,
                             cancellationToken))
                     {
                         changed = true;
@@ -539,6 +540,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                             isPattern.Expression,
                             aliases,
                             semanticModel,
+                            root,
                             cancellationToken))
                     {
                         changed = true;
@@ -553,6 +555,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                             switchExpression.GoverningExpression,
                             aliases,
                             semanticModel,
+                            root,
                             cancellationToken))
                     {
                         changed = true;
@@ -567,6 +570,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                             switchStatement.Expression,
                             aliases,
                             semanticModel,
+                            root,
                             cancellationToken))
                     {
                         changed = true;
@@ -607,6 +611,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         ExpressionSyntax right,
         HashSet<ISymbol> aliases,
         SemanticModel semanticModel,
+        SyntaxNode root,
         CancellationToken cancellationToken)
     {
         left = UnwrapParenthesesAndNullForgiving(left);
@@ -615,14 +620,24 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             declaration.Designation != null)
         {
             return TryAddDeconstructionAliases(
-                declaration.Designation, right, aliases, semanticModel, cancellationToken);
+                declaration.Designation,
+                right,
+                aliases,
+                semanticModel,
+                root,
+                cancellationToken);
         }
 
         if (left is TupleExpressionSyntax leftTuple)
         {
-            right = UnwrapParenthesesAndRef(right);
-            if (right is not TupleExpressionSyntax rightTuple ||
-                leftTuple.Arguments.Count != rightTuple.Arguments.Count)
+            if (!TryGetTupleElementExpressions(
+                    right,
+                    leftTuple.Arguments.Count,
+                    semanticModel,
+                    root,
+                    cancellationToken,
+                    out var elementSources) ||
+                elementSources == null)
             {
                 return false;
             }
@@ -631,7 +646,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             for (var i = 0; i < leftTuple.Arguments.Count; i++)
             {
                 var dest = leftTuple.Arguments[i].Expression;
-                var src = rightTuple.Arguments[i].Expression;
+                var src = elementSources[i];
 
                 if (dest is DeclarationExpressionSyntax nestedDeclaration &&
                     nestedDeclaration.Designation != null)
@@ -641,6 +656,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                             src,
                             aliases,
                             semanticModel,
+                            root,
                             cancellationToken))
                     {
                         added = true;
@@ -670,12 +686,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// <summary>
     /// Pairs deconstruction destinations with corresponding RHS tuple elements
     /// so <c>var (copy, _) = (point, 0)</c> tracks <c>copy</c> as a storage alias.
+    /// Also resolves tuple-typed expressions (aliases / locals), not only literal
+    /// <see cref="TupleExpressionSyntax"/> RHS values (Codex P1).
     /// </summary>
     private static bool TryAddDeconstructionAliases(
         VariableDesignationSyntax designation,
         ExpressionSyntax source,
         HashSet<ISymbol> aliases,
         SemanticModel semanticModel,
+        SyntaxNode root,
         CancellationToken cancellationToken)
     {
         source = UnwrapParenthesesAndRef(source);
@@ -696,8 +715,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 }
             case ParenthesizedVariableDesignationSyntax parenthesized:
                 {
-                    if (source is not TupleExpressionSyntax tuple ||
-                        tuple.Arguments.Count != parenthesized.Variables.Count)
+                    if (!TryGetTupleElementExpressions(
+                            source,
+                            parenthesized.Variables.Count,
+                            semanticModel,
+                            root,
+                            cancellationToken,
+                            out var elementSources) ||
+                        elementSources == null)
                     {
                         return false;
                     }
@@ -707,9 +732,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     {
                         if (TryAddDeconstructionAliases(
                                 parenthesized.Variables[i],
-                                tuple.Arguments[i].Expression,
+                                elementSources[i],
                                 aliases,
                                 semanticModel,
+                                root,
                                 cancellationToken))
                         {
                             added = true;
@@ -724,14 +750,59 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// Resolves the per-element expressions of a deconstruction / positional-pattern
+    /// source: a literal tuple, or the tuple initializer of a tuple-typed expression
+    /// (e.g. <c>var wrapped = (point, 0); var (copy, _) = wrapped</c>).
+    /// </summary>
+    private static bool TryGetTupleElementExpressions(
+        ExpressionSyntax source,
+        int expectedCount,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        out ExpressionSyntax[]? elements)
+    {
+        elements = null;
+        source = UnwrapParenthesesAndRef(source);
+
+        if (source is TupleExpressionSyntax tuple)
+        {
+            if (tuple.Arguments.Count != expectedCount)
+                return false;
+
+            elements = new ExpressionSyntax[expectedCount];
+            for (var i = 0; i < expectedCount; i++)
+                elements[i] = tuple.Arguments[i].Expression;
+            return true;
+        }
+
+        var symbol = semanticModel.GetSymbolInfo(source, cancellationToken).Symbol;
+        if (symbol == null)
+            return false;
+
+        if (!TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) ||
+            initializer == null)
+        {
+            return false;
+        }
+
+        // Chained aliases: var a = (point, 0); var b = a; var (copy, _) = b;
+        return TryGetTupleElementExpressions(
+            initializer, expectedCount, semanticModel, root, cancellationToken, out elements);
+    }
+
+    /// <summary>
     /// Adds aliases for pattern designations that copy converted storage
-    /// (<c>if (point is var copy)</c>, <c>point is { } copy</c>, switch arms/cases).
+    /// (<c>if (point is var copy)</c>, <c>point is { } copy</c>, switch arms/cases),
+    /// including nested recursive-pattern designations such as
+    /// <c>new { Value = point } is { Value: var copy }</c> (Codex P1).
     /// </summary>
     private static bool TryAddPatternDesignationAliases(
         PatternSyntax pattern,
         ExpressionSyntax input,
         HashSet<ISymbol> aliases,
         SemanticModel semanticModel,
+        SyntaxNode root,
         CancellationToken cancellationToken)
     {
         pattern = UnwrapParenthesizedPattern(pattern);
@@ -744,6 +815,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     input,
                     aliases,
                     semanticModel,
+                    root,
                     cancellationToken);
 
             case DeclarationPatternSyntax declarationPattern when
@@ -753,28 +825,153 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     input,
                     aliases,
                     semanticModel,
+                    root,
                     cancellationToken);
 
-            case RecursivePatternSyntax recursive when recursive.Designation != null:
-                return TryAddDeconstructionAliases(
-                    recursive.Designation,
-                    input,
-                    aliases,
-                    semanticModel,
-                    cancellationToken);
+            case RecursivePatternSyntax recursive:
+                {
+                    var added = false;
+
+                    if (recursive.Designation != null &&
+                        TryAddDeconstructionAliases(
+                            recursive.Designation,
+                            input,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken))
+                    {
+                        added = true;
+                    }
+
+                    // Nested property subpatterns: { Value: var copy }
+                    if (recursive.PropertyPatternClause != null)
+                    {
+                        foreach (var subpattern in recursive.PropertyPatternClause.Subpatterns)
+                        {
+                            var memberName = subpattern.NameColon?.Name.Identifier.ValueText;
+                            if (memberName == null)
+                                continue;
+
+                            if (!TryResolvePatternMemberInput(
+                                    input,
+                                    memberName,
+                                    aliases,
+                                    semanticModel,
+                                    root,
+                                    cancellationToken,
+                                    out var memberInput) ||
+                                memberInput == null)
+                            {
+                                continue;
+                            }
+
+                            if (TryAddPatternDesignationAliases(
+                                    subpattern.Pattern,
+                                    memberInput,
+                                    aliases,
+                                    semanticModel,
+                                    root,
+                                    cancellationToken))
+                            {
+                                added = true;
+                            }
+                        }
+                    }
+
+                    // Nested positional subpatterns: (var copy, _)
+                    if (recursive.PositionalPatternClause != null)
+                    {
+                        var subpatterns = recursive.PositionalPatternClause.Subpatterns;
+                        if (TryGetTupleElementExpressions(
+                                input,
+                                subpatterns.Count,
+                                semanticModel,
+                                root,
+                                cancellationToken,
+                                out var elementSources) &&
+                            elementSources != null)
+                        {
+                            for (var i = 0; i < subpatterns.Count; i++)
+                            {
+                                if (TryAddPatternDesignationAliases(
+                                        subpatterns[i].Pattern,
+                                        elementSources[i],
+                                        aliases,
+                                        semanticModel,
+                                        root,
+                                        cancellationToken))
+                                {
+                                    added = true;
+                                }
+                            }
+                        }
+                    }
+
+                    return added;
+                }
 
             case BinaryPatternSyntax binary:
                 {
                     var left = TryAddPatternDesignationAliases(
-                        binary.Left, input, aliases, semanticModel, cancellationToken);
+                        binary.Left, input, aliases, semanticModel, root, cancellationToken);
                     var right = TryAddPatternDesignationAliases(
-                        binary.Right, input, aliases, semanticModel, cancellationToken);
+                        binary.Right, input, aliases, semanticModel, root, cancellationToken);
                     return left || right;
                 }
 
             default:
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Resolves the expression that a recursive property subpattern binds against
+    /// (e.g. <c>Value</c> in <c>new { Value = point } is { Value: var copy }</c>).
+    /// </summary>
+    private static bool TryResolvePatternMemberInput(
+        ExpressionSyntax input,
+        string memberName,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        out ExpressionSyntax? memberInput)
+    {
+        memberInput = null;
+        input = UnwrapParenthesesAndRef(input);
+
+        if (TryGetNamedMemberInitializer(input, memberName, semanticModel, out memberInput) &&
+            memberInput != null)
+        {
+            return true;
+        }
+
+        var symbol = semanticModel.GetSymbolInfo(input, cancellationToken).Symbol;
+        if (symbol != null &&
+            TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) &&
+            initializer != null)
+        {
+            return TryResolvePatternMemberInput(
+                initializer,
+                memberName,
+                aliases,
+                semanticModel,
+                root,
+                cancellationToken,
+                out memberInput);
+        }
+
+        foreach (var creation in EnumerateAggregateCreations(input, aliases, semanticModel, root))
+        {
+            if (TryGetNamedMemberInitializer(creation, memberName, semanticModel, out memberInput) &&
+                memberInput != null)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static PatternSyntax UnwrapParenthesizedPattern(PatternSyntax pattern)
