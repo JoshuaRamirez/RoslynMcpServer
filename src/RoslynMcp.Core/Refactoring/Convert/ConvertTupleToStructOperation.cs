@@ -721,6 +721,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
+        // Nested anonymous-object containers: var box = new { Value = point };
+        if (expression is AnonymousObjectCreationExpressionSyntax anonymousObject)
+        {
+            foreach (var member in anonymousObject.Initializers)
+            {
+                if (ExpressionReferencesStorageAlias(
+                        member.Expression, aliases, semanticModel, cancellationToken))
+                {
+                    return true;
+                }
+            }
+        }
+
         // Reads from tracked containers: var copy = points[0]; copy.X = 3;
         if (expression is ElementAccessExpressionSyntax elementAccess)
         {
@@ -1045,32 +1058,120 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// True when <paramref name="memberAccess"/> is <c>wrapped.Member</c> and
-    /// <c>wrapped</c> was initialized with a tuple literal whose <c>Member</c>
-    /// argument embeds converted storage.
+    /// True when <paramref name="expression"/> yields the converted tuple value —
+    /// directly (storage alias / container element of that type) or through one or
+    /// more aggregate carrier members (tuple or anonymous-object properties that
+    /// embed converted storage, including nested carriers).
     /// </summary>
-    private static bool TupleAggregateMemberCarriesStorage(
-        MemberAccessExpressionSyntax memberAccess,
+    private static bool ExpressionYieldsConvertedStorage(
+        ExpressionSyntax expression,
         HashSet<ISymbol> storages,
+        ITypeSymbol? tupleType,
         SemanticModel semanticModel,
         SyntaxNode root)
     {
-        var aggregate = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
-        if (aggregate == null || !storages.Contains(aggregate))
+        expression = UnwrapParenthesesAndNullForgiving(expression);
+
+        if (ReceiverYieldsConvertedStorage(expression, storages, tupleType, semanticModel))
+            return true;
+
+        if (expression is not MemberAccessExpressionSyntax memberAccess)
             return false;
 
+        if (!TryGetCarriedMemberInitializer(
+                memberAccess, storages, semanticModel, root, out var initializer) ||
+            initializer == null)
+        {
+            return false;
+        }
+
+        return ExpressionYieldsConvertedStorage(
+            initializer, storages, tupleType, semanticModel, root);
+    }
+
+    /// <summary>
+    /// Resolves the initializer expression assigned to <paramref name="memberAccess"/>'s
+    /// member on a tracked aggregate (or nested carrier), when that aggregate was
+    /// created with a tuple or anonymous-object literal.
+    /// </summary>
+    private static bool TryGetCarriedMemberInitializer(
+        MemberAccessExpressionSyntax memberAccess,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        out ExpressionSyntax? initializer)
+    {
+        initializer = null;
         var memberName = memberAccess.Name.Identifier.ValueText;
+
+        if (!TryResolveAggregateCreation(
+                memberAccess.Expression, storages, semanticModel, root, out var creation) ||
+            creation == null)
+        {
+            return false;
+        }
+
+        return TryGetNamedMemberInitializer(creation, memberName, semanticModel, out initializer);
+    }
+
+    private static bool TryResolveAggregateCreation(
+        ExpressionSyntax receiver,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        out ExpressionSyntax? creation)
+    {
+        creation = null;
+        receiver = UnwrapParenthesesAndNullForgiving(receiver);
+
+        var symbol = semanticModel.GetSymbolInfo(receiver).Symbol;
+        if (symbol != null && storages.Contains(symbol))
+            return TryFindSymbolInitializerExpression(symbol, root, semanticModel, out creation);
+
+        // Nested carrier: outer.Inner where Inner's initializer is itself an aggregate.
+        if (receiver is MemberAccessExpressionSyntax nested &&
+            TryGetCarriedMemberInitializer(nested, storages, semanticModel, root, out creation))
+        {
+            return creation != null;
+        }
+
+        return false;
+    }
+
+    private static bool TryFindSymbolInitializerExpression(
+        ISymbol symbol,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? initializer)
+    {
+        initializer = null;
         foreach (var node in root.DescendantNodes())
         {
-            if (node is not VariableDeclaratorSyntax declarator ||
-                !SymbolEqualityComparer.Default.Equals(
+            if (node is VariableDeclaratorSyntax declarator &&
+                SymbolEqualityComparer.Default.Equals(
                     semanticModel.GetDeclaredSymbol(declarator),
-                    aggregate) ||
-                declarator.Initializer?.Value is not TupleExpressionSyntax tuple)
+                    symbol) &&
+                declarator.Initializer?.Value is { } value)
             {
-                continue;
+                initializer = value;
+                return true;
             }
+        }
 
+        return false;
+    }
+
+    private static bool TryGetNamedMemberInitializer(
+        ExpressionSyntax aggregateCreation,
+        string memberName,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? initializer)
+    {
+        initializer = null;
+        aggregateCreation = UnwrapParenthesesAndNullForgiving(aggregateCreation);
+
+        if (aggregateCreation is TupleExpressionSyntax tuple)
+        {
             var tupleType = semanticModel.GetTypeInfo(tuple).Type as INamedTypeSymbol;
             for (var i = 0; i < tuple.Arguments.Count; i++)
             {
@@ -1080,17 +1181,51 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 if (!TupleAggregateArgumentMatchesMember(argument, i, memberName, tupleType))
                     continue;
 
-                if (ExpressionReferencesStorageAlias(
-                        argument.Expression,
-                        storages,
-                        semanticModel))
-                {
-                    return true;
-                }
+                initializer = argument.Expression;
+                return true;
             }
+
+            return false;
+        }
+
+        if (aggregateCreation is AnonymousObjectCreationExpressionSyntax anonymous)
+        {
+            foreach (var member in anonymous.Initializers)
+            {
+                if (!AnonymousAggregateMemberMatchesName(member, memberName))
+                    continue;
+
+                initializer = member.Expression;
+                return true;
+            }
+
+            return false;
         }
 
         return false;
+    }
+
+    private static bool AnonymousAggregateMemberMatchesName(
+        AnonymousObjectMemberDeclaratorSyntax member,
+        string memberName)
+    {
+        if (member.NameEquals != null)
+        {
+            return string.Equals(
+                member.NameEquals.Name.Identifier.ValueText,
+                memberName,
+                StringComparison.Ordinal);
+        }
+
+        var inferred = member.Expression switch
+        {
+            IdentifierNameSyntax id => id.Identifier.ValueText,
+            MemberAccessExpressionSyntax access => access.Name.Identifier.ValueText,
+            _ => null
+        };
+
+        return inferred != null &&
+               string.Equals(inferred, memberName, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -1141,9 +1276,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// instance-method receiver (including positional <c>ItemN</c> aliases).
     /// Generated properties cannot accept those uses (CS0206 / silent copy); tuple fields can.
     /// By-ref storage reached <em>through</em> a reference-type element
-    /// (for example <c>Bump(ref point.Values[0])</c>) is allowed — the property
-    /// getter returns the same reference — while passing the element property
-    /// itself by reference (or reaching through a value-type element) is refused.
+    /// (for example <c>Bump(ref point.Values[0])</c>) or through a value-type
+    /// element that merely wraps reference storage (for example
+    /// <c>Bump(ref point.Box.Values[0])</c> where <c>Box</c> is a struct with an
+    /// <c>int[]</c> field) is allowed — copying the property still yields the same
+    /// reference — while passing the element property itself by reference, or
+    /// taking a ref to a value-typed location on that temporary copy, is refused.
     /// </summary>
     internal static bool HasElementByRefUse(
         SyntaxNode root,
@@ -1259,20 +1397,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
                 continue;
 
-            if (ReceiverYieldsConvertedStorage(
+            // Direct storage, or carrier members (tuple / anonymous-object,
+            // including nested carriers) that embed converted storage.
+            if (ExpressionYieldsConvertedStorage(
                     memberAccess.Expression,
                     storages,
                     tupleType,
-                    semanticModel))
-            {
-                return true;
-            }
-
-            // wrapped.Value.X / wrapped.Item1.X when Value/Item1 carries storage.
-            if (memberAccess.Expression is MemberAccessExpressionSyntax outerMember &&
-                TupleAggregateMemberCarriesStorage(
-                    outerMember,
-                    storages,
                     semanticModel,
                     root))
             {
@@ -1286,10 +1416,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// <summary>
     /// True when <paramref name="byRefTarget"/> is a converted tuple element used
     /// in a way that breaks after conversion to properties: the element property
-    /// itself is the by-ref target, or storage is reached through a value-type
-    /// element (property returns a copy). False when the element is
-    /// reference-typed and the by-ref target is deeper storage reached through
-    /// that element (Codex P2: <c>Bump(ref point.Values[0])</c>).
+    /// itself is the by-ref target, or a value-typed location on a temporary
+    /// property copy. False when the by-ref target is deeper storage reached
+    /// through a reference-type element (Codex: <c>Bump(ref point.Values[0])</c>)
+    /// or through a value-type element that merely wraps reference storage
+    /// (Codex P2: <c>Bump(ref point.Box.Values[0])</c>).
     /// </summary>
     private static bool HasConvertedElementByRefAccess(
         ExpressionSyntax byRefTarget,
@@ -1306,35 +1437,103 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
                 continue;
 
-            var isConvertedElement =
-                ReceiverYieldsConvertedStorage(
+            if (!ExpressionYieldsConvertedStorage(
                     memberAccess.Expression,
                     storages,
                     tupleType,
-                    semanticModel)
-                || (memberAccess.Expression is MemberAccessExpressionSyntax outerMember &&
-                    TupleAggregateMemberCarriesStorage(
-                        outerMember,
-                        storages,
-                        semanticModel,
-                        root));
-
-            if (!isConvertedElement)
+                    semanticModel,
+                    root))
+            {
                 continue;
+            }
 
             // Direct by-ref / address-of on the element property itself — refuse.
             if (coreTarget == memberAccess)
                 return true;
 
-            // Through the element: value-type (or unresolved) element property
-            // returns a copy — refuse. Reference-type element property returns
-            // the same reference, so by-ref storage beneath remains valid.
+            // Through the element: reference-type property returns the same
+            // reference — allow. Value-type property returns a copy — allow only
+            // when the remaining path reaches nested reference storage (array /
+            // class field) before the by-ref target; otherwise refuse.
             var elementType = semanticModel.GetTypeInfo(memberAccess).Type;
-            if (elementType is not { IsReferenceType: true })
-                return true;
+            if (elementType is { IsReferenceType: true })
+                continue;
+
+            if (elementType is { IsValueType: true } &&
+                !ValueTypeElementByRefIsUnsafe(memberAccess, coreTarget, semanticModel))
+            {
+                continue;
+            }
+
+            return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True when by-ref through a value-type converted element still depends on
+    /// the temporary property copy (unsafe after conversion). False when the
+    /// remaining access path reaches reference storage first — copying the
+    /// value-type element preserves that shared reference
+    /// (<c>Bump(ref point.Box.Values[0])</c>).
+    /// </summary>
+    private static bool ValueTypeElementByRefIsUnsafe(
+        MemberAccessExpressionSyntax elementAccess,
+        ExpressionSyntax coreTarget,
+        SemanticModel semanticModel)
+    {
+        ExpressionSyntax current = elementAccess;
+        while (!ReferenceEquals(current, coreTarget))
+        {
+            var parent = current.Parent;
+
+            if (parent is ParenthesizedExpressionSyntax parenthesized)
+            {
+                current = parenthesized;
+                continue;
+            }
+
+            if (parent is PostfixUnaryExpressionSyntax postfix &&
+                postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression))
+            {
+                current = postfix;
+                continue;
+            }
+
+            if (parent is MemberAccessExpressionSyntax memberAccess &&
+                memberAccess.Expression == current)
+            {
+                var memberType = semanticModel.GetTypeInfo(memberAccess).Type;
+                if (memberType is { IsReferenceType: true })
+                {
+                    // ref to the reference-typed member of a value-type temporary
+                    // (e.g. ref point.Box.Values) is unsafe; ref through it into
+                    // deeper storage (e.g. ref point.Box.Values[0]) is safe.
+                    return ReferenceEquals(memberAccess, coreTarget);
+                }
+
+                current = memberAccess;
+                continue;
+            }
+
+            if (parent is ElementAccessExpressionSyntax element &&
+                element.Expression == current)
+            {
+                var indexedType = semanticModel.GetTypeInfo(current).Type;
+                if (indexedType is { IsReferenceType: true })
+                    return false; // ref into shared array / indexer storage
+
+                current = element;
+                continue;
+            }
+
+            // Unknown shape — refuse to stay safe.
+            return true;
+        }
+
+        // Reached the by-ref target without finding nested reference storage.
+        return true;
     }
 
     private static ExpressionSyntax UnwrapParenthesesAndNullForgiving(ExpressionSyntax expression)
@@ -1373,7 +1572,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         {
             // Larger aggregate (e.g. wrapped in (point, X: 5)) — not the
             // converted storage itself; element checks must use
-            // TupleAggregateMemberCarriesStorage on the carrier member.
+            // ExpressionYieldsConvertedStorage on the carrier member.
             return false;
         }
 
