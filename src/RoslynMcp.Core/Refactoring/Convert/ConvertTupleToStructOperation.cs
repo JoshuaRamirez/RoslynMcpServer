@@ -1148,7 +1148,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel semanticModel,
         HashSet<ISymbol> storages,
         HashSet<string> memberNames,
-        ITypeSymbol? _ = null)
+        ITypeSymbol? tupleType = null)
     {
         foreach (var node in root.DescendantNodes())
         {
@@ -1164,42 +1164,135 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     argument.RefOrOutKeyword.IsKind(SyntaxKind.InKeyword) => argument.Expression,
                 // ref int x = ref point.X; / ref returns
                 RefExpressionSyntax refExpression => refExpression.Expression,
+                // point.X.Increment() with Increment(this ref int) — no explicit ref keyword.
+                InvocationExpressionSyntax invocation when
+                    TryGetRefReceiverExpression(invocation, semanticModel, out var refReceiver)
+                    => refReceiver,
                 _ => null
             };
 
             if (byRefTarget == null)
                 continue;
 
-            foreach (var memberAccess in EnumerateAssignmentMemberAccesses(byRefTarget))
+            if (HasConvertedElementMemberAccess(
+                    byRefTarget,
+                    storages,
+                    memberNames,
+                    tupleType,
+                    semanticModel,
+                    root))
             {
-                if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
-                    continue;
-
-                var target = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
-                if (target != null && storages.Contains(target))
-                    return true;
-
-                if (ExpressionReferencesStorageAlias(
-                        memberAccess.Expression,
-                        storages,
-                        semanticModel))
-                {
-                    return true;
-                }
-
-                if (memberAccess.Expression is MemberAccessExpressionSyntax outerMember &&
-                    TupleAggregateMemberCarriesStorage(
-                        outerMember,
-                        storages,
-                        semanticModel,
-                        root))
-                {
-                    return true;
-                }
+                return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="invocation"/> is an instance or reduced extension
+    /// call whose receiver is passed by <c>ref</c>/<c>in</c>/<c>ref readonly</c>
+    /// (for example <c>point.X.Increment()</c> with <c>Increment(this ref int)</c>).
+    /// </summary>
+    private static bool TryGetRefReceiverExpression(
+        InvocationExpressionSyntax invocation,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? receiver)
+    {
+        receiver = null;
+        if (invocation.Expression is not MemberAccessExpressionSyntax memberAccess)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(invocation).Symbol is not IMethodSymbol method)
+            return false;
+
+        // Reduced extension calls hide the `this` parameter; inspect ReducedFrom
+        // (or the unreduced extension declaration) for `this ref` / `this in`.
+        var extensionSource = method.ReducedFrom
+            ?? (method.IsExtensionMethod ? method : null);
+        if (extensionSource == null || extensionSource.Parameters.IsDefaultOrEmpty)
+            return false;
+
+        var thisParameter = extensionSource.Parameters[0];
+        if (thisParameter.RefKind is not (
+                RefKind.Ref or RefKind.In or RefKind.RefReadOnlyParameter))
+        {
+            return false;
+        }
+
+        receiver = memberAccess.Expression;
+        return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="expression"/> reaches a converted tuple element
+    /// through converted storage (or a container member that carries it), not
+    /// through an unrelated same-named member of a larger aggregate that merely
+    /// embeds the converted value (Codex: <c>var wrapped = (point, X: 5); ref wrapped.X</c>).
+    /// </summary>
+    private static bool HasConvertedElementMemberAccess(
+        ExpressionSyntax expression,
+        HashSet<ISymbol> storages,
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType,
+        SemanticModel semanticModel,
+        SyntaxNode root)
+    {
+        foreach (var memberAccess in EnumerateAssignmentMemberAccesses(expression))
+        {
+            if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
+                continue;
+
+            if (ReceiverYieldsConvertedStorage(
+                    memberAccess.Expression,
+                    storages,
+                    tupleType,
+                    semanticModel))
+            {
+                return true;
+            }
+
+            // wrapped.Value.X / wrapped.Item1.X when Value/Item1 carries storage.
+            if (memberAccess.Expression is MemberAccessExpressionSyntax outerMember &&
+                TupleAggregateMemberCarriesStorage(
+                    outerMember,
+                    storages,
+                    semanticModel,
+                    root))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="receiver"/> is the converted tuple value (or a
+    /// value-alias / container element that yields that type), not a larger
+    /// aggregate that only embeds converted storage.
+    /// </summary>
+    private static bool ReceiverYieldsConvertedStorage(
+        ExpressionSyntax receiver,
+        HashSet<ISymbol> storages,
+        ITypeSymbol? tupleType,
+        SemanticModel semanticModel)
+    {
+        var receiverType = semanticModel.GetTypeInfo(receiver).Type;
+        if (tupleType != null && receiverType != null &&
+            !SymbolEqualityComparer.Default.Equals(receiverType, tupleType))
+        {
+            // Larger aggregate (e.g. wrapped in (point, X: 5)) — not the
+            // converted storage itself; element checks must use
+            // TupleAggregateMemberCarriesStorage on the carrier member.
+            return false;
+        }
+
+        var target = semanticModel.GetSymbolInfo(receiver).Symbol;
+        if (target != null && storages.Contains(target))
+            return true;
+
+        return ExpressionReferencesStorageAlias(receiver, storages, semanticModel);
     }
 
     internal static bool HasElementWrite(
@@ -1220,7 +1313,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel semanticModel,
         HashSet<ISymbol> storages,
         HashSet<string> memberNames,
-        ITypeSymbol? _ = null)
+        ITypeSymbol? tupleType = null)
     {
         foreach (var node in root.DescendantNodes())
         {
@@ -1243,6 +1336,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     argument.RefOrOutKeyword.IsKind(SyntaxKind.InKeyword) => argument.Expression,
                 // ref int x = ref point.X; / ref returns
                 RefExpressionSyntax refExpression => refExpression.Expression,
+                // point.X.Increment() with Increment(this ref int) — no explicit ref keyword.
+                InvocationExpressionSyntax invocation when
+                    TryGetRefReceiverExpression(invocation, semanticModel, out var refReceiver)
+                    => refReceiver,
                 _ => null
             };
 
@@ -1253,39 +1350,20 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // targets ((point.X, point.Y) = (3, 4)), chained mutable-value
             // writes (point.X.Value = 3), inferred-container writes
             // (points[0].X = 3), address-of (&point.X), ref/out/in arguments,
-            // and ref expressions all need rejection for init-only record
-            // struct properties / property-not-variable errors.
-            foreach (var memberAccess in EnumerateAssignmentMemberAccesses(writtenTarget))
+            // ref expressions, and this-ref extension receivers all need
+            // rejection for init-only record struct properties /
+            // property-not-variable errors. Gate receivers on the converted
+            // tuple type so unrelated same-named members of a larger
+            // aggregate (wrapped.X beside embedded point) are not false hits.
+            if (HasConvertedElementMemberAccess(
+                    writtenTarget,
+                    storages,
+                    memberNames,
+                    tupleType,
+                    semanticModel,
+                    root))
             {
-                if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
-                    continue;
-
-                var target = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
-                if (target != null && storages.Contains(target))
-                    return true;
-
-                // Element/indexer / nested field receivers (points[0],
-                // points.AsSpan()[0], wrapped.Value): reject when the receiver
-                // expression flows from converted storage.
-                if (ExpressionReferencesStorageAlias(
-                        memberAccess.Expression,
-                        storages,
-                        semanticModel))
-                {
-                    return true;
-                }
-
-                // wrapped.Value.X when wrapped embeds converted storage in Value
-                // (MemberAccess no longer aliases every aggregate member).
-                if (memberAccess.Expression is MemberAccessExpressionSyntax outerMember &&
-                    TupleAggregateMemberCarriesStorage(
-                        outerMember,
-                        storages,
-                        semanticModel,
-                        root))
-                {
-                    return true;
-                }
+                return true;
             }
         }
 
