@@ -531,6 +531,48 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     alias = semanticModel.GetDeclaredSymbol(forEach, cancellationToken);
                     source = forEach.Expression;
                 }
+                else if (node is IsPatternExpressionSyntax isPattern)
+                {
+                    // if (point is var copy) / point is { } copy (Codex P1)
+                    if (TryAddPatternDesignationAliases(
+                            isPattern.Pattern,
+                            isPattern.Expression,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
+                else if (node is SwitchExpressionArmSyntax arm &&
+                         arm.Parent is SwitchExpressionSyntax switchExpression)
+                {
+                    if (TryAddPatternDesignationAliases(
+                            arm.Pattern,
+                            switchExpression.GoverningExpression,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
+                else if (node is CasePatternSwitchLabelSyntax caseLabel &&
+                         caseLabel.Parent?.Parent is SwitchStatementSyntax switchStatement)
+                {
+                    if (TryAddPatternDesignationAliases(
+                            caseLabel.Pattern,
+                            switchStatement.Expression,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
 
                 if (alias == null || source == null || aliases.Contains(alias))
                     continue;
@@ -641,44 +683,105 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         switch (designation)
         {
             case SingleVariableDesignationSyntax single:
-            {
-                var alias = semanticModel.GetDeclaredSymbol(single, cancellationToken);
-                if (alias == null || aliases.Contains(alias))
-                    return false;
+                {
+                    var alias = semanticModel.GetDeclaredSymbol(single, cancellationToken);
+                    if (alias == null || aliases.Contains(alias))
+                        return false;
 
-                if (!ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken))
-                    return false;
+                    if (!ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken))
+                        return false;
 
-                aliases.Add(alias);
-                return true;
-            }
+                    aliases.Add(alias);
+                    return true;
+                }
             case ParenthesizedVariableDesignationSyntax parenthesized:
-            {
-                if (source is not TupleExpressionSyntax tuple ||
-                    tuple.Arguments.Count != parenthesized.Variables.Count)
                 {
-                    return false;
-                }
-
-                var added = false;
-                for (var i = 0; i < parenthesized.Variables.Count; i++)
-                {
-                    if (TryAddDeconstructionAliases(
-                            parenthesized.Variables[i],
-                            tuple.Arguments[i].Expression,
-                            aliases,
-                            semanticModel,
-                            cancellationToken))
+                    if (source is not TupleExpressionSyntax tuple ||
+                        tuple.Arguments.Count != parenthesized.Variables.Count)
                     {
-                        added = true;
+                        return false;
                     }
-                }
 
-                return added;
-            }
+                    var added = false;
+                    for (var i = 0; i < parenthesized.Variables.Count; i++)
+                    {
+                        if (TryAddDeconstructionAliases(
+                                parenthesized.Variables[i],
+                                tuple.Arguments[i].Expression,
+                                aliases,
+                                semanticModel,
+                                cancellationToken))
+                        {
+                            added = true;
+                        }
+                    }
+
+                    return added;
+                }
             default:
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Adds aliases for pattern designations that copy converted storage
+    /// (<c>if (point is var copy)</c>, <c>point is { } copy</c>, switch arms/cases).
+    /// </summary>
+    private static bool TryAddPatternDesignationAliases(
+        PatternSyntax pattern,
+        ExpressionSyntax input,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        pattern = UnwrapParenthesizedPattern(pattern);
+
+        switch (pattern)
+        {
+            case VarPatternSyntax varPattern:
+                return TryAddDeconstructionAliases(
+                    varPattern.Designation,
+                    input,
+                    aliases,
+                    semanticModel,
+                    cancellationToken);
+
+            case DeclarationPatternSyntax declarationPattern when
+                declarationPattern.Designation != null:
+                return TryAddDeconstructionAliases(
+                    declarationPattern.Designation,
+                    input,
+                    aliases,
+                    semanticModel,
+                    cancellationToken);
+
+            case RecursivePatternSyntax recursive when recursive.Designation != null:
+                return TryAddDeconstructionAliases(
+                    recursive.Designation,
+                    input,
+                    aliases,
+                    semanticModel,
+                    cancellationToken);
+
+            case BinaryPatternSyntax binary:
+                {
+                    var left = TryAddPatternDesignationAliases(
+                        binary.Left, input, aliases, semanticModel, cancellationToken);
+                    var right = TryAddPatternDesignationAliases(
+                        binary.Right, input, aliases, semanticModel, cancellationToken);
+                    return left || right;
+                }
+
+            default:
+                return false;
+        }
+    }
+
+    private static PatternSyntax UnwrapParenthesizedPattern(PatternSyntax pattern)
+    {
+        while (pattern is ParenthesizedPatternSyntax parenthesized)
+            pattern = parenthesized.Pattern;
+        return pattern;
     }
 
     private static ExpressionSyntax UnwrapParenthesesAndRef(ExpressionSyntax expression)
@@ -1228,15 +1331,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (expression is not MemberAccessExpressionSyntax memberAccess)
             return false;
 
-        if (!TryGetCarriedMemberInitializer(
-                memberAccess, storages, semanticModel, root, out var initializer) ||
-            initializer == null)
+        // Try every candidate carrier initializer (constant-index path plus
+        // conservative nonconstant-index enumeration — Codex P1).
+        foreach (var initializer in EnumerateCarriedMemberInitializers(
+                     memberAccess, storages, semanticModel, root))
         {
-            return false;
+            if (ExpressionYieldsConvertedStorage(
+                    initializer, storages, tupleType, semanticModel, root))
+            {
+                return true;
+            }
         }
 
-        return ExpressionYieldsConvertedStorage(
-            initializer, storages, tupleType, semanticModel, root);
+        return false;
     }
 
     /// <summary>
@@ -1252,16 +1359,39 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         out ExpressionSyntax? initializer)
     {
         initializer = null;
-        var memberName = memberAccess.Name.Identifier.ValueText;
-
-        if (!TryResolveAggregateCreation(
-                memberAccess.Expression, storages, semanticModel, root, out var creation) ||
-            creation == null)
+        foreach (var candidate in EnumerateCarriedMemberInitializers(
+                     memberAccess, storages, semanticModel, root))
         {
-            return false;
+            initializer = candidate;
+            return true;
         }
 
-        return TryGetNamedMemberInitializer(creation, memberName, semanticModel, out initializer);
+        return false;
+    }
+
+    /// <summary>
+    /// Yields every initializer that <paramref name="memberAccess"/>'s member may
+    /// resolve to on a tracked aggregate, including every element when the
+    /// receiver uses a nonconstant container index.
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateCarriedMemberInitializers(
+        MemberAccessExpressionSyntax memberAccess,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root)
+    {
+        var memberName = memberAccess.Name.Identifier.ValueText;
+
+        foreach (var creation in EnumerateAggregateCreations(
+                     memberAccess.Expression, storages, semanticModel, root))
+        {
+            if (TryGetNamedMemberInitializer(
+                    creation, memberName, semanticModel, out var initializer) &&
+                initializer != null)
+            {
+                yield return initializer;
+            }
+        }
     }
 
     private static bool TryResolveAggregateCreation(
@@ -1272,35 +1402,93 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         out ExpressionSyntax? creation)
     {
         creation = null;
-        receiver = UnwrapParenthesesAndNullForgiving(receiver);
-
-        var symbol = semanticModel.GetSymbolInfo(receiver).Symbol;
-        if (symbol != null && storages.Contains(symbol))
-            return TryFindSymbolInitializerExpression(symbol, root, semanticModel, out creation);
-
-        // Nested carrier: outer.Inner where Inner's initializer is itself an aggregate.
-        if (receiver is MemberAccessExpressionSyntax nested &&
-            TryGetCarriedMemberInitializer(nested, storages, semanticModel, root, out creation))
+        foreach (var candidate in EnumerateAggregateCreations(
+                     receiver, storages, semanticModel, root))
         {
-            return creation != null;
-        }
-
-        // Container element carrier: boxes[0] where boxes = new[] { new { Value = point } }
-        // (Codex P1 — peel element-access before inspecting the carrier initializer).
-        if (receiver is ElementAccessExpressionSyntax elementAccess &&
-            TryResolveContainerElementInitializer(
-                elementAccess, storages, semanticModel, root, out creation))
-        {
-            return creation != null;
+            creation = candidate;
+            return true;
         }
 
         return false;
     }
 
     /// <summary>
+    /// Yields aggregate creation expressions reachable from
+    /// <paramref name="receiver"/> (tracked symbol initializer, nested carrier
+    /// member, or container element — including every element when the index is
+    /// nonconstant).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateAggregateCreations(
+        ExpressionSyntax receiver,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root)
+    {
+        receiver = UnwrapParenthesesAndNullForgiving(receiver);
+
+        var symbol = semanticModel.GetSymbolInfo(receiver).Symbol;
+        if (symbol != null && storages.Contains(symbol))
+        {
+            if (TryFindSymbolInitializerExpression(
+                    symbol, root, semanticModel, out var creation) &&
+                creation != null)
+            {
+                yield return creation;
+            }
+
+            yield break;
+        }
+
+        // Nested carrier: outer.Inner where Inner's initializer is itself an aggregate.
+        if (receiver is MemberAccessExpressionSyntax nested)
+        {
+            foreach (var initializer in EnumerateCarriedMemberInitializers(
+                         nested, storages, semanticModel, root))
+            {
+                yield return initializer;
+            }
+
+            yield break;
+        }
+
+        // Container element carrier: boxes[0] / boxes[i] where
+        // boxes = new[] { new { Value = point } } (Codex P1 — peel element-access;
+        // nonconstant indices enumerate every initialized element).
+        if (receiver is ElementAccessExpressionSyntax elementAccess)
+        {
+            if (!TryResolveContainerInitializer(
+                    elementAccess.Expression,
+                    storages,
+                    semanticModel,
+                    root,
+                    out var containerInitializer) ||
+                containerInitializer == null)
+            {
+                yield break;
+            }
+
+            if (TryGetConstantElementIndex(elementAccess, semanticModel, out var index))
+            {
+                if (TryGetElementAtConstantIndex(
+                        containerInitializer, index, out var element) &&
+                    element != null)
+                {
+                    yield return element;
+                }
+
+                yield break;
+            }
+
+            foreach (var element in EnumerateContainerElementExpressions(containerInitializer))
+                yield return element;
+        }
+    }
+
+    /// <summary>
     /// Resolves the initializer of a tracked container element
     /// (<c>boxes[0]</c> → <c>new { Value = point }</c>) so aggregate carrier
-    /// lookup can continue through the element.
+    /// lookup can continue through the element. Constant indices only; nonconstant
+    /// indices are enumerated by <see cref="EnumerateAggregateCreations"/>.
     /// </summary>
     private static bool TryResolveContainerElementInitializer(
         ElementAccessExpressionSyntax elementAccess,
@@ -1367,10 +1555,23 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         out ExpressionSyntax? element)
     {
         element = null;
-        containerInitializer = UnwrapParenthesesAndNullForgiving(containerInitializer);
-
         if (!TryGetConstantElementIndex(elementAccess, semanticModel, out var index))
             return false;
+
+        return TryGetElementAtConstantIndex(containerInitializer, index, out element);
+    }
+
+    /// <summary>
+    /// Picks the element expression at <paramref name="index"/> from an array /
+    /// collection creation initializer.
+    /// </summary>
+    private static bool TryGetElementAtConstantIndex(
+        ExpressionSyntax containerInitializer,
+        int index,
+        out ExpressionSyntax? element)
+    {
+        element = null;
+        containerInitializer = UnwrapParenthesesAndNullForgiving(containerInitializer);
 
         SeparatedSyntaxList<ExpressionSyntax>? expressions = containerInitializer switch
         {
@@ -1423,6 +1624,50 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Enumerates element expressions from an array / collection creation
+    /// initializer (used for conservative nonconstant-index carrier resolution).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateContainerElementExpressions(
+        ExpressionSyntax containerInitializer)
+    {
+        containerInitializer = UnwrapParenthesesAndNullForgiving(containerInitializer);
+
+        SeparatedSyntaxList<ExpressionSyntax>? expressions = containerInitializer switch
+        {
+            ImplicitArrayCreationExpressionSyntax implicitArray
+                when implicitArray.Initializer != null => implicitArray.Initializer.Expressions,
+            ArrayCreationExpressionSyntax arrayCreation
+                when arrayCreation.Initializer != null => arrayCreation.Initializer.Expressions,
+            _ => null
+        };
+
+        if (expressions != null)
+        {
+            foreach (var expression in expressions.Value)
+                yield return expression;
+            yield break;
+        }
+
+        if (containerInitializer is CollectionExpressionSyntax collection)
+        {
+            foreach (var collectionElement in collection.Elements)
+            {
+                if (collectionElement is ExpressionElementSyntax expressionElement)
+                    yield return expressionElement.Expression;
+            }
+
+            yield break;
+        }
+
+        if (containerInitializer is ObjectCreationExpressionSyntax objectCreation &&
+            objectCreation.Initializer != null)
+        {
+            foreach (var expression in objectCreation.Initializer.Expressions)
+                yield return expression;
+        }
     }
 
     private static bool TryGetConstantElementIndex(
