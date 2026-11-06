@@ -509,6 +509,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 else if (node is AssignmentExpressionSyntax assignment &&
                          assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
                 {
+                    // var (copy, _) = (point, 0); / (copy, _) = … / (var copy, var _) = …
+                    if (TryAddDeconstructionAliasesFromAssignment(
+                            assignment.Left,
+                            assignment.Right,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+
                     alias = semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
                     source = assignment.Right;
                 }
@@ -542,6 +554,144 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         return aliases;
+    }
+
+    /// <summary>
+    /// Adds aliases for deconstruction destinations on an assignment LHS
+    /// (<c>(copy, _) = (point, 0)</c> or <c>(var copy, var _) = (point, 0)</c>).
+    /// </summary>
+    private static bool TryAddDeconstructionAliasesFromAssignment(
+        ExpressionSyntax left,
+        ExpressionSyntax right,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        left = UnwrapParenthesesAndNullForgiving(left);
+
+        if (left is DeclarationExpressionSyntax declaration &&
+            declaration.Designation != null)
+        {
+            return TryAddDeconstructionAliases(
+                declaration.Designation, right, aliases, semanticModel, cancellationToken);
+        }
+
+        if (left is TupleExpressionSyntax leftTuple)
+        {
+            right = UnwrapParenthesesAndRef(right);
+            if (right is not TupleExpressionSyntax rightTuple ||
+                leftTuple.Arguments.Count != rightTuple.Arguments.Count)
+            {
+                return false;
+            }
+
+            var added = false;
+            for (var i = 0; i < leftTuple.Arguments.Count; i++)
+            {
+                var dest = leftTuple.Arguments[i].Expression;
+                var src = rightTuple.Arguments[i].Expression;
+
+                if (dest is DeclarationExpressionSyntax nestedDeclaration &&
+                    nestedDeclaration.Designation != null)
+                {
+                    if (TryAddDeconstructionAliases(
+                            nestedDeclaration.Designation,
+                            src,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        added = true;
+                    }
+
+                    continue;
+                }
+
+                dest = UnwrapParenthesesAndNullForgiving(dest);
+                var destSymbol = semanticModel.GetSymbolInfo(dest, cancellationToken).Symbol;
+                if (destSymbol == null || aliases.Contains(destSymbol))
+                    continue;
+
+                if (ExpressionReferencesStorageAlias(src, aliases, semanticModel, cancellationToken))
+                {
+                    aliases.Add(destSymbol);
+                    added = true;
+                }
+            }
+
+            return added;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Pairs deconstruction destinations with corresponding RHS tuple elements
+    /// so <c>var (copy, _) = (point, 0)</c> tracks <c>copy</c> as a storage alias.
+    /// </summary>
+    private static bool TryAddDeconstructionAliases(
+        VariableDesignationSyntax designation,
+        ExpressionSyntax source,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        source = UnwrapParenthesesAndRef(source);
+
+        switch (designation)
+        {
+            case SingleVariableDesignationSyntax single:
+            {
+                var alias = semanticModel.GetDeclaredSymbol(single, cancellationToken);
+                if (alias == null || aliases.Contains(alias))
+                    return false;
+
+                if (!ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken))
+                    return false;
+
+                aliases.Add(alias);
+                return true;
+            }
+            case ParenthesizedVariableDesignationSyntax parenthesized:
+            {
+                if (source is not TupleExpressionSyntax tuple ||
+                    tuple.Arguments.Count != parenthesized.Variables.Count)
+                {
+                    return false;
+                }
+
+                var added = false;
+                for (var i = 0; i < parenthesized.Variables.Count; i++)
+                {
+                    if (TryAddDeconstructionAliases(
+                            parenthesized.Variables[i],
+                            tuple.Arguments[i].Expression,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        added = true;
+                    }
+                }
+
+                return added;
+            }
+            default:
+                return false;
+        }
+    }
+
+    private static ExpressionSyntax UnwrapParenthesesAndRef(ExpressionSyntax expression)
+    {
+        while (true)
+        {
+            if (expression is ParenthesizedExpressionSyntax parenthesized)
+                expression = parenthesized.Expression;
+            else if (expression is RefExpressionSyntax refExpression)
+                expression = refExpression.Expression;
+            else
+                return expression;
+        }
     }
 
     /// <summary>
@@ -1135,7 +1285,174 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return creation != null;
         }
 
+        // Container element carrier: boxes[0] where boxes = new[] { new { Value = point } }
+        // (Codex P1 — peel element-access before inspecting the carrier initializer).
+        if (receiver is ElementAccessExpressionSyntax elementAccess &&
+            TryResolveContainerElementInitializer(
+                elementAccess, storages, semanticModel, root, out creation))
+        {
+            return creation != null;
+        }
+
         return false;
+    }
+
+    /// <summary>
+    /// Resolves the initializer of a tracked container element
+    /// (<c>boxes[0]</c> → <c>new { Value = point }</c>) so aggregate carrier
+    /// lookup can continue through the element.
+    /// </summary>
+    private static bool TryResolveContainerElementInitializer(
+        ElementAccessExpressionSyntax elementAccess,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        out ExpressionSyntax? elementInitializer)
+    {
+        elementInitializer = null;
+
+        if (!TryResolveContainerInitializer(
+                elementAccess.Expression, storages, semanticModel, root, out var containerInitializer) ||
+            containerInitializer == null)
+        {
+            return false;
+        }
+
+        return TryGetConstantIndexedElement(
+            containerInitializer, elementAccess, semanticModel, out elementInitializer);
+    }
+
+    /// <summary>
+    /// Resolves the expression that initialized a container receiver (tracked
+    /// symbol, nested carrier member, or another indexed container).
+    /// </summary>
+    private static bool TryResolveContainerInitializer(
+        ExpressionSyntax container,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        out ExpressionSyntax? initializer)
+    {
+        initializer = null;
+        container = UnwrapParenthesesAndNullForgiving(container);
+
+        var symbol = semanticModel.GetSymbolInfo(container).Symbol;
+        if (symbol != null && storages.Contains(symbol))
+            return TryFindSymbolInitializerExpression(symbol, root, semanticModel, out initializer);
+
+        if (container is MemberAccessExpressionSyntax nested &&
+            TryGetCarriedMemberInitializer(nested, storages, semanticModel, root, out initializer))
+        {
+            return initializer != null;
+        }
+
+        if (container is ElementAccessExpressionSyntax nestedElement &&
+            TryResolveContainerElementInitializer(
+                nestedElement, storages, semanticModel, root, out initializer))
+        {
+            return initializer != null;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Picks the element expression at a constant index from an array /
+    /// collection creation initializer.
+    /// </summary>
+    private static bool TryGetConstantIndexedElement(
+        ExpressionSyntax containerInitializer,
+        ElementAccessExpressionSyntax elementAccess,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? element)
+    {
+        element = null;
+        containerInitializer = UnwrapParenthesesAndNullForgiving(containerInitializer);
+
+        if (!TryGetConstantElementIndex(elementAccess, semanticModel, out var index))
+            return false;
+
+        SeparatedSyntaxList<ExpressionSyntax>? expressions = containerInitializer switch
+        {
+            ImplicitArrayCreationExpressionSyntax implicitArray
+                when implicitArray.Initializer != null => implicitArray.Initializer.Expressions,
+            ArrayCreationExpressionSyntax arrayCreation
+                when arrayCreation.Initializer != null => arrayCreation.Initializer.Expressions,
+            _ => null
+        };
+
+        if (expressions != null)
+        {
+            if (index < 0 || index >= expressions.Value.Count)
+                return false;
+
+            element = expressions.Value[index];
+            return true;
+        }
+
+        if (containerInitializer is CollectionExpressionSyntax collection)
+        {
+            var seen = 0;
+            foreach (var collectionElement in collection.Elements)
+            {
+                if (collectionElement is not ExpressionElementSyntax expressionElement)
+                    continue;
+
+                if (seen == index)
+                {
+                    element = expressionElement.Expression;
+                    return true;
+                }
+
+                seen++;
+            }
+
+            return false;
+        }
+
+        // new List<T> { expr0, expr1 } / similar object-creation collection initializers.
+        if (containerInitializer is ObjectCreationExpressionSyntax objectCreation &&
+            objectCreation.Initializer != null)
+        {
+            var initExpressions = objectCreation.Initializer.Expressions;
+            if (index < 0 || index >= initExpressions.Count)
+                return false;
+
+            element = initExpressions[index];
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetConstantElementIndex(
+        ElementAccessExpressionSyntax elementAccess,
+        SemanticModel semanticModel,
+        out int index)
+    {
+        index = -1;
+        if (elementAccess.ArgumentList.Arguments.Count != 1)
+            return false;
+
+        var arg = elementAccess.ArgumentList.Arguments[0].Expression;
+        var constant = semanticModel.GetConstantValue(arg);
+        if (!constant.HasValue)
+            return false;
+
+        index = constant.Value switch
+        {
+            int i => i,
+            long l when l >= int.MinValue && l <= int.MaxValue => (int)l,
+            uint ui when ui <= int.MaxValue => (int)ui,
+            byte b => b,
+            sbyte sb => sb,
+            short s => s,
+            ushort us => us,
+            char c => c,
+            _ => -1
+        };
+
+        return index >= 0;
     }
 
     private static bool TryFindSymbolInitializerExpression(
