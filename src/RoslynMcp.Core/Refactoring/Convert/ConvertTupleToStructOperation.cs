@@ -637,6 +637,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         source = parenthesized.Expression;
                     else if (source is RefExpressionSyntax refExpression)
                         source = refExpression.Expression;
+                    // Pointer aliases: var p = &point; / p = &point (Codex P1).
+                    else if (source is PrefixUnaryExpressionSyntax addressOf &&
+                             addressOf.IsKind(SyntaxKind.AddressOfExpression))
+                        source = addressOf.Operand;
                     else
                         break;
                 }
@@ -2632,8 +2636,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// <summary>
     /// True when a converted storage alias has a tuple element used as a
     /// <c>ref</c>/<c>out</c>/<c>in</c> argument, address-of operand, ref expression,
-    /// <c>this ref</c> extension receiver, or non-<c>readonly</c> mutable value-type
-    /// instance-method receiver (including positional <c>ItemN</c> aliases).
+    /// writable <c>this ref</c> extension receiver, pointer indirection through a
+    /// tracked address-of alias (<c>var p = &amp;point; Bump(ref p-&gt;X)</c>), or
+    /// non-<c>readonly</c> mutable value-type instance-method receiver (including
+    /// positional <c>ItemN</c> aliases).
     /// Generated properties cannot accept those uses (CS0206 / silent copy); tuple fields can.
     /// By-ref storage reached <em>through</em> a reference-type element
     /// (for example <c>Bump(ref point.Values[0])</c>) or through a value-type
@@ -2691,11 +2697,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// True when <paramref name="invocation"/> uses its receiver by reference:
-    /// a reduced extension with <c>this ref</c>/<c>in</c>/<c>ref readonly</c>
+    /// a reduced extension with writable <c>this ref</c>
     /// (for example <c>point.X.Increment()</c> with <c>Increment(this ref int)</c>),
     /// or a non-<c>readonly</c> instance method on a mutable value-type element
     /// (for example <c>point.Counter.Increment()</c> on a mutable struct field —
     /// tuple fields persist the mutation; generated properties mutate a temporary).
+    /// Readonly <c>this in</c> / <c>ref readonly</c> receivers are allowed — a
+    /// generated property is a valid value receiver with the same readonly behavior
+    /// (Codex P2 on #3441).
     /// </summary>
     private static bool TryGetRefReceiverExpression(
         InvocationExpressionSyntax invocation,
@@ -2710,14 +2719,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return false;
 
         // Reduced extension calls hide the `this` parameter; inspect ReducedFrom
-        // (or the unreduced extension declaration) for `this ref` / `this in`.
+        // (or the unreduced extension declaration) for writable `this ref` only.
         var extensionSource = method.ReducedFrom
             ?? (method.IsExtensionMethod ? method : null);
         if (extensionSource != null && !extensionSource.Parameters.IsDefaultOrEmpty)
         {
             var thisParameter = extensionSource.Parameters[0];
-            if (thisParameter.RefKind is (
-                    RefKind.Ref or RefKind.In or RefKind.RefReadOnlyParameter))
+            if (thisParameter.RefKind == RefKind.Ref)
             {
                 receiver = memberAccess.Expression;
                 return true;
@@ -2930,10 +2938,22 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (tupleType != null && receiverType != null &&
             !SymbolEqualityComparer.Default.Equals(receiverType, tupleType))
         {
-            // Larger aggregate (e.g. wrapped in (point, X: 5)) — not the
-            // converted storage itself; element checks must use
-            // ExpressionYieldsConvertedStorage on the carrier member.
-            return false;
+            // Pointer aliases (var p = &point; Bump(ref p->X)) — pointee matches
+            // the converted tuple type, so p->Element is a by-ref use of storage
+            // (Codex P1 on #3441). Larger aggregates that merely embed storage
+            // still fall through to the refuse-on-mismatch path below.
+            if (receiverType is IPointerTypeSymbol pointer &&
+                SymbolEqualityComparer.Default.Equals(pointer.PointedAtType, tupleType))
+            {
+                // Fall through to symbol / alias checks.
+            }
+            else
+            {
+                // Larger aggregate (e.g. wrapped in (point, X: 5)) — not the
+                // converted storage itself; element checks must use
+                // ExpressionYieldsConvertedStorage on the carrier member.
+                return false;
+            }
         }
 
         var target = semanticModel.GetSymbolInfo(receiver).Symbol;

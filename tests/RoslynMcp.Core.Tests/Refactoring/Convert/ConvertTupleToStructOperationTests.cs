@@ -1162,6 +1162,85 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441: pointer aliases of converted storage participate in the by-ref gate.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_PointerAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public unsafe class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var p = &point;
+                    Bump(ref p->X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: readonly this-in extension receivers remain valid on generated properties.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_InExtensionReceiverOnElement_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public static class IntExtensions
+            {
+                public static int Inspect(this in int value) => value;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    _ = point.X.Inspect();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("point.X.Inspect()", text, StringComparison.Ordinal);
+    }
+
     // Codex P2 on #3441: unrelated same-named member on a container aggregate must still convert.
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordFalse_UnrelatedAggregateRefMember_Succeeds()
