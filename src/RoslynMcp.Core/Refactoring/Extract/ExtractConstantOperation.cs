@@ -100,6 +100,15 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (!IdentifierValidation.IsValidIdentifier(@params.ConstantName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid constant name: {@params.ConstantName}");
 
+        // "_" is a legal identifier, but a constant named "_" captures every discard in the
+        // type (_ = Log(v) / out _ now target the constant: CS0131 / CS1510).
+        if (@params.ConstantName is "_" or "@_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolName,
+                "'_' is not a valid constant name: existing discards (_ = ... / out _) would bind to the new constant.");
+        }
+
         if (!VisibilityTokenHelpers.IsValidVisibility(@params.Visibility))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
     }

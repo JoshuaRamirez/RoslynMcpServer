@@ -100,6 +100,15 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         if (@params.PropertyName != null && !SyntaxIdentifierValidation.IsValidIdentifier(@params.PropertyName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid property name: {@params.PropertyName}");
 
+        // "_" is a legal identifier, but a property named "_" captures every discard in the
+        // type (_ = Log(v) / out _ become property writes: CS0206 or a silent behavior change).
+        if (@params.PropertyName is "_" or "@_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolName,
+                "'_' is not a valid property name: existing discards (_ = ... / out _) would bind to the new property.");
+        }
+
         if (!string.IsNullOrWhiteSpace(@params.Visibility) && !VisibilityTokenHelpers.IsValidVisibility(@params.Visibility.Trim()))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
     }
