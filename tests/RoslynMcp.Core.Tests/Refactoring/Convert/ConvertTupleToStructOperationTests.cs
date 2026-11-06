@@ -1880,8 +1880,10 @@ public class ConvertTupleToStructOperationTests
     }
 
     // Codex P1 on #3441: List<T>.ForEach instance receiver must map containing-type T.
-    [SkippableFact]
-    public async Task ConvertTupleToStruct_AsRecordFalse_GenericInstanceReceiverCallbackRefElement_ThrowsAndWritesNothing()
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_GenericInstanceReceiverCallbackRefElement_ThrowsAndWritesNothing(bool asRecord)
     {
         const string source = """
             using System.Collections.Generic;
@@ -1903,6 +1905,7 @@ public class ConvertTupleToStructOperationTests
             }
             """;
 
+        AssertTupleContainerCompiles(source);
         await using var workspace = await TempWorkspace.CreateAsync(source);
         var original = await File.ReadAllTextAsync(workspace.SourcePath);
         var operation = new ConvertTupleToStructOperation(workspace.Context);
@@ -1913,12 +1916,76 @@ public class ConvertTupleToStructOperationTests
                 SourceFile = workspace.SourcePath,
                 Line = 12,
                 NewTypeName = "Point",
-                AsRecord = false
+                AsRecord = asRecord
             }));
 
         Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
-        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
-        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(original, after);
+        AssertTupleContainerCompiles(after);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_ExplicitTupleContainerForEachRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            using System.Collections.Generic;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var list = new List<(int X, int Y)> { point };
+                    list.ForEach(copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var error = await Record.ExceptionAsync(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        // Compile the actual file even if the tool incorrectly reported success.
+        AssertTupleContainerCompiles(after);
+        var ex = Assert.IsType<RefactoringException>(error);
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal("3020", ex.ErrorCode);
+        Assert.Equal(original, after);
+    }
+
+    private static void AssertTupleContainerCompiles(string source)
+    {
+        var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator)
+            .Select(path => MetadataReference.CreateFromFile(path));
+        var compilation = CSharpCompilation.Create(
+            "TupleContainerRegression",
+            [CSharpSyntaxTree.ParseText(source)],
+            references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        using var output = new MemoryStream();
+        var result = compilation.Emit(output);
+        Assert.True(result.Success, string.Join(Environment.NewLine, result.Diagnostics));
     }
 
     // Codex P1 on #3441: query range variables must be tracked as storage aliases.
@@ -1962,8 +2029,10 @@ public class ConvertTupleToStructOperationTests
     }
 
     // Codex P1 on #3441: inferred out var receiving converted generic type must be tracked.
-    [SkippableFact]
-    public async Task ConvertTupleToStruct_AsRecordFalse_OutVarAliasRefElement_ThrowsAndWritesNothing()
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_OutVarAliasRefElement_ThrowsAndWritesNothing(bool asRecord)
     {
         const string source = """
             namespace TestApp;
@@ -1984,6 +2053,7 @@ public class ConvertTupleToStructOperationTests
             }
             """;
 
+        AssertTupleContainerCompiles(source);
         await using var workspace = await TempWorkspace.CreateAsync(source);
         var original = await File.ReadAllTextAsync(workspace.SourcePath);
         var operation = new ConvertTupleToStructOperation(workspace.Context);
@@ -1994,12 +2064,14 @@ public class ConvertTupleToStructOperationTests
                 SourceFile = workspace.SourcePath,
                 Line = 11,
                 NewTypeName = "Point",
-                AsRecord = false
+                AsRecord = asRecord
             }));
 
         Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
-        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
-        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(original, after);
+        AssertTupleContainerCompiles(after);
     }
 
     // Codex P1 on #3441: list-pattern element designations must be traversed.

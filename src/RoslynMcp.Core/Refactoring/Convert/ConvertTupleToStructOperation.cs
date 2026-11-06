@@ -1746,6 +1746,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
+        // Explicit collection containers also carry converted values. Their generic
+        // element type may stay a tuple, but by-ref callbacks must still refuse
+        // before replacing the initializer value with an incompatible struct.
+        if (expression is BaseObjectCreationExpressionSyntax { Initializer: { } initializer } &&
+            initializer.IsKind(SyntaxKind.CollectionInitializerExpression))
+        {
+            foreach (var element in initializer.Expressions)
+            {
+                if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
+        }
+
         // Nested tuple containers: var wrapped = (Value: point, Other: 0);
         if (expression is TupleExpressionSyntax tupleExpression)
         {
