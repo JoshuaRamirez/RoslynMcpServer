@@ -1794,6 +1794,91 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441: map Zip-style multi-param callbacks to the storage-carrying input.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_CallbackNonFirstParamRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    var other = new[] { 0 };
+                    _ = other.Zip(points, (n, copy) => { Bump(ref copy.X); return n; }).ToArray();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: do not alias unrelated sibling callback params that keep the tuple type.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_UnrelatedCallbackParam_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static void Run<T>(T value, System.Action<(int X, int Y)> action)
+                {
+                    _ = value;
+                    action(default);
+                }
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Run(point, other => Bump(ref other.X));
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 15,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref other.X)", text, StringComparison.Ordinal);
+    }
+
     // Codex P1 on #3441: list-pattern element designations must be traversed.
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordFalse_ListPatternAliasRefElement_ThrowsAndWritesNothing()

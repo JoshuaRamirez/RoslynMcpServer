@@ -1066,10 +1066,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// When an invocation carries converted storage (as a sequence argument or
-    /// receiver) into a callback lambda, tracks the lambda's element parameter
-    /// so <c>Array.ForEach(new[] { point }, copy =&gt; Bump(ref copy.X))</c>
-    /// refuses (Codex P1).
+    /// When an invocation feeds converted storage into a callback lambda via a
+    /// method type parameter (receiver or argument), tracks only the lambda
+    /// parameters whose bound delegate inputs use that type parameter — e.g.
+    /// <c>Array.ForEach(new[] { point }, copy =&gt; Bump(ref copy.X))</c> and
+    /// <c>other.Zip(points, (n, copy) =&gt; …)</c> (Codex P1), but not an
+    /// unrelated sibling lambda such as <c>Run(point, other =&gt; …)</c> whose
+    /// delegate input stays the original tuple type (Codex P2).
     /// </summary>
     private static bool TryAddLambdaParameterAliasesFromInvocation(
         InvocationExpressionSyntax invocation,
@@ -1077,90 +1080,183 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        var carriesStorage = false;
-
-        if (invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
-            ExpressionReferencesStorageAlias(
-                memberAccess.Expression, aliases, semanticModel, cancellationToken))
+        var symbolInfo = semanticModel.GetSymbolInfo(invocation, cancellationToken);
+        var method = symbolInfo.Symbol as IMethodSymbol;
+        if (method == null &&
+            symbolInfo.CandidateSymbols.Length == 1)
         {
-            carriesStorage = true;
+            method = symbolInfo.CandidateSymbols[0] as IMethodSymbol;
         }
 
-        foreach (var argument in invocation.ArgumentList.Arguments)
+        if (method == null)
+            return false;
+
+        var definingMethod = (method.ReducedFrom ?? method).OriginalDefinition;
+        var extensionOffset = method.ReducedFrom != null ? 1 : 0;
+        var storageTypeParameters = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+
+        if (extensionOffset == 1 &&
+            invocation.Expression is MemberAccessExpressionSyntax extensionReceiver &&
+            definingMethod.Parameters.Length > 0 &&
+            ExpressionReferencesStorageAlias(
+                extensionReceiver.Expression, aliases, semanticModel, cancellationToken))
         {
+            CollectMethodTypeParameters(definingMethod.Parameters[0].Type, storageTypeParameters);
+        }
+
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
             var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
             if (expr is AnonymousFunctionExpressionSyntax)
                 continue;
 
-            if (ExpressionReferencesStorageAlias(
+            var reducedParameter = ResolveInvocationParameter(method, argument, i);
+            if (reducedParameter == null)
+                continue;
+
+            var definingOrdinal = reducedParameter.Ordinal + extensionOffset;
+            if (definingOrdinal < 0 || definingOrdinal >= definingMethod.Parameters.Length)
+                continue;
+
+            if (!ExpressionReferencesStorageAlias(
                     argument.Expression, aliases, semanticModel, cancellationToken))
             {
-                carriesStorage = true;
+                continue;
             }
+
+            CollectMethodTypeParameters(
+                definingMethod.Parameters[definingOrdinal].Type,
+                storageTypeParameters);
         }
 
-        if (!carriesStorage)
+        if (storageTypeParameters.Count == 0)
             return false;
 
         var added = false;
-        foreach (var argument in invocation.ArgumentList.Arguments)
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
         {
+            var argument = invocation.ArgumentList.Arguments[i];
             var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
-            if (TryAddAliasesFromCallbackLambda(expr, aliases, semanticModel, cancellationToken))
+            if (expr is not AnonymousFunctionExpressionSyntax)
+                continue;
+
+            var reducedParameter = ResolveInvocationParameter(method, argument, i);
+            if (reducedParameter == null)
+                continue;
+
+            var definingOrdinal = reducedParameter.Ordinal + extensionOffset;
+            if (definingOrdinal < 0 || definingOrdinal >= definingMethod.Parameters.Length)
+                continue;
+
+            if (TryAddAliasesFromCallbackLambda(
+                    expr,
+                    definingMethod.Parameters[definingOrdinal].Type,
+                    storageTypeParameters,
+                    aliases,
+                    semanticModel,
+                    cancellationToken))
+            {
                 added = true;
+            }
         }
 
         return added;
     }
 
     /// <summary>
-    /// Adds the element-binding parameter of a callback lambda (first parameter)
-    /// when the enclosing invocation carries converted storage.
+    /// Adds callback lambda parameters whose bound delegate inputs (from
+    /// <paramref name="delegateParameterType"/>) involve a storage-sourced
+    /// method type parameter.
     /// </summary>
     private static bool TryAddAliasesFromCallbackLambda(
         ExpressionSyntax expression,
+        ITypeSymbol delegateParameterType,
+        HashSet<ITypeParameterSymbol> storageTypeParameters,
         HashSet<ISymbol> aliases,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        if (expression is SimpleLambdaExpressionSyntax simple)
+        if (delegateParameterType is not INamedTypeSymbol { DelegateInvokeMethod: { } invoke })
+            return false;
+
+        IReadOnlyList<ParameterSyntax>? parameters = expression switch
         {
-            var alias = semanticModel.GetDeclaredSymbol(simple.Parameter, cancellationToken);
+            SimpleLambdaExpressionSyntax simple => new[] { simple.Parameter },
+            ParenthesizedLambdaExpressionSyntax parenthesized => parenthesized.ParameterList.Parameters,
+            AnonymousMethodExpressionSyntax { ParameterList: { } list } => list.Parameters,
+            _ => null
+        };
+
+        if (parameters == null || parameters.Count == 0)
+            return false;
+
+        var added = false;
+        var limit = Math.Min(parameters.Count, invoke.Parameters.Length);
+        for (var i = 0; i < limit; i++)
+        {
+            if (!TypeContainsAnyMethodTypeParameter(invoke.Parameters[i].Type, storageTypeParameters))
+                continue;
+
+            var alias = semanticModel.GetDeclaredSymbol(parameters[i], cancellationToken);
             if (alias == null || aliases.Contains(alias))
-                return false;
+                continue;
 
             aliases.Add(alias);
-            return true;
+            added = true;
         }
 
-        if (expression is ParenthesizedLambdaExpressionSyntax parenthesized &&
-            parenthesized.ParameterList.Parameters.Count >= 1)
+        return added;
+    }
+
+    /// <summary>
+    /// Collects method type parameters appearing in <paramref name="type"/>
+    /// (e.g. <c>T</c> from <c>IEnumerable&lt;T&gt;</c> / <c>T[]</c> / <c>Action&lt;T&gt;</c>).
+    /// </summary>
+    private static void CollectMethodTypeParameters(
+        ITypeSymbol type,
+        HashSet<ITypeParameterSymbol> into)
+    {
+        switch (type)
         {
-            // Sequence callbacks bind the element to the first parameter
-            // (ForEach, Select, ConvertAll, indexed Select's element, …).
-            var first = parenthesized.ParameterList.Parameters[0];
-            var alias = semanticModel.GetDeclaredSymbol(first, cancellationToken);
-            if (alias == null || aliases.Contains(alias))
-                return false;
-
-            aliases.Add(alias);
-            return true;
+            case ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } typeParameter:
+                into.Add(typeParameter);
+                break;
+            case IArrayTypeSymbol array:
+                CollectMethodTypeParameters(array.ElementType, into);
+                break;
+            case INamedTypeSymbol named:
+                foreach (var argument in named.TypeArguments)
+                    CollectMethodTypeParameters(argument, into);
+                break;
         }
+    }
 
-        if (expression is AnonymousMethodExpressionSyntax anonymous &&
-            anonymous.ParameterList != null &&
-            anonymous.ParameterList.Parameters.Count >= 1)
+    /// <summary>
+    /// True when <paramref name="type"/> mentions any of
+    /// <paramref name="typeParameters"/>.
+    /// </summary>
+    private static bool TypeContainsAnyMethodTypeParameter(
+        ITypeSymbol type,
+        HashSet<ITypeParameterSymbol> typeParameters)
+    {
+        switch (type)
         {
-            var first = anonymous.ParameterList.Parameters[0];
-            var alias = semanticModel.GetDeclaredSymbol(first, cancellationToken);
-            if (alias == null || aliases.Contains(alias))
+            case ITypeParameterSymbol typeParameter:
+                return typeParameters.Contains(typeParameter);
+            case IArrayTypeSymbol array:
+                return TypeContainsAnyMethodTypeParameter(array.ElementType, typeParameters);
+            case INamedTypeSymbol named:
+                foreach (var argument in named.TypeArguments)
+                {
+                    if (TypeContainsAnyMethodTypeParameter(argument, typeParameters))
+                        return true;
+                }
+
                 return false;
-
-            aliases.Add(alias);
-            return true;
+            default:
+                return false;
         }
-
-        return false;
     }
 
     /// <summary>
