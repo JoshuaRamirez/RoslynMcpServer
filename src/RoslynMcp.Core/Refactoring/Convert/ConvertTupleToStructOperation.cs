@@ -365,9 +365,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         ITypeSymbol tupleType,
         CancellationToken cancellationToken)
     {
-        var memberNames = members
-            .Select(m => StripVerbatimPrefix(m.Name))
-            .ToHashSet(StringComparer.Ordinal);
+        var memberNames = BuildElementMemberNames(members);
 
         foreach (var target in creations)
         {
@@ -416,9 +414,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         ITypeSymbol tupleType,
         CancellationToken cancellationToken)
     {
-        var memberNames = members
-            .Select(m => StripVerbatimPrefix(m.Name))
-            .ToHashSet(StringComparer.Ordinal);
+        var memberNames = BuildElementMemberNames(members);
 
         foreach (var target in creations)
         {
@@ -1140,8 +1136,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// True when a converted storage alias has a tuple element used as a
-    /// <c>ref</c>/<c>out</c>/<c>in</c> argument, address-of operand, or ref expression.
-    /// Generated properties cannot accept those uses (CS0206); tuple fields can.
+    /// <c>ref</c>/<c>out</c>/<c>in</c> argument, address-of operand, ref expression,
+    /// <c>this ref</c> extension receiver, or non-<c>readonly</c> mutable value-type
+    /// instance-method receiver (including positional <c>ItemN</c> aliases).
+    /// Generated properties cannot accept those uses (CS0206 / silent copy); tuple fields can.
     /// </summary>
     internal static bool HasElementByRefUse(
         SyntaxNode root,
@@ -1164,7 +1162,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     argument.RefOrOutKeyword.IsKind(SyntaxKind.InKeyword) => argument.Expression,
                 // ref int x = ref point.X; / ref returns
                 RefExpressionSyntax refExpression => refExpression.Expression,
-                // point.X.Increment() with Increment(this ref int) — no explicit ref keyword.
+                // this-ref extension or mutating value-type instance-method receiver.
                 InvocationExpressionSyntax invocation when
                     TryGetRefReceiverExpression(invocation, semanticModel, out var refReceiver)
                     => refReceiver,
@@ -1190,9 +1188,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// True when <paramref name="invocation"/> is an instance or reduced extension
-    /// call whose receiver is passed by <c>ref</c>/<c>in</c>/<c>ref readonly</c>
-    /// (for example <c>point.X.Increment()</c> with <c>Increment(this ref int)</c>).
+    /// True when <paramref name="invocation"/> uses its receiver by reference:
+    /// a reduced extension with <c>this ref</c>/<c>in</c>/<c>ref readonly</c>
+    /// (for example <c>point.X.Increment()</c> with <c>Increment(this ref int)</c>),
+    /// or a non-<c>readonly</c> instance method on a mutable value-type element
+    /// (for example <c>point.Counter.Increment()</c> on a mutable struct field —
+    /// tuple fields persist the mutation; generated properties mutate a temporary).
     /// </summary>
     private static bool TryGetRefReceiverExpression(
         InvocationExpressionSyntax invocation,
@@ -1210,18 +1211,29 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // (or the unreduced extension declaration) for `this ref` / `this in`.
         var extensionSource = method.ReducedFrom
             ?? (method.IsExtensionMethod ? method : null);
-        if (extensionSource == null || extensionSource.Parameters.IsDefaultOrEmpty)
-            return false;
-
-        var thisParameter = extensionSource.Parameters[0];
-        if (thisParameter.RefKind is not (
-                RefKind.Ref or RefKind.In or RefKind.RefReadOnlyParameter))
+        if (extensionSource != null && !extensionSource.Parameters.IsDefaultOrEmpty)
         {
-            return false;
+            var thisParameter = extensionSource.Parameters[0];
+            if (thisParameter.RefKind is (
+                    RefKind.Ref or RefKind.In or RefKind.RefReadOnlyParameter))
+            {
+                receiver = memberAccess.Expression;
+                return true;
+            }
         }
 
-        receiver = memberAccess.Expression;
-        return true;
+        // Non-readonly instance method on a mutable value type — receiver is an
+        // implicit ref (Codex P1: point.Counter.Increment() on a mutable struct).
+        if (!method.IsStatic &&
+            method.ContainingType is { IsValueType: true, IsReadOnly: false } &&
+            !method.IsReadOnly &&
+            method.MethodKind is MethodKind.Ordinary or MethodKind.ExplicitInterfaceImplementation)
+        {
+            receiver = memberAccess.Expression;
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -1336,7 +1348,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     argument.RefOrOutKeyword.IsKind(SyntaxKind.InKeyword) => argument.Expression,
                 // ref int x = ref point.X; / ref returns
                 RefExpressionSyntax refExpression => refExpression.Expression,
-                // point.X.Increment() with Increment(this ref int) — no explicit ref keyword.
+                // this-ref extension or mutating value-type instance-method receiver.
                 InvocationExpressionSyntax invocation when
                     TryGetRefReceiverExpression(invocation, semanticModel, out var refReceiver)
                     => refReceiver,
@@ -1479,6 +1491,23 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return SyntaxFactory.VerbatimIdentifier(default, bare, bare, default);
 
         return SyntaxFactory.Identifier(bare);
+    }
+
+    /// <summary>
+    /// Element names used by write / by-ref gates: each friendly name plus its
+    /// positional <c>ItemN</c> alias so <c>Bump(ref point.Item1)</c> on a named
+    /// tuple <c>(X: 1, Y: 2)</c> is still detected (Codex P1).
+    /// </summary>
+    internal static HashSet<string> BuildElementMemberNames(IReadOnlyList<TupleMember> members)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < members.Count; i++)
+        {
+            names.Add(StripVerbatimPrefix(members[i].Name));
+            names.Add($"Item{i + 1}");
+        }
+
+        return names;
     }
 
     /// <summary>
