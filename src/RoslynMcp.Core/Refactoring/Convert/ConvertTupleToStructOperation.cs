@@ -1140,6 +1140,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// <c>this ref</c> extension receiver, or non-<c>readonly</c> mutable value-type
     /// instance-method receiver (including positional <c>ItemN</c> aliases).
     /// Generated properties cannot accept those uses (CS0206 / silent copy); tuple fields can.
+    /// By-ref storage reached <em>through</em> a reference-type element
+    /// (for example <c>Bump(ref point.Values[0])</c>) is allowed — the property
+    /// getter returns the same reference — while passing the element property
+    /// itself by reference (or reaching through a value-type element) is refused.
     /// </summary>
     internal static bool HasElementByRefUse(
         SyntaxNode root,
@@ -1172,7 +1176,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (byRefTarget == null)
                 continue;
 
-            if (HasConvertedElementMemberAccess(
+            if (HasConvertedElementByRefAccess(
                     byRefTarget,
                     storages,
                     memberNames,
@@ -1277,6 +1281,79 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="byRefTarget"/> is a converted tuple element used
+    /// in a way that breaks after conversion to properties: the element property
+    /// itself is the by-ref target, or storage is reached through a value-type
+    /// element (property returns a copy). False when the element is
+    /// reference-typed and the by-ref target is deeper storage reached through
+    /// that element (Codex P2: <c>Bump(ref point.Values[0])</c>).
+    /// </summary>
+    private static bool HasConvertedElementByRefAccess(
+        ExpressionSyntax byRefTarget,
+        HashSet<ISymbol> storages,
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType,
+        SemanticModel semanticModel,
+        SyntaxNode root)
+    {
+        var coreTarget = UnwrapParenthesesAndNullForgiving(byRefTarget);
+
+        foreach (var memberAccess in EnumerateAssignmentMemberAccesses(byRefTarget))
+        {
+            if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
+                continue;
+
+            var isConvertedElement =
+                ReceiverYieldsConvertedStorage(
+                    memberAccess.Expression,
+                    storages,
+                    tupleType,
+                    semanticModel)
+                || (memberAccess.Expression is MemberAccessExpressionSyntax outerMember &&
+                    TupleAggregateMemberCarriesStorage(
+                        outerMember,
+                        storages,
+                        semanticModel,
+                        root));
+
+            if (!isConvertedElement)
+                continue;
+
+            // Direct by-ref / address-of on the element property itself — refuse.
+            if (coreTarget == memberAccess)
+                return true;
+
+            // Through the element: value-type (or unresolved) element property
+            // returns a copy — refuse. Reference-type element property returns
+            // the same reference, so by-ref storage beneath remains valid.
+            var elementType = semanticModel.GetTypeInfo(memberAccess).Type;
+            if (elementType is not { IsReferenceType: true })
+                return true;
+        }
+
+        return false;
+    }
+
+    private static ExpressionSyntax UnwrapParenthesesAndNullForgiving(ExpressionSyntax expression)
+    {
+        while (true)
+        {
+            switch (expression)
+            {
+                case ParenthesizedExpressionSyntax parenthesized:
+                    expression = parenthesized.Expression;
+                    continue;
+                case PostfixUnaryExpressionSyntax postfix when
+                    postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                    expression = postfix.Operand;
+                    continue;
+                default:
+                    return expression;
+            }
+        }
     }
 
     /// <summary>
