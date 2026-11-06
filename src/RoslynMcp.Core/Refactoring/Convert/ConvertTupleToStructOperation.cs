@@ -577,13 +577,55 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         continue;
                     }
                 }
-                else if (node is InvocationExpressionSyntax invocation &&
-                         TryAddLambdaParameterAliasesFromInvocation(
-                             invocation, aliases, semanticModel, cancellationToken))
+                else if (node is FromClauseSyntax fromClause)
                 {
-                    // Array.ForEach(new[] { point }, copy => Bump(ref copy.X)) (Codex P1)
-                    changed = true;
-                    continue;
+                    // from copy in new[] { point } select Read(ref copy.X) (Codex P1)
+                    alias = semanticModel.GetDeclaredSymbol(fromClause, cancellationToken);
+                    source = fromClause.Expression;
+                }
+                else if (node is LetClauseSyntax letClause)
+                {
+                    // let copy = point (Codex P1)
+                    alias = semanticModel.GetDeclaredSymbol(letClause, cancellationToken);
+                    source = letClause.Expression;
+                }
+                else if (node is JoinClauseSyntax joinClause)
+                {
+                    // join copy in new[] { point } on ... (Codex P1)
+                    alias = semanticModel.GetDeclaredSymbol(joinClause, cancellationToken);
+                    source = joinClause.InExpression;
+                }
+                else if (node is JoinIntoClauseSyntax joinInto &&
+                         joinInto.Parent is JoinClauseSyntax parentJoin)
+                {
+                    // join ... into group (Codex P1)
+                    alias = semanticModel.GetDeclaredSymbol(joinInto, cancellationToken);
+                    source = parentJoin.InExpression;
+                }
+                else if (node is QueryContinuationSyntax continuation &&
+                         continuation.Parent is QueryBodySyntax queryBody)
+                {
+                    // ... select x into copy (Codex P1)
+                    alias = semanticModel.GetDeclaredSymbol(continuation, cancellationToken);
+                    source = queryBody.SelectOrGroup switch
+                    {
+                        SelectClauseSyntax select => select.Expression,
+                        GroupClauseSyntax group => group.GroupExpression,
+                        _ => null
+                    };
+                }
+                else if (node is InvocationExpressionSyntax invocation)
+                {
+                    // Array.ForEach / List<T>.ForEach / Copy(point, out var copy) (Codex P1)
+                    var lambdaAdded = TryAddLambdaParameterAliasesFromInvocation(
+                        invocation, aliases, semanticModel, cancellationToken);
+                    var outVarAdded = TryAddOutVarAliasesFromInvocation(
+                        invocation, aliases, semanticModel, cancellationToken);
+                    if (lambdaAdded || outVarAdded)
+                    {
+                        changed = true;
+                        continue;
+                    }
                 }
 
                 if (alias == null || source == null || aliases.Contains(alias))
@@ -1067,9 +1109,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// When an invocation feeds converted storage into a callback lambda via a
-    /// method type parameter (receiver or argument), tracks only the lambda
-    /// parameters whose bound delegate inputs use that type parameter — e.g.
-    /// <c>Array.ForEach(new[] { point }, copy =&gt; Bump(ref copy.X))</c> and
+    /// method or containing-type type parameter (receiver or argument), tracks
+    /// only the lambda parameters whose bound delegate inputs use that type
+    /// parameter — e.g. <c>Array.ForEach(new[] { point }, copy =&gt; Bump(ref copy.X))</c>,
+    /// <c>points.ForEach(copy =&gt; …)</c> on <c>List&lt;T&gt;</c>, and
     /// <c>other.Zip(points, (n, copy) =&gt; …)</c> (Codex P1), but not an
     /// unrelated sibling lambda such as <c>Run(point, other =&gt; …)</c> whose
     /// delegate input stays the original tuple type (Codex P2).
@@ -1080,55 +1123,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        var symbolInfo = semanticModel.GetSymbolInfo(invocation, cancellationToken);
-        var method = symbolInfo.Symbol as IMethodSymbol;
-        if (method == null &&
-            symbolInfo.CandidateSymbols.Length == 1)
+        if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out var method) ||
+            method == null)
         {
-            method = symbolInfo.CandidateSymbols[0] as IMethodSymbol;
-        }
-
-        if (method == null)
             return false;
+        }
 
         var definingMethod = (method.ReducedFrom ?? method).OriginalDefinition;
         var extensionOffset = method.ReducedFrom != null ? 1 : 0;
-        var storageTypeParameters = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
-
-        if (extensionOffset == 1 &&
-            invocation.Expression is MemberAccessExpressionSyntax extensionReceiver &&
-            definingMethod.Parameters.Length > 0 &&
-            ExpressionReferencesStorageAlias(
-                extensionReceiver.Expression, aliases, semanticModel, cancellationToken))
-        {
-            CollectMethodTypeParameters(definingMethod.Parameters[0].Type, storageTypeParameters);
-        }
-
-        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
-        {
-            var argument = invocation.ArgumentList.Arguments[i];
-            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
-            if (expr is AnonymousFunctionExpressionSyntax)
-                continue;
-
-            var reducedParameter = ResolveInvocationParameter(method, argument, i);
-            if (reducedParameter == null)
-                continue;
-
-            var definingOrdinal = reducedParameter.Ordinal + extensionOffset;
-            if (definingOrdinal < 0 || definingOrdinal >= definingMethod.Parameters.Length)
-                continue;
-
-            if (!ExpressionReferencesStorageAlias(
-                    argument.Expression, aliases, semanticModel, cancellationToken))
-            {
-                continue;
-            }
-
-            CollectMethodTypeParameters(
-                definingMethod.Parameters[definingOrdinal].Type,
-                storageTypeParameters);
-        }
+        var storageTypeParameters = CollectStorageSourcedTypeParametersFromInvocation(
+            invocation, method, definingMethod, extensionOffset, aliases, semanticModel, cancellationToken);
 
         if (storageTypeParameters.Count == 0)
             return false;
@@ -1165,10 +1169,260 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// Adds callback lambda parameters whose bound delegate inputs (from
-    /// <paramref name="delegateParameterType"/>) involve a storage-sourced
-    /// method type parameter.
+    /// When converted storage determines a generic <c>out var</c> type, such as
+    /// <c>Copy(point, out var copy)</c> with <c>Copy&lt;T&gt;(T value, out T copy)</c>,
+    /// tracks the declared <c>out</c> destination as a storage alias (Codex P1).
     /// </summary>
+    private static bool TryAddOutVarAliasesFromInvocation(
+        InvocationExpressionSyntax invocation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out var method) ||
+            method == null)
+        {
+            return false;
+        }
+
+        var definingMethod = (method.ReducedFrom ?? method).OriginalDefinition;
+        var extensionOffset = method.ReducedFrom != null ? 1 : 0;
+        var storageTypeParameters = CollectStorageSourcedTypeParametersFromInvocation(
+            invocation, method, definingMethod, extensionOffset, aliases, semanticModel, cancellationToken);
+
+        if (storageTypeParameters.Count == 0)
+            return false;
+
+        var added = false;
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
+            if (!argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword))
+                continue;
+
+            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            if (expr is not DeclarationExpressionSyntax { Designation: { } designation })
+                continue;
+
+            var reducedParameter = ResolveInvocationParameter(method, argument, i);
+            if (reducedParameter == null)
+                continue;
+
+            var definingOrdinal = reducedParameter.Ordinal + extensionOffset;
+            if (definingOrdinal < 0 || definingOrdinal >= definingMethod.Parameters.Length)
+                continue;
+
+            if (!TypeContainsAnyMethodTypeParameter(
+                    definingMethod.Parameters[definingOrdinal].Type,
+                    storageTypeParameters))
+            {
+                continue;
+            }
+
+            if (TryAddDesignationAlias(designation, aliases, semanticModel, cancellationToken))
+                added = true;
+        }
+
+        return added;
+    }
+
+    private static bool TryResolveInvocationMethod(
+        InvocationExpressionSyntax invocation,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out IMethodSymbol? method)
+    {
+        var symbolInfo = semanticModel.GetSymbolInfo(invocation, cancellationToken);
+        method = symbolInfo.Symbol as IMethodSymbol;
+        if (method == null &&
+            symbolInfo.CandidateSymbols.Length == 1)
+        {
+            method = symbolInfo.CandidateSymbols[0] as IMethodSymbol;
+        }
+
+        return method != null;
+    }
+
+    /// <summary>
+    /// Collects method / containing-type type parameters sourced by converted
+    /// storage on an invocation: storage-carrying arguments, reduced extension
+    /// receivers, and constructed generic instance receivers such as
+    /// <c>List&lt;T&gt;.ForEach</c> (Codex P1).
+    /// </summary>
+    private static HashSet<ITypeParameterSymbol> CollectStorageSourcedTypeParametersFromInvocation(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol method,
+        IMethodSymbol definingMethod,
+        int extensionOffset,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var storageTypeParameters = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+
+        if (extensionOffset == 1 &&
+            invocation.Expression is MemberAccessExpressionSyntax extensionReceiver &&
+            definingMethod.Parameters.Length > 0 &&
+            ExpressionReferencesStorageAlias(
+                extensionReceiver.Expression, aliases, semanticModel, cancellationToken))
+        {
+            CollectMethodTypeParameters(definingMethod.Parameters[0].Type, storageTypeParameters);
+        }
+
+        // Instance method on a constructed generic whose receiver carries storage
+        // (e.g. List&lt;T&gt;.ForEach) — map containing-type parameters (Codex P1).
+        if (method.ReducedFrom == null &&
+            invocation.Expression is MemberAccessExpressionSyntax instanceReceiver &&
+            method.ContainingType is { IsGenericType: true } containingType &&
+            ExpressionReferencesStorageAlias(
+                instanceReceiver.Expression, aliases, semanticModel, cancellationToken))
+        {
+            CollectStorageSourcedContainingTypeParameters(
+                containingType, aliases, storageTypeParameters);
+        }
+
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
+            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
+                continue;
+
+            var reducedParameter = ResolveInvocationParameter(method, argument, i);
+            if (reducedParameter == null)
+                continue;
+
+            var definingOrdinal = reducedParameter.Ordinal + extensionOffset;
+            if (definingOrdinal < 0 || definingOrdinal >= definingMethod.Parameters.Length)
+                continue;
+
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            CollectMethodTypeParameters(
+                definingMethod.Parameters[definingOrdinal].Type,
+                storageTypeParameters);
+        }
+
+        return storageTypeParameters;
+    }
+
+    /// <summary>
+    /// Adds containing-type type parameters whose constructed type arguments
+    /// involve a tracked storage alias type (e.g. <c>T</c> from
+    /// <c>List&lt;(int X, int Y)&gt;</c> when <c>point</c>/<c>points</c> is tracked).
+    /// </summary>
+    private static void CollectStorageSourcedContainingTypeParameters(
+        INamedTypeSymbol constructedContainingType,
+        HashSet<ISymbol> aliases,
+        HashSet<ITypeParameterSymbol> into)
+    {
+        var original = constructedContainingType.OriginalDefinition;
+        var typeArguments = constructedContainingType.TypeArguments;
+        var limit = Math.Min(typeArguments.Length, original.TypeParameters.Length);
+        for (var i = 0; i < limit; i++)
+        {
+            if (TypeInvolvesStorageAliasType(typeArguments[i], aliases))
+                into.Add(original.TypeParameters[i]);
+        }
+    }
+
+    private static bool TypeInvolvesStorageAliasType(ITypeSymbol type, HashSet<ISymbol> aliases)
+    {
+        foreach (var alias in aliases)
+        {
+            var aliasType = GetAliasType(alias);
+            if (aliasType == null)
+                continue;
+
+            if (SymbolEqualityComparer.Default.Equals(type, aliasType) ||
+                TypeContainsOrEquals(aliasType, type) ||
+                TypeContainsOrEquals(type, aliasType))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static ITypeSymbol? GetAliasType(ISymbol alias) => alias switch
+    {
+        ILocalSymbol local => local.Type,
+        IParameterSymbol parameter => parameter.Type,
+        IFieldSymbol field => field.Type,
+        IPropertySymbol property => property.Type,
+        IEventSymbol eventSymbol => eventSymbol.Type,
+        _ => null
+    };
+
+    private static bool TypeContainsOrEquals(ITypeSymbol type, ITypeSymbol target)
+    {
+        if (SymbolEqualityComparer.Default.Equals(type, target))
+            return true;
+
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                return TypeContainsOrEquals(array.ElementType, target);
+            case INamedTypeSymbol named:
+                foreach (var argument in named.TypeArguments)
+                {
+                    if (TypeContainsOrEquals(argument, target))
+                        return true;
+                }
+
+                if (named.IsTupleType)
+                {
+                    foreach (var element in named.TupleElements)
+                    {
+                        if (TypeContainsOrEquals(element.Type, target))
+                            return true;
+                    }
+                }
+
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryAddDesignationAlias(
+        VariableDesignationSyntax designation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        switch (designation)
+        {
+            case SingleVariableDesignationSyntax single:
+                {
+                    var alias = semanticModel.GetDeclaredSymbol(single, cancellationToken);
+                    if (alias == null || aliases.Contains(alias))
+                        return false;
+
+                    aliases.Add(alias);
+                    return true;
+                }
+            case ParenthesizedVariableDesignationSyntax parenthesized:
+                {
+                    var added = false;
+                    foreach (var nested in parenthesized.Variables)
+                    {
+                        if (TryAddDesignationAlias(nested, aliases, semanticModel, cancellationToken))
+                            added = true;
+                    }
+
+                    return added;
+                }
+            default:
+                return false;
+        }
+    }
+
     private static bool TryAddAliasesFromCallbackLambda(
         ExpressionSyntax expression,
         ITypeSymbol delegateParameterType,

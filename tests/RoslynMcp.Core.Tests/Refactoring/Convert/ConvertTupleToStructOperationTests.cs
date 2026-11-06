@@ -1879,6 +1879,129 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains("Bump(ref other.X)", text, StringComparison.Ordinal);
     }
 
+    // Codex P1 on #3441: List<T>.ForEach instance receiver must map containing-type T.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_GenericInstanceReceiverCallbackRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point }.ToList();
+                    points.ForEach(copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: query range variables must be tracked as storage aliases.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_QueryRangeVariableRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static int Read(ref int v) => v;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    _ = (from copy in new[] { point } select Read(ref copy.X)).ToArray();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: inferred out var receiving converted generic type must be tracked.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_OutVarAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static void Copy<T>(T value, out T copy) => copy = value;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Copy(point, out var copy);
+                    Bump(ref copy.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     // Codex P1 on #3441: list-pattern element designations must be traversed.
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordFalse_ListPatternAliasRefElement_ThrowsAndWritesNothing()
