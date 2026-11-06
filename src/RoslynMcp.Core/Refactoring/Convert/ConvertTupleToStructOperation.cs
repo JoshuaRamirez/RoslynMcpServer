@@ -577,6 +577,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         continue;
                     }
                 }
+                else if (node is InvocationExpressionSyntax invocation &&
+                         TryAddLambdaParameterAliasesFromInvocation(
+                             invocation, aliases, semanticModel, cancellationToken))
+                {
+                    // Array.ForEach(new[] { point }, copy => Bump(ref copy.X)) (Codex P1)
+                    changed = true;
+                    continue;
+                }
 
                 if (alias == null || source == null || aliases.Contains(alias))
                     continue;
@@ -795,7 +803,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// Adds aliases for pattern designations that copy converted storage
     /// (<c>if (point is var copy)</c>, <c>point is { } copy</c>, switch arms/cases),
     /// including nested recursive-pattern designations such as
-    /// <c>new { Value = point } is { Value: var copy }</c> (Codex P1).
+    /// <c>new { Value = point } is { Value: var copy }</c>, and list-pattern
+    /// element designations such as <c>points is [var copy]</c> (Codex P1).
     /// </summary>
     private static bool TryAddPatternDesignationAliases(
         PatternSyntax pattern,
@@ -911,6 +920,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     return added;
                 }
 
+            case ListPatternSyntax listPattern:
+                return TryAddListPatternDesignationAliases(
+                    listPattern, input, aliases, semanticModel, root, cancellationToken);
+
             case BinaryPatternSyntax binary:
                 {
                     var left = TryAddPatternDesignationAliases(
@@ -923,6 +936,231 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             default:
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Walks list-pattern element designations (<c>points is [var copy]</c>) and
+    /// optional slice subpatterns, pairing elements with container initializers
+    /// when possible (Codex P1).
+    /// </summary>
+    private static bool TryAddListPatternDesignationAliases(
+        ListPatternSyntax listPattern,
+        ExpressionSyntax input,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken)
+    {
+        var added = false;
+
+        if (listPattern.Designation != null &&
+            TryAddDeconstructionAliases(
+                listPattern.Designation,
+                input,
+                aliases,
+                semanticModel,
+                root,
+                cancellationToken))
+        {
+            added = true;
+        }
+
+        var patterns = listPattern.Patterns;
+        var hasSlice = false;
+        foreach (var pattern in patterns)
+        {
+            if (UnwrapParenthesizedPattern(pattern) is SlicePatternSyntax)
+            {
+                hasSlice = true;
+                break;
+            }
+        }
+
+        ExpressionSyntax[]? elementSources = null;
+        var hasElementSources = !hasSlice &&
+            TryGetListPatternElementSources(
+                input,
+                patterns.Count,
+                semanticModel,
+                root,
+                cancellationToken,
+                out elementSources);
+
+        for (var i = 0; i < patterns.Count; i++)
+        {
+            var subpattern = UnwrapParenthesizedPattern(patterns[i]);
+
+            if (subpattern is SlicePatternSyntax slice)
+            {
+                // Slice binds a subsequence of the container; nested pattern
+                // still needs tracking when the container carries converted storage.
+                if (slice.Pattern != null &&
+                    TryAddPatternDesignationAliases(
+                        slice.Pattern,
+                        input,
+                        aliases,
+                        semanticModel,
+                        root,
+                        cancellationToken))
+                {
+                    added = true;
+                }
+
+                continue;
+            }
+
+            var elementInput = hasElementSources && elementSources != null
+                ? elementSources[i]
+                : input;
+
+            if (TryAddPatternDesignationAliases(
+                    patterns[i],
+                    elementInput,
+                    aliases,
+                    semanticModel,
+                    root,
+                    cancellationToken))
+            {
+                added = true;
+            }
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// Resolves per-element expressions for a list pattern from a container
+    /// creation (literal or symbol initializer). Returns false when the pattern
+    /// count does not match the initializer (e.g. slices) so callers can fall
+    /// back to the container expression.
+    /// </summary>
+    private static bool TryGetListPatternElementSources(
+        ExpressionSyntax input,
+        int patternCount,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        out ExpressionSyntax[]? elements)
+    {
+        elements = null;
+        input = UnwrapParenthesesAndRef(input);
+
+        var elementList = EnumerateContainerElementExpressions(input).ToList();
+        if (elementList.Count == 0)
+        {
+            var symbol = semanticModel.GetSymbolInfo(input, cancellationToken).Symbol;
+            if (symbol != null &&
+                TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) &&
+                initializer != null)
+            {
+                elementList = EnumerateContainerElementExpressions(initializer).ToList();
+            }
+        }
+
+        if (elementList.Count == 0 || elementList.Count != patternCount)
+            return false;
+
+        // Slices are counted in patternCount but are not 1:1 with elements.
+        elements = elementList.ToArray();
+        return true;
+    }
+
+    /// <summary>
+    /// When an invocation carries converted storage (as a sequence argument or
+    /// receiver) into a callback lambda, tracks the lambda's element parameter
+    /// so <c>Array.ForEach(new[] { point }, copy =&gt; Bump(ref copy.X))</c>
+    /// refuses (Codex P1).
+    /// </summary>
+    private static bool TryAddLambdaParameterAliasesFromInvocation(
+        InvocationExpressionSyntax invocation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var carriesStorage = false;
+
+        if (invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
+            ExpressionReferencesStorageAlias(
+                memberAccess.Expression, aliases, semanticModel, cancellationToken))
+        {
+            carriesStorage = true;
+        }
+
+        foreach (var argument in invocation.ArgumentList.Arguments)
+        {
+            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            if (expr is AnonymousFunctionExpressionSyntax)
+                continue;
+
+            if (ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                carriesStorage = true;
+            }
+        }
+
+        if (!carriesStorage)
+            return false;
+
+        var added = false;
+        foreach (var argument in invocation.ArgumentList.Arguments)
+        {
+            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            if (TryAddAliasesFromCallbackLambda(expr, aliases, semanticModel, cancellationToken))
+                added = true;
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// Adds the element-binding parameter of a callback lambda (first parameter)
+    /// when the enclosing invocation carries converted storage.
+    /// </summary>
+    private static bool TryAddAliasesFromCallbackLambda(
+        ExpressionSyntax expression,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (expression is SimpleLambdaExpressionSyntax simple)
+        {
+            var alias = semanticModel.GetDeclaredSymbol(simple.Parameter, cancellationToken);
+            if (alias == null || aliases.Contains(alias))
+                return false;
+
+            aliases.Add(alias);
+            return true;
+        }
+
+        if (expression is ParenthesizedLambdaExpressionSyntax parenthesized &&
+            parenthesized.ParameterList.Parameters.Count >= 1)
+        {
+            // Sequence callbacks bind the element to the first parameter
+            // (ForEach, Select, ConvertAll, indexed Select's element, …).
+            var first = parenthesized.ParameterList.Parameters[0];
+            var alias = semanticModel.GetDeclaredSymbol(first, cancellationToken);
+            if (alias == null || aliases.Contains(alias))
+                return false;
+
+            aliases.Add(alias);
+            return true;
+        }
+
+        if (expression is AnonymousMethodExpressionSyntax anonymous &&
+            anonymous.ParameterList != null &&
+            anonymous.ParameterList.Parameters.Count >= 1)
+        {
+            var first = anonymous.ParameterList.Parameters[0];
+            var alias = semanticModel.GetDeclaredSymbol(first, cancellationToken);
+            if (alias == null || aliases.Contains(alias))
+                return false;
+
+            aliases.Add(alias);
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
