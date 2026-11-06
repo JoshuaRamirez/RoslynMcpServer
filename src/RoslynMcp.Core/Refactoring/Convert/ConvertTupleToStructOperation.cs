@@ -105,6 +105,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
         if (@params.AsRecord)
             await ValidateNoInitBreakingElementWritesAsync(creations, members, tupleType, cancellationToken);
+        else
+            await ValidateNoByRefElementUsesAsync(creations, members, tupleType, cancellationToken);
         var typeDeclaration = CreateNamedStruct(
             lookupName,
             @params.AsRecord,
@@ -398,6 +400,57 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 throw new RefactoringException(
                     ErrorCodes.CannotConvert,
                     $"Cannot convert to a record struct because '{storage.Name}' has element assignments that require settable properties.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Named structs emit <c>{ get; set; }</c> properties; reject when a converted
+    /// creation's storage (or alias) later passes a tuple element by <c>ref</c>/<c>out</c>/<c>in</c>,
+    /// takes its address, or binds it to a ref local/return (CS0206). Plain assignments and
+    /// increments remain allowed for non-record structs.
+    /// </summary>
+    private static async Task ValidateNoByRefElementUsesAsync(
+        IReadOnlyList<CreationTarget> creations,
+        IReadOnlyList<TupleMember> members,
+        ITypeSymbol tupleType,
+        CancellationToken cancellationToken)
+    {
+        var memberNames = members
+            .Select(m => StripVerbatimPrefix(m.Name))
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var target in creations)
+        {
+            var root = await target.Document.GetSyntaxRootAsync(cancellationToken);
+            var model = await target.Document.GetSemanticModelAsync(cancellationToken);
+            if (root == null || model == null)
+                continue;
+
+            var node = root.FindNode(target.Span, getInnermostNodeForTie: true);
+            ExpressionSyntax? creation = null;
+            for (SyntaxNode? cursor = node; cursor != null; cursor = cursor.Parent)
+            {
+                if (cursor is ExpressionSyntax expression && IsRewritableCreationSyntax(expression))
+                {
+                    creation = expression;
+                    break;
+                }
+            }
+
+            if (creation == null)
+                continue;
+
+            var storage = TryGetAssignedStorageSymbol(creation, model, cancellationToken);
+            if (storage == null)
+                continue;
+
+            var storages = CollectStorageAliases(root, model, storage, cancellationToken);
+            if (HasElementByRefUse(root, model, storages, memberNames, tupleType))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CannotConvert,
+                    $"Cannot convert because '{storage.Name}' has an element passed by reference; the generated struct exposes properties, not fields.");
             }
         }
     }
@@ -1067,6 +1120,83 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             string.Equals(tupleType.TupleElements[index].Name, memberName, StringComparison.Ordinal))
         {
             return true;
+        }
+
+        return false;
+    }
+
+    internal static bool HasElementByRefUse(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        ISymbol storage,
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType = null) =>
+        HasElementByRefUse(
+            root,
+            semanticModel,
+            new HashSet<ISymbol>(SymbolEqualityComparer.Default) { storage },
+            memberNames,
+            tupleType);
+
+    /// <summary>
+    /// True when a converted storage alias has a tuple element used as a
+    /// <c>ref</c>/<c>out</c>/<c>in</c> argument, address-of operand, or ref expression.
+    /// Generated properties cannot accept those uses (CS0206); tuple fields can.
+    /// </summary>
+    internal static bool HasElementByRefUse(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        HashSet<ISymbol> storages,
+        HashSet<string> memberNames,
+        ITypeSymbol? _ = null)
+    {
+        foreach (var node in root.DescendantNodes())
+        {
+            ExpressionSyntax? byRefTarget = node switch
+            {
+                // Tuple fields accept address-of; generated properties do not.
+                PrefixUnaryExpressionSyntax addressOf when
+                    addressOf.IsKind(SyntaxKind.AddressOfExpression) => addressOf.Operand,
+                // Tuple fields accept ref/out/in; generated properties do not.
+                ArgumentSyntax argument when
+                    argument.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
+                    argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword) ||
+                    argument.RefOrOutKeyword.IsKind(SyntaxKind.InKeyword) => argument.Expression,
+                // ref int x = ref point.X; / ref returns
+                RefExpressionSyntax refExpression => refExpression.Expression,
+                _ => null
+            };
+
+            if (byRefTarget == null)
+                continue;
+
+            foreach (var memberAccess in EnumerateAssignmentMemberAccesses(byRefTarget))
+            {
+                if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
+                    continue;
+
+                var target = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
+                if (target != null && storages.Contains(target))
+                    return true;
+
+                if (ExpressionReferencesStorageAlias(
+                        memberAccess.Expression,
+                        storages,
+                        semanticModel))
+                {
+                    return true;
+                }
+
+                if (memberAccess.Expression is MemberAccessExpressionSyntax outerMember &&
+                    TupleAggregateMemberCarriesStorage(
+                        outerMember,
+                        storages,
+                        semanticModel,
+                        root))
+                {
+                    return true;
+                }
+            }
         }
 
         return false;
