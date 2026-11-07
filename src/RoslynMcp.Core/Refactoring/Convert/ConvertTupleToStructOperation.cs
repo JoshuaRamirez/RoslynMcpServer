@@ -1731,6 +1731,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 expression = parenthesized.Expression;
             else if (expression is RefExpressionSyntax refExpression)
                 expression = refExpression.Expression;
+            // Pointer indirection (*p).X — follow back to the tracked pointer alias
+            // (Codex P1 on #3441). p->X already hits ReceiverYieldsConvertedStorage's
+            // IPointerTypeSymbol path; (*p) has no symbol of its own.
+            else if (expression is PrefixUnaryExpressionSyntax indirection &&
+                     indirection.IsKind(SyntaxKind.PointerIndirectionExpression))
+                expression = indirection.Operand;
             else
                 break;
         }
@@ -2921,7 +2927,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// True when a converted storage alias has a tuple element used as a
     /// <c>ref</c>/<c>out</c>/<c>in</c> argument, address-of operand, ref expression,
     /// writable <c>this ref</c> extension receiver, pointer indirection through a
-    /// tracked address-of alias (<c>var p = &amp;point; Bump(ref p-&gt;X)</c>),
+    /// tracked address-of alias (<c>var p = &amp;point; Bump(ref p-&gt;X)</c> /
+    /// <c>Bump(ref (*p).X)</c>),
     /// non-<c>readonly</c> mutable value-type instance-method receiver (including
     /// positional <c>ItemN</c> aliases), or an assignment / increment / decrement
     /// target that traverses a value-type converted element (for example
@@ -3259,10 +3266,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (tupleType != null && receiverType != null &&
             !SymbolEqualityComparer.Default.Equals(receiverType, tupleType))
         {
-            // Pointer aliases (var p = &point; Bump(ref p->X)) — pointee matches
-            // the converted tuple type, so p->Element is a by-ref use of storage
-            // (Codex P1 on #3441). Larger aggregates that merely embed storage
-            // still fall through to the refuse-on-mismatch path below.
+            // Pointer aliases (var p = &point; Bump(ref p->X) / Bump(ref (*p).X)) —
+            // pointee matches the converted tuple type, so p->Element / (*p).Element
+            // is a by-ref use of storage (Codex P1 on #3441). Larger aggregates that
+            // merely embed storage still fall through to the refuse-on-mismatch path below.
             if (receiverType is IPointerTypeSymbol pointer &&
                 SymbolEqualityComparer.Default.Equals(pointer.PointedAtType, tupleType))
             {
