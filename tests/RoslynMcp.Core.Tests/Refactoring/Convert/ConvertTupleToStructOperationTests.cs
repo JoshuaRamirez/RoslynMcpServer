@@ -5614,4 +5614,132 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
+
+    // Codex P1 on #3441: Select/ConvertAll selectors that return storage-returning
+    // delegates (x => () => x) must alias through the produced sequence so
+    // getters[0]() is gated like a directly assigned delegate.
+    [SkippableTheory]
+    [InlineData(false, "var getters = points.Select(x => (Func<(int X, int Y)>)(() => x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select(x => (Func<(int X, int Y)>)(() => x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => { return () => x; }).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => { return () => x; }).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => flag ? () => x : () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => flag ? () => x : () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<Func<(int X, int Y)>>>(x => () => () => x).ToArray(); var copy = getters[0]()(); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<Func<(int X, int Y)>>>(x => () => () => x).ToArray(); var copy = getters[0]()(); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>((x, i) => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>((x, i) => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var getters = list.ConvertAll<Func<(int X, int Y)>>(x => () => x); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var getters = list.ConvertAll<Func<(int X, int Y)>>(x => () => x); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = System.Linq.Enumerable.Select<(int X, int Y), Func<(int X, int Y)>>(points, x => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = System.Linq.Enumerable.Select<(int X, int Y), Func<(int X, int Y)>>(points, x => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); var copy = getters[0].Invoke(); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); var copy = getters[0].Invoke(); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); foreach (var get in getters) { var copy = get(); Bump(ref copy.X); }")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); foreach (var get in getters) { var copy = get(); Bump(ref copy.X); }")]
+
+    public async Task ConvertTupleToStruct_SelectorReturnedDelegateRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: converted storage flowing through ?? / ??= must alias
+    // both coalesce operands (and related ?: nesting).
+    [SkippableTheory]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? point; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? point; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = ((int X, int Y)?)point ?? maybe ?? point; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = ((int X, int Y)?)point ?? maybe ?? point; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? (flag ? point : point); Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? (flag ? point : point); Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = (maybe ?? point)!; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = (maybe ?? point)!; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? point!; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? point!; Bump(ref copy.X);")]
+    [InlineData(false, "(int X, int Y)? maybe = null; maybe ??= point; var copy = maybe.Value; Bump(ref copy.X);")]
+    [InlineData(true, "(int X, int Y)? maybe = null; maybe ??= point; var copy = maybe.Value; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); (int X, int Y)? holder = null; holder ??= maybe ?? point; var copy = holder.Value; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); (int X, int Y)? holder = null; holder ??= maybe ?? point; var copy = holder.Value; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var a = Maybe(point); var b = Maybe(point); var copy = a ?? b ?? point; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var a = Maybe(point); var b = Maybe(point); var copy = a ?? b ?? point; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = flag ? (maybe ?? point) : point; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = flag ? (maybe ?? point) : point; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_NullCoalescingStorageRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            #nullable enable
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
 }

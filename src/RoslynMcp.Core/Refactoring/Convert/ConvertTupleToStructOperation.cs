@@ -514,10 +514,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     source = init;
                 }
                 else if (node is AssignmentExpressionSyntax assignment &&
-                         assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+                         (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) ||
+                          assignment.IsKind(SyntaxKind.CoalesceAssignmentExpression)))
                 {
                     // var (copy, _) = (point, 0); / (copy, _) = … / (var copy, var _) = …
-                    if (TryAddDeconstructionAliasesFromAssignment(
+                    // Also copy ??= point (Codex P1 on #3441).
+                    if (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) &&
+                        TryAddDeconstructionAliasesFromAssignment(
                             assignment.Left,
                             assignment.Right,
                             aliases,
@@ -531,6 +534,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
                     // list[0] = point / map[key] = point: the indexed container
                     // carries converted storage, not just the indexer symbol.
+                    // Also list[0] ??= point for coalesce assignment.
                     if (UnwrapParenthesesAndNullForgiving(assignment.Left) is ElementAccessExpressionSyntax
                         {
                             Expression: { } indexedContainer
@@ -2050,9 +2054,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// True when <paramref name="expression"/> is (or is a conditional /
-    /// switch / identity-like generic invocation / array-or-collection
-    /// creation / container element read / container-forwarding call that
-    /// forwards) a reference to a known storage alias.
+    /// null-coalescing / switch / identity-like generic invocation / array-or-collection
+    /// creation / container element read / container-forwarding call /
+    /// storage-returning-delegate selector that forwards) a reference to a known
+    /// storage alias.
     /// </summary>
     internal static bool ExpressionReferencesStorageAlias(
         ExpressionSyntax expression,
@@ -2088,6 +2093,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         {
             return ExpressionReferencesStorageAlias(conditional.WhenTrue, aliases, semanticModel, cancellationToken)
                 || ExpressionReferencesStorageAlias(conditional.WhenFalse, aliases, semanticModel, cancellationToken);
+        }
+
+        // Null-coalescing: var copy = maybe ?? point (Codex P1 on #3441).
+        if (expression is BinaryExpressionSyntax coalesce &&
+            coalesce.IsKind(SyntaxKind.CoalesceExpression))
+        {
+            return ExpressionReferencesStorageAlias(coalesce.Left, aliases, semanticModel, cancellationToken)
+                || ExpressionReferencesStorageAlias(coalesce.Right, aliases, semanticModel, cancellationToken);
         }
 
         if (expression is SwitchExpressionSyntax switchExpression)
@@ -2126,7 +2139,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     if (RequiresIdentityConverterToForward(method))
                     {
                         if (IsIdentitySelectInvocation(invocation, method) ||
-                            IsIdentityConvertAllInvocation(invocation, method))
+                            IsIdentityConvertAllInvocation(invocation, method) ||
+                            IsStorageReturningDelegateSelectorInvocation(invocation, method))
                             return true;
                         continue;
                     }
@@ -2162,13 +2176,17 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 (MethodReturnForwardsContainer(
                      method,
                      semanticModel.GetTypeInfo(memberAccess.Expression, cancellationToken).Type) ||
-                 IsIdentitySelectInvocation(invocation, method)))
+                 IsIdentitySelectInvocation(invocation, method) ||
+                 IsStorageReturningDelegateSelectorInvocation(invocation, method)))
             {
                 return true;
             }
 
             // points.Select(x => x) — TSource/TResult differ but selector forwards.
-            if (IsIdentitySelectInvocation(invocation, method))
+            // Also points.Select(x => () => x) — selector returns a storage-returning
+            // delegate carrier (Codex P1 on #3441).
+            if (IsIdentitySelectInvocation(invocation, method) ||
+                IsStorageReturningDelegateSelectorInvocation(invocation, method))
             {
                 if (invocation.Expression is MemberAccessExpressionSyntax receiverAccess &&
                     ExpressionReferencesStorageAlias(
@@ -2641,6 +2659,95 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     paren.Block,
                     paren.ParameterList.Parameters[0].Identifier.ValueText))
                 return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True for <c>Select</c>/<c>SelectMany</c>/<c>ConvertAll</c> whose selector returns
+    /// a delegate that itself yields the element (e.g. <c>x =&gt; () =&gt; x</c>), so
+    /// <c>points.Select(x =&gt; () =&gt; x).ToArray(); getters[0]()</c> still aliases
+    /// (Codex P1 on #3441).
+    /// </summary>
+    private static bool IsStorageReturningDelegateSelectorInvocation(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol method)
+    {
+        var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
+        if (name is not ("Select" or "SelectMany" or "ConvertAll"))
+            return false;
+
+        foreach (var argument in invocation.ArgumentList.Arguments)
+        {
+            var expr = SkipTransparentWrappers(argument.Expression);
+
+            if (expr is SimpleLambdaExpressionSyntax simple &&
+                LambdaReturnsStorageReturningDelegate(
+                    simple.ExpressionBody,
+                    simple.Block,
+                    simple.Parameter.Identifier.ValueText))
+            {
+                return true;
+            }
+
+            if (expr is ParenthesizedLambdaExpressionSyntax paren &&
+                paren.ParameterList.Parameters.Count >= 1)
+            {
+                var first = paren.ParameterList.Parameters[0].Identifier.ValueText;
+                if (LambdaReturnsStorageReturningDelegate(
+                        paren.ExpressionBody, paren.Block, first))
+                {
+                    return true;
+                }
+
+                // SelectMany result selector may forward the inner element.
+                if (name == "SelectMany" &&
+                    paren.ParameterList.Parameters.Count > 1)
+                {
+                    var last = paren.ParameterList.Parameters[^1].Identifier.ValueText;
+                    if (LambdaReturnsStorageReturningDelegate(
+                            paren.ExpressionBody, paren.Block, last))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when a selector body yields an anonymous function whose return forwards
+    /// <paramref name="parameterName"/> (directly or through further delegate wrappers /
+    /// <c>?:</c> / <c>??</c> / switch arms).
+    /// </summary>
+    private static bool LambdaReturnsStorageReturningDelegate(
+        ExpressionSyntax? expressionBody,
+        BlockSyntax? block,
+        string parameterName)
+    {
+        foreach (var returned in EnumerateSelectorReturnExpressions(expressionBody, block))
+        {
+            foreach (var leaf in EnumerateForwardedValueLeaves(returned))
+            {
+                if (leaf is not AnonymousFunctionExpressionSyntax nested)
+                    continue;
+
+                if (IsIdentityLambdaBody(
+                        nested.ExpressionBody, nested.Block, parameterName))
+                {
+                    return true;
+                }
+
+                // x => () => () => x — nested storage-returning delegate carriers.
+                if (LambdaReturnsStorageReturningDelegate(
+                        nested.ExpressionBody, nested.Block, parameterName))
+                {
+                    return true;
+                }
+            }
         }
 
         return false;
