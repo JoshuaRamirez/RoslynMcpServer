@@ -532,6 +532,25 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     alias = semanticModel.GetDeclaredSymbol(forEach, cancellationToken);
                     source = forEach.Expression;
                 }
+                else if (node is ForEachVariableStatementSyntax forEachVariable)
+                {
+                    // foreach (var (copy, _) in new[] { (point, 0) }) Bump(ref copy.X);
+                    // Deconstructing foreach never enters ForEachStatementSyntax (Codex P1).
+                    if (ExpressionReferencesStorageAlias(
+                            forEachVariable.Expression,
+                            aliases,
+                            semanticModel,
+                            cancellationToken) &&
+                        TryAddForeachVariableDesignationAliases(
+                            forEachVariable.Variable,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
                 else if (node is IsPatternExpressionSyntax isPattern)
                 {
                     // if (point is var copy) / point is { } copy (Codex P1)
@@ -1394,6 +1413,112 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
     }
 
+    /// <summary>
+    /// Adds foreach-deconstruction designations whose declared type involves
+    /// tracked storage (<c>foreach (var (copy, _) in …)</c>) when the enumerated
+    /// expression already carries converted storage (Codex P1).
+    /// </summary>
+    private static bool TryAddForeachVariableDesignationAliases(
+        ExpressionSyntax variable,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        variable = UnwrapParenthesesAndNullForgiving(variable);
+
+        if (variable is DeclarationExpressionSyntax { Designation: { } designation })
+        {
+            return TryAddStorageInvolvingDesignationAliases(
+                designation, aliases, semanticModel, cancellationToken);
+        }
+
+        // foreach ((var copy, var _) in …) — tuple of declaration expressions
+        if (variable is TupleExpressionSyntax tuple)
+        {
+            var added = false;
+            foreach (var argument in tuple.Arguments)
+            {
+                if (TryAddForeachVariableDesignationAliases(
+                        argument.Expression, aliases, semanticModel, cancellationToken))
+                {
+                    added = true;
+                }
+            }
+
+            return added;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Walks a designation tree and records locals whose type involves tracked
+    /// storage (skips discards and unrelated <c>int</c> partners).
+    /// </summary>
+    private static bool TryAddStorageInvolvingDesignationAliases(
+        VariableDesignationSyntax designation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        switch (designation)
+        {
+            case SingleVariableDesignationSyntax single:
+                {
+                    var alias = semanticModel.GetDeclaredSymbol(single, cancellationToken);
+                    if (alias == null || aliases.Contains(alias))
+                        return false;
+
+                    var type = GetAliasType(alias);
+                    if (type == null || !TypeInvolvesStorageAliasType(type, aliases))
+                        return false;
+
+                    aliases.Add(alias);
+                    return true;
+                }
+            case ParenthesizedVariableDesignationSyntax parenthesized:
+                {
+                    var added = false;
+                    foreach (var nested in parenthesized.Variables)
+                    {
+                        if (TryAddStorageInvolvingDesignationAliases(
+                                nested, aliases, semanticModel, cancellationToken))
+                        {
+                            added = true;
+                        }
+                    }
+
+                    return added;
+                }
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// True when a query's final <c>select</c>/<c>group</c> projection (after
+    /// any <c>into</c> continuations) yields converted storage.
+    /// </summary>
+    private static bool QueryProjectionYieldsConvertedStorage(
+        QueryExpressionSyntax queryExpression,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var body = queryExpression.Body;
+        while (body.Continuation != null)
+            body = body.Continuation.Body;
+
+        return body.SelectOrGroup switch
+        {
+            SelectClauseSyntax select => ExpressionReferencesStorageAlias(
+                select.Expression, aliases, semanticModel, cancellationToken),
+            GroupClauseSyntax group => ExpressionReferencesStorageAlias(
+                group.GroupExpression, aliases, semanticModel, cancellationToken),
+            _ => false
+        };
+    }
+
     private static bool TryAddDesignationAlias(
         VariableDesignationSyntax designation,
         HashSet<ISymbol> aliases,
@@ -1826,6 +1951,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 awaitExpression.Expression, aliases, semanticModel, cancellationToken);
         }
 
+        // Query results: var query = from x in new[] { point } select x;
+        // so foreach (var copy in query) tracks query as carrying converted storage
+        // (Codex P1). Range variables themselves are collected via FromClause/etc.
+        if (expression is QueryExpressionSyntax queryExpression)
+        {
+            return QueryProjectionYieldsConvertedStorage(
+                queryExpression, aliases, semanticModel, cancellationToken);
+        }
+
         return false;
     }
 
@@ -1922,8 +2056,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         foreach (var argument in named.TypeArguments)
         {
-            if (SymbolEqualityComparer.Default.Equals(argument, memberType))
+            // Direct unwrap: Box<T>.Value where memberType == T.
+            // Nested: Box<T>.Values where memberType is T[] (or other nesting) —
+            // exact equality rejects forwarding; TypeContainsOrEquals recognizes
+            // the receiver type argument inside the member type (Codex P1).
+            if (SymbolEqualityComparer.Default.Equals(argument, memberType) ||
+                TypeContainsOrEquals(memberType, argument))
+            {
                 return true;
+            }
         }
 
         return false;
