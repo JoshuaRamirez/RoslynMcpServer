@@ -679,9 +679,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 {
                     // Array.ForEach / List<T>.ForEach / Copy(point, out var copy) (Codex P1)
                     var lambdaAdded = TryAddLambdaParameterAliasesFromInvocation(
-                        invocation, aliases, semanticModel, cancellationToken);
+                        invocation, aliases, semanticModel, root, cancellationToken);
                     var outVarAdded = TryAddOutVarAliasesFromInvocation(
-                        invocation, aliases, semanticModel, cancellationToken);
+                        invocation, aliases, semanticModel, root, cancellationToken);
                     // list.Add(point) / queue.Enqueue(point): the receiver now carries
                     // converted storage (read back via ToArray/indexer/foreach).
                     var insertionAdded = TryAddCollectionInsertionReceiverAlias(
@@ -752,8 +752,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return false;
         }
 
-        foreach (var argument in invocation.ArgumentList.Arguments)
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
         {
+            var argument = invocation.ArgumentList.Arguments[i];
+            var parameter = ResolveInvocationParameter(method, argument, i);
+            if (parameter == null)
+                continue;
+
+            // Only taint when the argument flows into a parameter whose type
+            // embeds converted storage. Dictionary<object, (int X, int Y)>.Add(point, …)
+            // must not mark the receiver via the unrelated object key (Codex P2 on #3441).
+            if (!TypeInvolvesStorageAliasType(parameter.Type, aliases))
+                continue;
+
             if (TryAddContainerReceiverAlias(
                     memberAccess.Expression,
                     argument.Expression,
@@ -1364,6 +1375,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         InvocationExpressionSyntax invocation,
         HashSet<ISymbol> aliases,
         SemanticModel semanticModel,
+        SyntaxNode root,
         CancellationToken cancellationToken)
     {
         if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out var method) ||
@@ -1375,7 +1387,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var definingMethod = (method.ReducedFrom ?? method).OriginalDefinition;
         var extensionOffset = method.ReducedFrom != null ? 1 : 0;
         var storageTypeParameters = CollectStorageSourcedTypeParametersFromInvocation(
-            invocation, method, definingMethod, extensionOffset, aliases, semanticModel, cancellationToken);
+            invocation, method, definingMethod, extensionOffset, aliases, semanticModel, root, cancellationToken);
 
         if (storageTypeParameters.Count == 0)
             return false;
@@ -1420,6 +1432,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         InvocationExpressionSyntax invocation,
         HashSet<ISymbol> aliases,
         SemanticModel semanticModel,
+        SyntaxNode root,
         CancellationToken cancellationToken)
     {
         if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out var method) ||
@@ -1431,7 +1444,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var definingMethod = (method.ReducedFrom ?? method).OriginalDefinition;
         var extensionOffset = method.ReducedFrom != null ? 1 : 0;
         var storageTypeParameters = CollectStorageSourcedTypeParametersFromInvocation(
-            invocation, method, definingMethod, extensionOffset, aliases, semanticModel, cancellationToken);
+            invocation, method, definingMethod, extensionOffset, aliases, semanticModel, root, cancellationToken);
 
         if (storageTypeParameters.Count == 0)
             return false;
@@ -1499,6 +1512,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         int extensionOffset,
         HashSet<ISymbol> aliases,
         SemanticModel semanticModel,
+        SyntaxNode root,
         CancellationToken cancellationToken)
     {
         var storageTypeParameters = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
@@ -1521,7 +1535,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 instanceReceiver.Expression, aliases, semanticModel, cancellationToken))
         {
             CollectStorageSourcedContainingTypeParameters(
-                containingType, aliases, storageTypeParameters);
+                containingType,
+                instanceReceiver.Expression,
+                aliases,
+                semanticModel,
+                root,
+                storageTypeParameters,
+                cancellationToken);
         }
 
         for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
@@ -1557,20 +1577,198 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// Adds containing-type type parameters whose constructed type arguments
     /// involve a tracked storage alias type (e.g. <c>T</c> from
     /// <c>List&lt;(int X, int Y)&gt;</c> when <c>point</c>/<c>points</c> is tracked).
+    /// Prefers factory provenance so <c>Runner&lt;T, (int X, int Y)&gt; Make&lt;T&gt;(T)</c>
+    /// only marks <c>T</c>, not the unrelated second type argument (Codex P2 on #3441).
     /// </summary>
     private static void CollectStorageSourcedContainingTypeParameters(
         INamedTypeSymbol constructedContainingType,
+        ExpressionSyntax receiverExpression,
         HashSet<ISymbol> aliases,
-        HashSet<ITypeParameterSymbol> into)
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        HashSet<ITypeParameterSymbol> into,
+        CancellationToken cancellationToken)
     {
+        if (TryCollectStorageSourcedContainingTypeParametersFromProvenance(
+                receiverExpression,
+                constructedContainingType,
+                aliases,
+                semanticModel,
+                root,
+                into,
+                cancellationToken))
+        {
+            return;
+        }
+
         var original = constructedContainingType.OriginalDefinition;
         var typeArguments = constructedContainingType.TypeArguments;
         var limit = Math.Min(typeArguments.Length, original.TypeParameters.Length);
         for (var i = 0; i < limit; i++)
         {
-            if (TypeInvolvesStorageAliasType(typeArguments[i], aliases))
+            if (TypeArgumentEmbedsStorageAliasType(typeArguments[i], aliases))
                 into.Add(original.TypeParameters[i]);
         }
+    }
+
+    /// <summary>
+    /// True when <paramref name="typeArgument"/> equals or embeds an element-shaped
+    /// storage alias type. Skips composite carrier aliases (<c>List&lt;T&gt;</c>,
+    /// <c>Runner&lt;T,U&gt;</c>) so reverse containment cannot mark sibling type
+    /// parameters (Codex P2 on #3441).
+    /// </summary>
+    private static bool TypeArgumentEmbedsStorageAliasType(ITypeSymbol typeArgument, HashSet<ISymbol> aliases)
+    {
+        foreach (var alias in aliases)
+        {
+            var aliasType = GetAliasType(alias);
+            if (aliasType == null)
+                continue;
+
+            // Composite carriers: matching via TypeContainsOrEquals(carrier, typeArg)
+            // would mark every type argument of Runner&lt;T,U&gt;. Element aliases
+            // (the original tuple / direct copies) still match.
+            if (aliasType is INamedTypeSymbol { IsGenericType: true, IsTupleType: false })
+                continue;
+
+            if (SymbolEqualityComparer.Default.Equals(typeArgument, aliasType) ||
+                TypeContainsOrEquals(typeArgument, aliasType))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// When a tracked receiver was produced by a generic factory that only embeds
+    /// storage in some return-type arguments (e.g. <c>Runner&lt;T, (int X, int Y)&gt;
+    /// Make&lt;T&gt;(T value)</c>), collects only those containing-type type parameters
+    /// derived from the storage-bearing factory parameter (Codex P2 on #3441).
+    /// </summary>
+    private static bool TryCollectStorageSourcedContainingTypeParametersFromProvenance(
+        ExpressionSyntax receiverExpression,
+        INamedTypeSymbol constructedContainingType,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        HashSet<ITypeParameterSymbol> into,
+        CancellationToken cancellationToken)
+    {
+        var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        var current = UnwrapParenthesesAndNullForgiving(receiverExpression);
+
+        while (true)
+        {
+            if (TryCollectContainingTypeParametersFromFactoryInvocation(
+                    current,
+                    constructedContainingType,
+                    aliases,
+                    semanticModel,
+                    into,
+                    cancellationToken))
+            {
+                return true;
+            }
+
+            var symbol = semanticModel.GetSymbolInfo(current, cancellationToken).Symbol;
+            if (symbol == null || !visited.Add(symbol))
+                return false;
+
+            if (!TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) ||
+                initializer == null)
+            {
+                return false;
+            }
+
+            current = UnwrapParenthesesAndNullForgiving(initializer);
+        }
+    }
+
+    /// <summary>
+    /// Maps storage-sourced method type parameters through a factory return type
+    /// onto the constructed containing type's type parameters.
+    /// </summary>
+    private static bool TryCollectContainingTypeParametersFromFactoryInvocation(
+        ExpressionSyntax expression,
+        INamedTypeSymbol constructedContainingType,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        HashSet<ITypeParameterSymbol> into,
+        CancellationToken cancellationToken)
+    {
+        expression = UnwrapParenthesesAndNullForgiving(expression);
+        if (expression is not InvocationExpressionSyntax invocation)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method)
+            return false;
+
+        var definingMethod = (method.ReducedFrom ?? method).OriginalDefinition;
+        if (definingMethod.ReturnType is not INamedTypeSymbol originalReturn)
+            return false;
+
+        if (!SymbolEqualityComparer.Default.Equals(
+                originalReturn.OriginalDefinition,
+                constructedContainingType.OriginalDefinition))
+        {
+            return false;
+        }
+
+        var storageMethodTypeParameters = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+        var extensionOffset = method.ReducedFrom != null ? 1 : 0;
+
+        if (extensionOffset == 1 &&
+            invocation.Expression is MemberAccessExpressionSyntax extensionReceiver &&
+            definingMethod.Parameters.Length > 0 &&
+            ExpressionReferencesStorageAlias(
+                extensionReceiver.Expression, aliases, semanticModel, cancellationToken))
+        {
+            CollectMethodTypeParameters(definingMethod.Parameters[0].Type, storageMethodTypeParameters);
+        }
+
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            var reducedParameter = ResolveInvocationParameter(method, argument, i);
+            if (reducedParameter == null)
+                continue;
+
+            var definingOrdinal = reducedParameter.Ordinal + extensionOffset;
+            if (definingOrdinal < 0 || definingOrdinal >= definingMethod.Parameters.Length)
+                continue;
+
+            CollectMethodTypeParameters(
+                definingMethod.Parameters[definingOrdinal].Type,
+                storageMethodTypeParameters);
+        }
+
+        if (storageMethodTypeParameters.Count == 0)
+            return false;
+
+        var constructedOriginal = constructedContainingType.OriginalDefinition;
+        var limit = Math.Min(originalReturn.TypeArguments.Length, constructedOriginal.TypeParameters.Length);
+        var added = false;
+        for (var i = 0; i < limit; i++)
+        {
+            if (!TypeContainsAnyMethodTypeParameter(
+                    originalReturn.TypeArguments[i], storageMethodTypeParameters))
+            {
+                continue;
+            }
+
+            into.Add(constructedOriginal.TypeParameters[i]);
+            added = true;
+        }
+
+        return added;
     }
 
     private static bool TypeInvolvesStorageAliasType(ITypeSymbol type, HashSet<ISymbol> aliases)

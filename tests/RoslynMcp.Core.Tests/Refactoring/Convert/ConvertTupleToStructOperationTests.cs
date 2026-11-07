@@ -5855,4 +5855,212 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+
+    // Codex P2 on #3441: Dictionary<object, tuple>.Add(point, …) must not taint
+    // the receiver via the unrelated object key — value reads stay tuples.
+    [SkippableTheory]
+    [InlineData(false, "dict.Add(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(true, "dict.Add(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(false, "dict.Add(point, (X: 3, Y: 4)); var copy = dict.Values.First(); Bump(ref copy.X);")]
+    [InlineData(true, "dict.Add(point, (X: 3, Y: 4)); var copy = dict.Values.First(); Bump(ref copy.X);")]
+    [InlineData(false, "dict.TryAdd(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(true, "dict.TryAdd(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_DictionaryObjectKeyInsertion_DoesNotTaintValues_Succeeds(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Dictionary<object, (int X, int Y)> dict = new();
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref copy.X)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 on #3441: still refuse when the converted tuple is the dictionary value.
+    [SkippableTheory]
+    [InlineData(false, "dict.Add(0, point); var copy = dict[0]; Bump(ref copy.X);")]
+    [InlineData(true, "dict.Add(0, point); var copy = dict[0]; Bump(ref copy.X);")]
+    [InlineData(false, "dict.TryAdd(0, point); var copy = dict[0]; Bump(ref copy.X);")]
+    [InlineData(true, "dict.TryAdd(0, point); var copy = dict[0]; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_DictionaryValueInsertionRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Dictionary<object, (int X, int Y)> dict = new();
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: Runner<T,(int X,int Y)> Make<T>(T) — callback bound to the
+    // second (original tuple) type argument must not be treated as storage.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_ContainingTypeCallbackUnrelatedTypeArg_Succeeds(bool asRecord)
+    {
+        var source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Runner<T, TCallback>
+            {
+                public void Run(Action<TCallback> action) => action(default!);
+            }
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static Runner<T, (int X, int Y)> Make<T>(T value)
+                {
+                    _ = value;
+                    return new Runner<T, (int X, int Y)>();
+                }
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var runner = Make(point);
+                    runner.Run(copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 22,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref copy.X)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 on #3441: still refuse when the callback binds the storage-sourced type arg.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_ContainingTypeCallbackStorageTypeArg_ThrowsAndWritesNothing(bool asRecord)
+    {
+        var source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Runner<T, TOther>
+            {
+                public void Run(Action<T> action) => action(default!);
+            }
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static Runner<T, (int A, int B)> Make<T>(T value)
+                {
+                    _ = value;
+                    return new Runner<T, (int A, int B)>();
+                }
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var runner = Make(point);
+                    runner.Run(copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 22,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+
 }
