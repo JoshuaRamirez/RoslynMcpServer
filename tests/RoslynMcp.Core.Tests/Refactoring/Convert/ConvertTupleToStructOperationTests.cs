@@ -1240,6 +1240,100 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441: pointer aliases derived through arithmetic / casts / ++/--.
+    [SkippableTheory]
+    [InlineData(false, "var p = &point; var q = p + 0; Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = p + 0; Bump(ref q->X);")]
+    [InlineData(false, "var p = &point; var q = p - 0; Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = p - 0; Bump(ref q->X);")]
+    [InlineData(false, "var p = &point; var q = ((int X, int Y)*)p; Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = ((int X, int Y)*)p; Bump(ref q->X);")]
+    [InlineData(false, "var p = &point; var q = ++p; Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = ++p; Bump(ref q->X);")]
+    [InlineData(false, "var p = &point; var q = p++; Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = p++; Bump(ref q->X);")]
+    [InlineData(false, "var p = &point; var q = (p += 0); Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = (p += 0); Bump(ref q->X);")]
+    public async Task ConvertTupleToStruct_PointerArithmeticAliasRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public unsafe class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: dynamic aliases of converted storage must refuse by-ref element uses
+    // (type-mismatch must not short-circuit before consulting the tracked symbol).
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_DynamicAliasRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (1, 2);
+                    dynamic copy = point;
+                    Bump(ref copy.Item1);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     // Codex P1 on #3441: stackalloc initializers must be tracked as storage carriers
     // (implicit stackalloc[] { point } and explicit stackalloc T[n] { point }).
     [SkippableTheory]

@@ -706,6 +706,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     else if (source is PrefixUnaryExpressionSyntax addressOf &&
                              addressOf.IsKind(SyntaxKind.AddressOfExpression))
                         source = addressOf.Operand;
+                    // Pointer-derived aliases: var q = p + 0 / p - 0 / ++p / p++ /
+                    // (T*)p / (p += 0) (Codex P1 on #3441).
+                    else if (TryUnwrapPointerDerivedSource(source, semanticModel, out var pointerOperand))
+                        source = pointerOperand;
                     else
                         break;
                 }
@@ -2223,6 +2227,88 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
     }
 
+    /// <summary>
+    /// Unwraps one pointer-derived alias source to its pointer operand:
+    /// <c>p + 0</c> / <c>p - 0</c>, <c>++p</c> / <c>p++</c> / <c>--p</c> / <c>p--</c>,
+    /// pointer casts <c>(T*)p</c>, and compound <c>p += n</c> / <c>p -= n</c>
+    /// (Codex P1 on #3441). Address-of is handled separately.
+    /// </summary>
+    private static bool TryUnwrapPointerDerivedSource(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        out ExpressionSyntax pointerOperand)
+    {
+        switch (expression)
+        {
+            case BinaryExpressionSyntax binary when
+                binary.IsKind(SyntaxKind.AddExpression) ||
+                binary.IsKind(SyntaxKind.SubtractExpression):
+                if (IsPointerTyped(binary.Left, semanticModel))
+                {
+                    pointerOperand = binary.Left;
+                    return true;
+                }
+
+                if (IsPointerTyped(binary.Right, semanticModel))
+                {
+                    pointerOperand = binary.Right;
+                    return true;
+                }
+
+                break;
+
+            case PrefixUnaryExpressionSyntax prefix when
+                prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+                prefix.IsKind(SyntaxKind.PreDecrementExpression):
+                if (IsPointerTyped(prefix.Operand, semanticModel))
+                {
+                    pointerOperand = prefix.Operand;
+                    return true;
+                }
+
+                break;
+
+            case PostfixUnaryExpressionSyntax postfix when
+                postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+                postfix.IsKind(SyntaxKind.PostDecrementExpression):
+                if (IsPointerTyped(postfix.Operand, semanticModel))
+                {
+                    pointerOperand = postfix.Operand;
+                    return true;
+                }
+
+                break;
+
+            case CastExpressionSyntax cast:
+                // (T*)p / (void*)p — follow when the operand or result is a pointer.
+                if (IsPointerTyped(cast.Expression, semanticModel) ||
+                    semanticModel.GetTypeInfo(cast).Type is IPointerTypeSymbol)
+                {
+                    pointerOperand = cast.Expression;
+                    return true;
+                }
+
+                break;
+
+            case AssignmentExpressionSyntax assignment when
+                assignment.IsKind(SyntaxKind.AddAssignmentExpression) ||
+                assignment.IsKind(SyntaxKind.SubtractAssignmentExpression):
+                if (IsPointerTyped(assignment.Left, semanticModel))
+                {
+                    pointerOperand = assignment.Left;
+                    return true;
+                }
+
+                break;
+        }
+
+        pointerOperand = expression;
+        return false;
+    }
+
+    private static bool IsPointerTyped(ExpressionSyntax expression, SemanticModel semanticModel) =>
+        semanticModel.GetTypeInfo(expression).Type is IPointerTypeSymbol;
+
     private static ExpressionSyntax SkipTransparentWrappers(ExpressionSyntax expression)
     {
         while (TryUnwrapTransparentWrapper(expression, out var inner))
@@ -2276,6 +2362,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             else if (expression is PrefixUnaryExpressionSyntax indirection &&
                      indirection.IsKind(SyntaxKind.PointerIndirectionExpression))
                 expression = indirection.Operand;
+            // Pointer address-of / arithmetic / cast / ++/-- / compound += (Codex P1).
+            else if (expression is PrefixUnaryExpressionSyntax addressOf &&
+                     addressOf.IsKind(SyntaxKind.AddressOfExpression))
+                expression = addressOf.Operand;
+            else if (TryUnwrapPointerDerivedSource(expression, semanticModel, out var pointerOperand))
+                expression = pointerOperand;
             else
                 break;
         }
@@ -4857,6 +4949,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // merely embed storage still fall through to the refuse-on-mismatch path below.
             if (receiverType is IPointerTypeSymbol pointer &&
                 SymbolEqualityComparer.Default.Equals(pointer.PointedAtType, tupleType))
+            {
+                // Fall through to symbol / alias checks.
+            }
+            // dynamic copy = point; Bump(ref copy.Item1) — type is dynamic, not the
+            // tuple, but the collector still tracks copy; consult the symbol before
+            // rejecting (Codex P1 on #3441).
+            else if (receiverType.TypeKind == TypeKind.Dynamic)
             {
                 // Fall through to symbol / alias checks.
             }
