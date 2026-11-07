@@ -5537,4 +5537,81 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
+
+    // #3347: tuples placed into collections (initializer / Add / collection expression)
+    // and read back via ToArray/ToList/indexer/foreach must stay gated.
+    [SkippableTheory]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point }; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point }; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point! }; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point! }; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point }; var arr = list!.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point }; var arr = list!.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point }; var copy = list[0]; Bump(ref copy.X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point }; var copy = list[0]; Bump(ref copy.X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point }; foreach (var copy in list) { var c = copy; Bump(ref c.X); }")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point }; foreach (var copy in list) { var c = copy; Bump(ref c.X); }")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point }; var copies = list.ToList(); var c = copies[0]; Bump(ref c.X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point }; var copies = list.ToList(); var c = copies[0]; Bump(ref c.X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)>(); list.Add(point); var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)>(); list.Add(point); var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)>(); list.Add(point!); var copy = list[0]; Bump(ref copy.X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)>(); list.Add(point!); var copy = list[0]; Bump(ref copy.X);")]
+    [InlineData(false, "List<(int X, int Y)> list = [point]; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "List<(int X, int Y)> list = [point]; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "(int X, int Y)[] arr = [point]; Bump(ref arr[0].X);")]
+    [InlineData(true, "(int X, int Y)[] arr = [point]; Bump(ref arr[0].X);")]
+    [InlineData(false, "(int X, int Y)[] arr = [point!]; var copy = arr[0]; Bump(ref copy.X);")]
+    [InlineData(true, "(int X, int Y)[] arr = [point!]; var copy = arr[0]; Bump(ref copy.X);")]
+    [InlineData(false, "var arr = new (int X, int Y)[] { point }; Bump(ref arr[0].X);")]
+    [InlineData(true, "var arr = new (int X, int Y)[] { point }; Bump(ref arr[0].X);")]
+    [InlineData(false, "var map = new Dictionary<int, (int X, int Y)> { [0] = point }; var copy = map[0]; Bump(ref copy.X);")]
+    [InlineData(true, "var map = new Dictionary<int, (int X, int Y)> { [0] = point }; var copy = map[0]; Bump(ref copy.X);")]
+    [InlineData(false, "var map = new Dictionary<int, (int X, int Y)> { { 0, point } }; var copy = map[0]; Bump(ref copy.X);")]
+    [InlineData(true, "var map = new Dictionary<int, (int X, int Y)> { { 0, point } }; var copy = map[0]; Bump(ref copy.X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)>(); list.Insert(0, point); var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)>(); list.Insert(0, point); var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { (0, 0) }; list[0] = point; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { (0, 0) }; list[0] = point; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var queue = new Queue<(int X, int Y)>(); queue.Enqueue(point); var arr = queue.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var queue = new Queue<(int X, int Y)>(); queue.Enqueue(point); var arr = queue.ToArray(); Bump(ref arr[0].X);")]
+    public async Task ConvertTupleToStruct_CollectionInitializerCarrierRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
 }

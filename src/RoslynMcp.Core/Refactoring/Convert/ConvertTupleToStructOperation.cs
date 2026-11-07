@@ -529,6 +529,23 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         continue;
                     }
 
+                    // list[0] = point / map[key] = point: the indexed container
+                    // carries converted storage, not just the indexer symbol.
+                    if (UnwrapParenthesesAndNullForgiving(assignment.Left) is ElementAccessExpressionSyntax
+                        {
+                            Expression: { } indexedContainer
+                        } &&
+                        TryAddContainerReceiverAlias(
+                            indexedContainer,
+                            assignment.Right,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+
                     alias = semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
                     source = assignment.Right;
                 }
@@ -661,7 +678,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         invocation, aliases, semanticModel, cancellationToken);
                     var outVarAdded = TryAddOutVarAliasesFromInvocation(
                         invocation, aliases, semanticModel, cancellationToken);
-                    if (lambdaAdded || outVarAdded)
+                    // list.Add(point) / queue.Enqueue(point): the receiver now carries
+                    // converted storage (read back via ToArray/indexer/foreach).
+                    var insertionAdded = TryAddCollectionInsertionReceiverAlias(
+                        invocation, aliases, semanticModel, cancellationToken);
+                    if (lambdaAdded || outVarAdded || insertionAdded)
                     {
                         changed = true;
                         continue;
@@ -699,6 +720,77 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         return aliases;
+    }
+
+    /// <summary>
+    /// <c>list.Add(point)</c> / <c>list.Insert(0, point)</c> / <c>queue.Enqueue(point)</c>:
+    /// marks the receiver as carrying converted storage so reads back through
+    /// <c>ToArray()</c>, indexers, or <c>foreach</c> stay gated (refusal-leaning).
+    /// </summary>
+    private static bool TryAddCollectionInsertionReceiverAlias(
+        InvocationExpressionSyntax invocation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (invocation.Expression is not MemberAccessExpressionSyntax
+            {
+                Name.Identifier.ValueText: "Add" or "AddRange" or "Insert" or "InsertRange"
+                    or "Push" or "Enqueue" or "TryAdd" or "AddFirst" or "AddLast"
+            } memberAccess)
+        {
+            return false;
+        }
+
+        if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method ||
+            (method.ReducedFrom == null && method.IsStatic))
+        {
+            return false;
+        }
+
+        foreach (var argument in invocation.ArgumentList.Arguments)
+        {
+            if (TryAddContainerReceiverAlias(
+                    memberAccess.Expression,
+                    argument.Expression,
+                    aliases,
+                    semanticModel,
+                    cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Adds the symbol behind <paramref name="container"/> as an alias when
+    /// <paramref name="value"/> embeds converted storage.
+    /// </summary>
+    private static bool TryAddContainerReceiverAlias(
+        ExpressionSyntax container,
+        ExpressionSyntax value,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        while (TryUnwrapTransparentWrapper(value, out var unwrappedValue))
+            value = unwrappedValue;
+
+        if (!ExpressionReferencesStorageAlias(value, aliases, semanticModel, cancellationToken))
+            return false;
+
+        container = UnwrapParenthesesAndNullForgiving(container);
+        var receiver = semanticModel.GetSymbolInfo(container, cancellationToken).Symbol;
+        if (receiver is not (ILocalSymbol or IParameterSymbol or IFieldSymbol or IPropertySymbol) ||
+            aliases.Contains(receiver))
+        {
+            return false;
+        }
+
+        aliases.Add(receiver);
+        return true;
     }
 
     /// <summary>
@@ -2171,6 +2263,17 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
                     return true;
+
+                // new Dictionary<K, V> { { key, point } }: complex element initializers.
+                if (element is InitializerExpressionSyntax complexElement &&
+                    complexElement.IsKind(SyntaxKind.ComplexElementInitializerExpression))
+                {
+                    foreach (var part in complexElement.Expressions)
+                    {
+                        if (ExpressionReferencesStorageAlias(part, aliases, semanticModel, cancellationToken))
+                            return true;
+                    }
+                }
             }
         }
 
@@ -2423,6 +2526,17 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             originalSourceElement = TryGetSequenceElementType(parameter.Type);
             if (originalSourceElement != null)
                 break;
+        }
+
+        // Instance copies on the container itself: List<T>.ToArray() /
+        // ImmutableArray<T>.ToBuilder() — the source element is the containing
+        // type's own sequence element type parameter.
+        if (originalSourceElement == null &&
+            method.ReducedFrom == null &&
+            !original.IsStatic &&
+            original.ContainingType is { } containingType)
+        {
+            originalSourceElement = TryGetSequenceElementType(containingType);
         }
 
         if (originalSourceElement is not ITypeParameterSymbol sourceTypeParameter)
