@@ -1240,6 +1240,51 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441: stackalloc initializers must be tracked as storage carriers
+    // (implicit stackalloc[] { point } and explicit stackalloc T[n] { point }).
+    [SkippableTheory]
+    [InlineData(false, "var points = stackalloc[] { point }; Bump(ref points[0].X);")]
+    [InlineData(true, "var points = stackalloc[] { point }; Bump(ref points[0].X);")]
+    [InlineData(false, "var points = stackalloc (int X, int Y)[1] { point }; Bump(ref points[0].X);")]
+    [InlineData(true, "var points = stackalloc (int X, int Y)[1] { point }; Bump(ref points[0].X);")]
+    public async Task ConvertTupleToStruct_StackallocInitializerCarrierRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public unsafe class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     // Codex P2 on #3441: __makeref(point.X) requires a variable; properties are not.
     [SkippableTheory]
     [InlineData(false)]

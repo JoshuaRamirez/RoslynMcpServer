@@ -2435,6 +2435,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         // Array / collection creations that embed an alias so
         // var points = new[] { point }; points[0].X = 3; tracks points.
+        // Also stackalloc[] { point } / stackalloc T[n] { point } (Codex P1 on #3441).
         if (expression is ImplicitArrayCreationExpressionSyntax implicitArray &&
             implicitArray.Initializer != null)
         {
@@ -2449,6 +2450,26 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             arrayCreation.Initializer != null)
         {
             foreach (var element in arrayCreation.Initializer.Expressions)
+            {
+                if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
+        }
+
+        if (expression is ImplicitStackAllocArrayCreationExpressionSyntax implicitStackAlloc &&
+            implicitStackAlloc.Initializer != null)
+        {
+            foreach (var element in implicitStackAlloc.Initializer.Expressions)
+            {
+                if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
+        }
+
+        if (expression is StackAllocArrayCreationExpressionSyntax stackAlloc &&
+            stackAlloc.Initializer != null)
+        {
+            foreach (var element in stackAlloc.Initializer.Expressions)
             {
                 if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
                     return true;
@@ -3992,6 +4013,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 when implicitArray.Initializer != null => implicitArray.Initializer.Expressions,
             ArrayCreationExpressionSyntax arrayCreation
                 when arrayCreation.Initializer != null => arrayCreation.Initializer.Expressions,
+            ImplicitStackAllocArrayCreationExpressionSyntax implicitStackAlloc
+                when implicitStackAlloc.Initializer != null => implicitStackAlloc.Initializer.Expressions,
+            StackAllocArrayCreationExpressionSyntax stackAlloc
+                when stackAlloc.Initializer != null => stackAlloc.Initializer.Expressions,
             _ => null
         };
 
@@ -4054,6 +4079,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 when implicitArray.Initializer != null => implicitArray.Initializer.Expressions,
             ArrayCreationExpressionSyntax arrayCreation
                 when arrayCreation.Initializer != null => arrayCreation.Initializer.Expressions,
+            ImplicitStackAllocArrayCreationExpressionSyntax implicitStackAlloc
+                when implicitStackAlloc.Initializer != null => implicitStackAlloc.Initializer.Expressions,
+            StackAllocArrayCreationExpressionSyntax stackAlloc
+                when stackAlloc.Initializer != null => stackAlloc.Initializer.Expressions,
             _ => null
         };
 
