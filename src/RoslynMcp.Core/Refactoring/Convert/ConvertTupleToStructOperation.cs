@@ -2336,8 +2336,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     // imply aliasing when the converter synthesizes fresh values.
                     if (RequiresIdentityConverterToForward(method))
                     {
-                        if (IsIdentitySelectInvocation(invocation, method) ||
-                            IsIdentityConvertAllInvocation(invocation, method) ||
+                        if (IsIdentitySelectInvocation(invocation, method, semanticModel, cancellationToken) ||
+                            IsIdentityConvertAllInvocation(invocation, method, semanticModel, cancellationToken) ||
                             IsStorageReturningDelegateSelectorInvocation(invocation, method, semanticModel, cancellationToken))
                             return true;
                         continue;
@@ -2361,7 +2361,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     return true;
 
                 // Task.FromResult(point) / similar: argument is T, return is G<T>.
-                if (MethodReturnWrapsElementAsConstructedGeneric(method, parameter))
+                if (MethodReturnWrapsElementAsConstructedGeneric(method, parameter, aliases))
                     return true;
 
                 // Opaque MakeGetter(point) / factory(point) whose return is a
@@ -2381,7 +2381,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 (MethodReturnForwardsContainer(
                      method,
                      semanticModel.GetTypeInfo(memberAccess.Expression, cancellationToken).Type) ||
-                 IsIdentitySelectInvocation(invocation, method) ||
+                 MethodReturnExtractsReceiverStorage(method, aliases) ||
+                 IsIdentitySelectInvocation(invocation, method, semanticModel, cancellationToken) ||
                  IsStorageReturningDelegateSelectorInvocation(invocation, method, semanticModel, cancellationToken)))
             {
                 return true;
@@ -2390,7 +2391,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // points.Select(x => x) — TSource/TResult differ but selector forwards.
             // Also points.Select(x => () => x) — selector returns a storage-returning
             // delegate carrier (Codex P1 on #3441).
-            if (IsIdentitySelectInvocation(invocation, method) ||
+            if (IsIdentitySelectInvocation(invocation, method, semanticModel, cancellationToken) ||
                 IsStorageReturningDelegateSelectorInvocation(invocation, method, semanticModel, cancellationToken))
             {
                 if (invocation.Expression is MemberAccessExpressionSyntax receiverAccess &&
@@ -2699,18 +2700,103 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// </summary>
     private static bool MethodReturnWrapsElementAsConstructedGeneric(
         IMethodSymbol method,
-        IParameterSymbol parameter)
+        IParameterSymbol parameter,
+        HashSet<ISymbol> aliases)
     {
         var original = (method.ReducedFrom ?? method).OriginalDefinition;
-        if (parameter.Ordinal < 0 || parameter.Ordinal >= original.Parameters.Length)
+        // Reduced extension calls (5.With(point)) bind arguments to the reduced
+        // parameter list; the original definition carries the receiver at 0.
+        var ordinal = parameter.Ordinal + (method.ReducedFrom != null ? 1 : 0);
+        if (ordinal < 0 || ordinal >= original.Parameters.Length)
             return false;
 
-        if (original.Parameters[parameter.Ordinal].Type is not ITypeParameterSymbol elementTypeParameter)
-            return false;
+        var originalParameterType = original.Parameters[ordinal].Type;
+        if (originalParameterType is ITypeParameterSymbol elementTypeParameter)
+        {
+            // Recurse into multi-arg generics / nested / tuple returns rather than
+            // requiring Arity: 1 (Codex P1 on #3441).
+            return TypeContainsOrEquals(original.ReturnType, elementTypeParameter);
+        }
 
-        // Recurse into multi-arg generics / nested / tuple returns rather than
-        // requiring Arity: 1 (Codex P1 on #3441).
-        return TypeContainsOrEquals(original.ReturnType, elementTypeParameter);
+        // Inverse flow: storage nested in a parameter type (Box<T> / Pair<K, V>)
+        // and extracted by the return type (T Unwrap<T>(Box<T>)) — only the
+        // type parameters actually bound to converted storage count, so
+        // extracting an unrelated wrapper type argument does not alias
+        // (Codex P1 on #3441).
+        var sourced = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+        CollectStorageBoundTypeParameters(originalParameterType, parameter.Type, aliases, sourced);
+        return sourced.Count > 0 && TypeContainsAnyMethodTypeParameter(original.ReturnType, sourced);
+    }
+
+    /// <summary>
+    /// True when an extension or instance call on a storage-carrying receiver
+    /// returns a type parameter bound to converted storage — e.g.
+    /// <c>box.Unwrap()</c> with <c>T Unwrap&lt;T&gt;(this Box&lt;T&gt;)</c> or
+    /// <c>box.Get()</c> on <c>Box&lt;T&gt;</c> (Codex P1 on #3441).
+    /// </summary>
+    private static bool MethodReturnExtractsReceiverStorage(
+        IMethodSymbol method,
+        HashSet<ISymbol> aliases)
+    {
+        var sourced = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+        ITypeSymbol originalReturnType;
+
+        if (method.ReducedFrom != null)
+        {
+            var original = method.ReducedFrom.OriginalDefinition;
+            if (original.Parameters.Length == 0 || method.ReceiverType == null)
+                return false;
+
+            CollectStorageBoundTypeParameters(
+                original.Parameters[0].Type, method.ReceiverType, aliases, sourced);
+            originalReturnType = original.ReturnType;
+        }
+        else if (!method.IsStatic && method.ContainingType is { IsGenericType: true } containingType)
+        {
+            CollectStorageBoundTypeParameters(
+                containingType.OriginalDefinition, containingType, aliases, sourced);
+            originalReturnType = method.OriginalDefinition.ReturnType;
+        }
+        else
+        {
+            return false;
+        }
+
+        return sourced.Count > 0 && TypeContainsAnyMethodTypeParameter(originalReturnType, sourced);
+    }
+
+    /// <summary>
+    /// Walks an original (open) type alongside its constructed form and collects
+    /// the type parameters whose constructed type argument embeds a tracked
+    /// storage alias type (e.g. <c>T</c> from <c>Box&lt;T&gt;</c> /
+    /// <c>Box&lt;(int X, int Y)&gt;</c>).
+    /// </summary>
+    private static void CollectStorageBoundTypeParameters(
+        ITypeSymbol originalType,
+        ITypeSymbol constructedType,
+        HashSet<ISymbol> aliases,
+        HashSet<ITypeParameterSymbol> into)
+    {
+        switch (originalType)
+        {
+            case ITypeParameterSymbol typeParameter:
+                if (TypeArgumentEmbedsStorageAliasType(constructedType, aliases))
+                    into.Add(typeParameter);
+                break;
+            case IArrayTypeSymbol originalArray when constructedType is IArrayTypeSymbol constructedArray:
+                CollectStorageBoundTypeParameters(
+                    originalArray.ElementType, constructedArray.ElementType, aliases, into);
+                break;
+            case INamedTypeSymbol originalNamed when constructedType is INamedTypeSymbol constructedNamed &&
+                                                     originalNamed.TypeArguments.Length == constructedNamed.TypeArguments.Length:
+                for (var i = 0; i < originalNamed.TypeArguments.Length; i++)
+                {
+                    CollectStorageBoundTypeParameters(
+                        originalNamed.TypeArguments[i], constructedNamed.TypeArguments[i], aliases, into);
+                }
+
+                break;
+        }
     }
 
     /// <summary>
@@ -2720,10 +2806,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     private static bool MethodReturnWrapsElementAsSequence(IMethodSymbol method, IParameterSymbol parameter)
     {
         var original = (method.ReducedFrom ?? method).OriginalDefinition;
-        if (parameter.Ordinal < 0 || parameter.Ordinal >= original.Parameters.Length)
+        var ordinal = parameter.Ordinal + (method.ReducedFrom != null ? 1 : 0);
+        if (ordinal < 0 || ordinal >= original.Parameters.Length)
             return false;
 
-        if (original.Parameters[parameter.Ordinal].Type is not ITypeParameterSymbol elementTypeParameter)
+        if (original.Parameters[ordinal].Type is not ITypeParameterSymbol elementTypeParameter)
             return false;
 
         var returnElement = TryGetSequenceElementType(original.ReturnType);
@@ -2781,7 +2868,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// True for <c>Select</c>/<c>SelectMany</c> whose selector is a simple identity
     /// (<c>x =&gt; x</c>), so <c>points.Select(x =&gt; x).ToArray()</c> still aliases.
     /// </summary>
-    private static bool IsIdentitySelectInvocation(InvocationExpressionSyntax invocation, IMethodSymbol method)
+    private static bool IsIdentitySelectInvocation(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol method,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
         if (name is not ("Select" or "SelectMany"))
@@ -2819,7 +2910,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 }
 
                 lambdaIdentity.Add(identity);
+                continue;
             }
+
+            // Method-group selectors: points.Select(Echo) (Codex P1 on #3441).
+            var groupForwards = MethodGroupSelectorForwardsElement(
+                expr, considerLastParameter: name == "SelectMany", semanticModel, cancellationToken);
+            if (groupForwards.HasValue)
+                lambdaIdentity.Add(groupForwards.Value);
         }
 
         // Select: any identity selector. SelectMany: every lambda must be identity
@@ -2843,7 +2941,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return name is "ConvertAll" or "Select" or "SelectMany";
     }
 
-    private static bool IsIdentityConvertAllInvocation(InvocationExpressionSyntax invocation, IMethodSymbol method)
+    private static bool IsIdentityConvertAllInvocation(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol method,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
         if (name is not "ConvertAll")
@@ -2864,6 +2966,80 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     paren.Block,
                     paren.ParameterList.Parameters[0].Identifier.ValueText))
                 return true;
+
+            // Method-group converters: Array.ConvertAll(points, Echo) (Codex P1 on #3441).
+            if (MethodGroupSelectorForwardsElement(
+                    expr, considerLastParameter: false, semanticModel, cancellationToken) == true)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// For a selector argument that is a method group (<c>points.Select(Echo)</c>),
+    /// returns whether the referenced method forwards its element parameter's
+    /// storage: a generic return that mentions the element parameter's type
+    /// parameters (<c>T Echo&lt;T&gt;(T)</c>, <c>Func&lt;T&gt; MakeGetter&lt;T&gt;(T)</c>),
+    /// a non-generic source body that returns the parameter, or a non-generic
+    /// storage-returning delegate. Returns <see langword="null"/> when the
+    /// argument is not a method group (Codex P1 on #3441).
+    /// </summary>
+    private static bool? MethodGroupSelectorForwardsElement(
+        ExpressionSyntax expression,
+        bool considerLastParameter,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (expression is not (SimpleNameSyntax or MemberAccessExpressionSyntax))
+            return null;
+
+        var symbolInfo = semanticModel.GetSymbolInfo(expression, cancellationToken);
+        var group = symbolInfo.Symbol as IMethodSymbol;
+        if (group == null && symbolInfo.CandidateSymbols.Length == 1)
+            group = symbolInfo.CandidateSymbols[0] as IMethodSymbol;
+
+        if (group == null)
+            return null;
+
+        var original = (group.ReducedFrom ?? group).OriginalDefinition;
+        var extensionOffset = group.ReducedFrom != null ? 1 : 0;
+        if (original.Parameters.Length <= extensionOffset || original.ReturnsVoid)
+            return false;
+
+        var candidates = new List<int> { extensionOffset };
+        if (considerLastParameter && original.Parameters.Length - 1 > extensionOffset)
+            candidates.Add(original.Parameters.Length - 1);
+
+        foreach (var ordinal in candidates)
+        {
+            var elementParameter = original.Parameters[ordinal];
+            var typeParameters = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+            CollectMethodTypeParameters(elementParameter.Type, typeParameters);
+            if (typeParameters.Count > 0 &&
+                TypeContainsAnyMethodTypeParameter(original.ReturnType, typeParameters))
+            {
+                return true;
+            }
+
+            if (IsStorageReturningDelegateType(original.ReturnType, elementParameter.Type))
+                return true;
+
+            foreach (var reference in original.DeclaringSyntaxReferences)
+            {
+                var (expressionBody, block) = reference.GetSyntax(cancellationToken) switch
+                {
+                    MethodDeclarationSyntax declaration => (declaration.ExpressionBody?.Expression, declaration.Body),
+                    LocalFunctionStatementSyntax local => (local.ExpressionBody?.Expression, local.Body),
+                    _ => ((ExpressionSyntax?)null, (BlockSyntax?)null)
+                };
+
+                if ((expressionBody != null || block != null) &&
+                    IsIdentityLambdaBody(expressionBody, block, elementParameter.Name))
+                {
+                    return true;
+                }
+            }
         }
 
         return false;

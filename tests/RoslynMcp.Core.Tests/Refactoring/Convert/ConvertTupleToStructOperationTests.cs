@@ -6062,5 +6062,251 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs600BT9): storage nested in a generic
+    // wrapper parameter (Box<T>) and extracted by the return type (T) —
+    // Unwrap(Wrap(point)) — must alias the extracted copy.
+    [SkippableTheory]
+    [InlineData(false, "var box = Wrap(point); var copy = Unwrap(box); Bump(ref copy.X);")]
+    [InlineData(true, "var box = Wrap(point); var copy = Unwrap(box); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = Unwrap(Wrap(point)); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = Unwrap(Wrap(point)); Bump(ref copy.X);")]
+    [InlineData(false, "var box = Wrap(point); var all = UnwrapAll(box); Bump(ref all[0].X);")]
+    [InlineData(true, "var box = Wrap(point); var all = UnwrapAll(box); Bump(ref all[0].X);")]
+    [InlineData(false, "var pair = MakePair(0, point); var copy = Second(pair); Bump(ref copy.X);")]
+    [InlineData(true, "var pair = MakePair(0, point); var copy = Second(pair); Bump(ref copy.X);")]
+    [InlineData(false, "var box = Wrap(point); var copy = box.Unwrap(); Bump(ref copy.X);")]
+    [InlineData(true, "var box = Wrap(point); var copy = box.Unwrap(); Bump(ref copy.X);")]
+    [InlineData(false, "var box = 5.With(point); var copy = Unwrap(box); Bump(ref copy.X);")]
+    [InlineData(true, "var box = 5.With(point); var copy = Unwrap(box); Bump(ref copy.X);")]
+    [InlineData(false, "var box = Wrap(point); var copy = box.Get(); Bump(ref copy.X);")]
+    [InlineData(true, "var box = Wrap(point); var copy = box.Get(); Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_GenericWrapperExtractionRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
 
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+
+                static Box<T> Wrap<T>(T value) => new Box<T>(value);
+                static T Unwrap<T>(Box<T> box) => box.Value;
+                static T[] UnwrapAll<T>(Box<T> box) => new[] { box.Value };
+                static Pair<TKey, TValue> MakePair<TKey, TValue>(TKey key, TValue value) => new Pair<TKey, TValue>(key, value);
+                static TValue Second<TKey, TValue>(Pair<TKey, TValue> pair) => pair.Value;
+            }
+
+            public sealed class Box<T>
+            {
+                public Box(T value) => Value = value;
+                public T Value;
+                public T Get() => Value;
+            }
+
+            public sealed class Pair<TKey, TValue>
+            {
+                public Pair(TKey key, TValue value) { Key = key; Value = value; }
+                public TKey Key;
+                public TValue Value;
+            }
+
+            public static class BoxExtensions
+            {
+                public static T Unwrap<T>(this Box<T> box) => box.Value;
+                public static Box<T> With<T>(this int seed, T value) => new Box<T>(value);
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs600BT9) over-refusal guard: extracting the
+    // unrelated wrapper type argument (TKey bound to a different tuple) must not
+    // alias the converted storage.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_GenericWrapperUnrelatedExtraction_Succeeds(bool asRecord)
+    {
+        var source = """
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var pair = MakePair((A: 3, B: 4), point); var other = First(pair); Bump(ref other.A);
+                    return point;
+                }
+
+                static Pair<TKey, TValue> MakePair<TKey, TValue>(TKey key, TValue value) => new Pair<TKey, TValue>(key, value);
+                static TKey First<TKey, TValue>(Pair<TKey, TValue> pair) => pair.Key;
+            }
+
+            public sealed class Pair<TKey, TValue>
+            {
+                public Pair(TKey key, TValue value) { Key = key; Value = value; }
+                public TKey Key;
+                public TValue Value;
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref other.A)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs600BUC): selectors passed as method
+    // groups (points.Select(Echo)) must be analyzed like lambda selectors.
+    [SkippableTheory]
+    [InlineData(false, "var copies = points.Select(Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = System.Linq.Enumerable.Select(points, Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = System.Linq.Enumerable.Select(points, Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = Array.ConvertAll(points, Echo); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = Array.ConvertAll(points, Echo); Bump(ref copies[0].X);")]
+    [InlineData(false, "var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var copies = list.ConvertAll(Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var copies = list.ConvertAll(Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(EchoIndexed).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(EchoIndexed).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "foreach (var copy in points.Select(Echo)) { var c = copy; Bump(ref c.X); }")]
+    [InlineData(true, "foreach (var copy in points.Select(Echo)) { var c = copy; Bump(ref c.X); }")]
+    [InlineData(false, "var getters = points.Select(MakeGetter).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select(MakeGetter).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_MethodGroupSelectorRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+
+                static T Echo<T>(T x) => x;
+                static T EchoIndexed<T>(T x, int index) => x;
+                static Func<T> MakeGetter<T>(T value) => () => value;
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs600BUC) over-refusal guard: a method-group
+    // selector that synthesizes a fresh value of an unrelated type does not alias.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_MethodGroupProjectionSelector_Succeeds(bool asRecord)
+    {
+        var source = """
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    var copies = points.Select(Project).ToArray(); Bump(ref copies[0].A);
+                    return point;
+                }
+
+                static (int A, int B) Project<T>(T value) => (1, 2);
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref copies[0].A)", text, StringComparison.Ordinal);
+    }
 }
