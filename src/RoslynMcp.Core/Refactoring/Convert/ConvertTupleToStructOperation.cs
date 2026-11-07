@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
@@ -395,7 +396,28 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             var storage = TryGetAssignedStorageSymbol(creation, model, cancellationToken);
             if (storage == null)
+            {
+                // Returned directly from an object / dynamic function: follow call
+                // sites (Codex P1 on #3441, PRRT_kwDORD0nYs605DwK).
+                var returningFunction = await FindUnsafeOpaqueReturnFlowAsync(
+                    target.Document,
+                    root,
+                    model,
+                    creation,
+                    memberNames,
+                    includeWrites: true,
+                    (doc, docRoot, docModel, flowStorage) => HasStorageElementWriteAsync(
+                        doc, docRoot, docModel, flowStorage, memberNames, tupleType, cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+                if (returningFunction != null)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.CannotConvert,
+                        $"Cannot convert to a record struct because the tuple returned from '{returningFunction}' reaches element assignments that require settable properties.");
+                }
+
                 continue;
+            }
 
             if (await HasStorageElementWriteAsync(
                     target.Document, root, model, storage, memberNames, tupleType, cancellationToken))
@@ -446,7 +468,28 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             var storage = TryGetAssignedStorageSymbol(creation, model, cancellationToken);
             if (storage == null)
+            {
+                // Returned directly from an object / dynamic function: follow call
+                // sites (Codex P1 on #3441, PRRT_kwDORD0nYs605DwK).
+                var returningFunction = await FindUnsafeOpaqueReturnFlowAsync(
+                    target.Document,
+                    root,
+                    model,
+                    creation,
+                    memberNames,
+                    includeWrites: false,
+                    (doc, docRoot, docModel, flowStorage) => HasStorageElementByRefUseAsync(
+                        doc, docRoot, docModel, flowStorage, memberNames, tupleType, cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+                if (returningFunction != null)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.CannotConvert,
+                        $"Cannot convert because the tuple returned from '{returningFunction}' has an element passed by reference; the generated struct exposes properties, not fields.");
+                }
+
                 continue;
+            }
 
             if (await HasStorageElementByRefUseAsync(
                     target.Document, root, model, storage, memberNames, tupleType, cancellationToken))
@@ -456,6 +499,393 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     $"Cannot convert because '{storage.Name}' has an element passed by reference; the generated struct exposes properties, not fields.");
             }
         }
+    }
+
+    /// <summary>
+    /// A convertible creation with no assigned storage may still escape through a
+    /// <c>return</c> / expression body of a method, local function, property, or
+    /// lambda whose return type is opaque (<c>object</c>, <c>dynamic</c>, …):
+    /// <c>static dynamic Get() =&gt; (1, 2); dynamic copy = Get(); Bump(ref copy.Item1);</c>
+    /// binds by-ref to a boxed <c>ValueTuple</c> field that becomes a property after
+    /// conversion. Follows every call site of that function (transitively through
+    /// further opaque returns) and validates the storage each result is assigned to;
+    /// conservatively refuses method-group / escaping-delegate uses, overridable or
+    /// interface-implementing functions, and lambdas whose delegate is not a
+    /// source-declared local / field / property (Codex P1 on #3441,
+    /// PRRT_kwDORD0nYs605DwK). Returns the offending function name, or null.
+    /// </summary>
+    private static async Task<string?> FindUnsafeOpaqueReturnFlowAsync(
+        Document document,
+        SyntaxNode root,
+        SemanticModel model,
+        ExpressionSyntax creation,
+        HashSet<string> memberNames,
+        bool includeWrites,
+        Func<Document, SyntaxNode, SemanticModel, ISymbol, Task<bool>> storageCheck,
+        CancellationToken cancellationToken)
+    {
+        var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        var pending = new Stack<(Document Document, SyntaxNode Root, SemanticModel Model, ExpressionSyntax Value, string? Function)>();
+        pending.Push((document, root, model, creation, null));
+
+        while (pending.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (currentDocument, currentRoot, currentModel, value, function) = pending.Pop();
+
+            // Climb value-preserving wrappers / containers until storage or a return.
+            ExpressionSyntax top = value;
+            ISymbol? storage = null;
+            while (true)
+            {
+                if (!ReferenceEquals(top, creation))
+                {
+                    storage = TryGetAssignedStorageSymbol(top, currentModel, cancellationToken);
+                    if (storage != null)
+                        break;
+                }
+
+                if (!TryClimbOpaqueReturnFlow(top, out var next))
+                    break;
+                top = next;
+            }
+
+            if (storage != null)
+            {
+                if (await storageCheck(currentDocument, currentRoot, currentModel, storage).ConfigureAwait(false))
+                    return function ?? storage.Name;
+                continue;
+            }
+
+            if (function != null && DirectElementUseIsUnsafe(top, memberNames, includeWrites))
+                return function;
+
+            if (!TryGetOpaqueReturningFunction(
+                    top, currentModel, cancellationToken, out var functionSymbol, out var lambda))
+            {
+                continue;
+            }
+
+            if (!visited.Add(functionSymbol))
+                continue;
+
+            var functionName = lambda != null ? "lambda" : functionSymbol.Name;
+
+            ISymbol referenceTarget = functionSymbol;
+            if (lambda != null)
+            {
+                SyntaxNode lambdaTop = lambda;
+                while (lambdaTop.Parent is ParenthesizedExpressionSyntax or CastExpressionSyntax)
+                    lambdaTop = lambdaTop.Parent;
+
+                var delegateStorage = lambdaTop is ExpressionSyntax lambdaExpression
+                    ? TryGetAssignedStorageSymbol(lambdaExpression, currentModel, cancellationToken)
+                    : null;
+                if (delegateStorage is not (ILocalSymbol or IFieldSymbol or IPropertySymbol) ||
+                    delegateStorage.DeclaringSyntaxReferences.IsDefaultOrEmpty)
+                {
+                    return functionName;
+                }
+
+                referenceTarget = delegateStorage;
+            }
+            else if (IsOverridableOrInterfaceMember(functionSymbol))
+            {
+                return functionName;
+            }
+
+            var references = await SymbolFinder.FindReferencesAsync(
+                referenceTarget, currentDocument.Project.Solution, cancellationToken).ConfigureAwait(false);
+            foreach (var referenced in references)
+            {
+                foreach (var location in referenced.Locations)
+                {
+                    if (location.IsImplicit || location.IsCandidateLocation)
+                        return functionName;
+
+                    var siteDocument = location.Document;
+                    var siteRoot = await siteDocument.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+                    var siteModel = await siteDocument.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                    if (siteRoot == null || siteModel == null)
+                        return functionName;
+
+                    var siteNode = siteRoot.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
+                    if (siteNode is not ExpressionSyntax siteExpression)
+                        return functionName;
+
+                    if (!TryGetCallSiteResult(
+                            siteExpression,
+                            calledAsDelegate: lambda != null,
+                            isProperty: referenceTarget is IPropertySymbol && lambda == null,
+                            out var result,
+                            out var ignore))
+                    {
+                        return functionName;
+                    }
+
+                    if (ignore)
+                        continue;
+
+                    pending.Push((siteDocument, siteRoot, siteModel, result!, functionName));
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Climbs one value-preserving level for opaque-return flow: parentheses,
+    /// casts / <c>as</c>, null-forgiving, checked, await, conditional / coalesce /
+    /// switch-expression branches, and storage-carrying containers.
+    /// </summary>
+    private static bool TryClimbOpaqueReturnFlow(ExpressionSyntax node, out ExpressionSyntax next)
+    {
+        next = null!;
+        switch (node.Parent)
+        {
+            case ParenthesizedExpressionSyntax parenthesized:
+                next = parenthesized;
+                return true;
+            case CastExpressionSyntax cast when cast.Expression == node:
+                next = cast;
+                return true;
+            case BinaryExpressionSyntax asExpression
+                when asExpression.IsKind(SyntaxKind.AsExpression) && asExpression.Left == node:
+                next = asExpression;
+                return true;
+            case BinaryExpressionSyntax coalesce when coalesce.IsKind(SyntaxKind.CoalesceExpression):
+                next = coalesce;
+                return true;
+            case PostfixUnaryExpressionSyntax postfix
+                when postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                next = postfix;
+                return true;
+            case CheckedExpressionSyntax checkedExpression:
+                next = checkedExpression;
+                return true;
+            case AwaitExpressionSyntax awaitExpression:
+                next = awaitExpression;
+                return true;
+            case ConditionalExpressionSyntax conditional
+                when conditional.WhenTrue == node || conditional.WhenFalse == node:
+                next = conditional;
+                return true;
+            case SwitchExpressionArmSyntax { Parent: SwitchExpressionSyntax switchExpression } arm
+                when arm.Expression == node:
+                next = switchExpression;
+                return true;
+        }
+
+        if (TryClimbAssignedStorageContainer(node, out var container) &&
+            container is ExpressionSyntax containerExpression)
+        {
+            next = containerExpression;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// <c>Bump(ref Get().Item1)</c> / <c>ref var r = ref Get().Item1</c> /
+    /// <c>&amp;Get().Item1</c> (and, for the record gate, <c>Get().Item1 = 5</c> /
+    /// increments) use an element of an opaque call result directly.
+    /// </summary>
+    private static bool DirectElementUseIsUnsafe(
+        ExpressionSyntax value,
+        HashSet<string> memberNames,
+        bool includeWrites)
+    {
+        if (value.Parent is not MemberAccessExpressionSyntax memberAccess ||
+            memberAccess.Expression != value ||
+            !memberNames.Contains(memberAccess.Name.Identifier.ValueText))
+        {
+            return false;
+        }
+
+        SyntaxNode use = memberAccess;
+        while (use.Parent is ParenthesizedExpressionSyntax)
+            use = use.Parent;
+
+        switch (use.Parent)
+        {
+            case ArgumentSyntax argument when !argument.RefKindKeyword.IsKind(SyntaxKind.None):
+            case RefExpressionSyntax:
+                return true;
+            case PrefixUnaryExpressionSyntax addressOf when addressOf.IsKind(SyntaxKind.AddressOfExpression):
+                return true;
+            case AssignmentExpressionSyntax assignment when assignment.Left == use:
+                return includeWrites || assignment.Right is RefExpressionSyntax;
+            case { } parent when IsAssignmentOrIncrementTarget(parent):
+                return includeWrites;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves the function (method / local function / property / lambda) whose
+    /// opaque, non-tuple return type receives <paramref name="value"/> through a
+    /// <c>return</c> statement or expression body.
+    /// </summary>
+    private static bool TryGetOpaqueReturningFunction(
+        ExpressionSyntax value,
+        SemanticModel model,
+        CancellationToken cancellationToken,
+        [NotNullWhen(true)] out ISymbol? function,
+        out AnonymousFunctionExpressionSyntax? lambda)
+    {
+        function = null;
+        lambda = null;
+
+        SyntaxNode? owner = value.Parent switch
+        {
+            ReturnStatementSyntax returnStatement when returnStatement.Expression == value =>
+                returnStatement.Ancestors().FirstOrDefault(a =>
+                    a is AnonymousFunctionExpressionSyntax
+                        or LocalFunctionStatementSyntax
+                        or BaseMethodDeclarationSyntax
+                        or AccessorDeclarationSyntax),
+            ArrowExpressionClauseSyntax arrow when arrow.Expression == value => arrow.Parent,
+            AnonymousFunctionExpressionSyntax anonymous when anonymous.ExpressionBody == value => anonymous,
+            _ => null
+        };
+
+        if (owner == null)
+            return false;
+
+        ISymbol? symbol = owner switch
+        {
+            AnonymousFunctionExpressionSyntax anonymous => model.GetSymbolInfo(anonymous, cancellationToken).Symbol,
+            _ => model.GetDeclaredSymbol(owner, cancellationToken)
+        };
+
+        if (symbol is IMethodSymbol { AssociatedSymbol: IPropertySymbol associated } &&
+            owner is AccessorDeclarationSyntax)
+        {
+            symbol = associated;
+        }
+
+        var returnType = symbol switch
+        {
+            IMethodSymbol method => method.IsAsync ? UnwrapAsyncReturnType(method.ReturnType) : method.ReturnType,
+            IPropertySymbol property => property.Type,
+            _ => null
+        };
+
+        if (returnType == null || returnType.TypeKind == TypeKind.Error || IsTupleLike(returnType))
+            return false;
+
+        if (symbol is IMethodSymbol { ReturnsVoid: true })
+            return false;
+
+        function = symbol!;
+        lambda = owner as AnonymousFunctionExpressionSyntax;
+        return true;
+    }
+
+    private static ITypeSymbol? UnwrapAsyncReturnType(ITypeSymbol returnType) =>
+        returnType is INamedTypeSymbol { IsGenericType: true, TypeArguments.Length: 1 } named
+            ? named.TypeArguments[0]
+            : null;
+
+    private static bool IsOverridableOrInterfaceMember(ISymbol symbol)
+    {
+        if (symbol.IsVirtual || symbol.IsAbstract || symbol.IsOverride)
+            return true;
+
+        if (symbol is IMethodSymbol { ExplicitInterfaceImplementations.IsDefaultOrEmpty: false } or
+            IPropertySymbol { ExplicitInterfaceImplementations.IsDefaultOrEmpty: false })
+        {
+            return true;
+        }
+
+        var containingType = symbol.ContainingType;
+        if (containingType == null)
+            return false;
+
+        foreach (var @interface in containingType.AllInterfaces)
+        {
+            foreach (var member in @interface.GetMembers())
+            {
+                if (SymbolEqualityComparer.Default.Equals(
+                        containingType.FindImplementationForInterfaceMember(member), symbol))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Maps a reference to an opaque-returning function (or the delegate storage
+    /// holding an opaque-returning lambda) to the call result expression. Returns
+    /// false for unresolvable uses (method groups, escaping delegates, conditional
+    /// access); sets <paramref name="ignore"/> for <c>nameof</c> / delegate or
+    /// property assignment targets.
+    /// </summary>
+    private static bool TryGetCallSiteResult(
+        ExpressionSyntax reference,
+        bool calledAsDelegate,
+        bool isProperty,
+        out ExpressionSyntax? result,
+        out bool ignore)
+    {
+        result = null;
+        ignore = false;
+
+        ExpressionSyntax expression = reference;
+        if (expression.Parent is MemberAccessExpressionSyntax qualified && qualified.Name == expression)
+            expression = qualified;
+
+        if (expression.Ancestors().OfType<InvocationExpressionSyntax>().Any(invocation =>
+                invocation.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" } &&
+                invocation.ArgumentList.Span.Contains(reference.Span)))
+        {
+            ignore = true;
+            return true;
+        }
+
+        if (expression.Parent is AssignmentExpressionSyntax assignment &&
+            assignment.Left == expression &&
+            assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+        {
+            // Writing the delegate / property: the value read elsewhere is tracked
+            // at its own reference sites.
+            ignore = true;
+            return true;
+        }
+
+        if (isProperty)
+        {
+            result = expression;
+            return true;
+        }
+
+        if (expression.Parent is InvocationExpressionSyntax invocation && invocation.Expression == expression)
+        {
+            result = invocation;
+            return true;
+        }
+
+        // get.Invoke() on a delegate holding the lambda.
+        if (calledAsDelegate &&
+            expression.Parent is MemberAccessExpressionSyntax
+            {
+                Name.Identifier.ValueText: "Invoke",
+                Parent: InvocationExpressionSyntax invokeCall
+            } invokeAccess &&
+            invokeAccess.Expression == expression &&
+            invokeCall.Expression == invokeAccess)
+        {
+            result = invokeCall;
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
