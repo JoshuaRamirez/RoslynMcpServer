@@ -2596,6 +2596,163 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs606U0c): foreach implicitly calls a mutating
+    // GetEnumerator on a mutable value-type element with no InvocationExpressionSyntax.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_ForeachMutatingGetEnumeratorElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Sequence
+            {
+                public int Mutations;
+                public Enumerator GetEnumerator()
+                {
+                    Mutations++;
+                    return new Enumerator();
+                }
+
+                public struct Enumerator
+                {
+                    public int Current => 0;
+                    public bool MoveNext() => false;
+                }
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Sequence: new Sequence(), Y: 2);
+                    foreach (var item in point.Sequence)
+                    {
+                    }
+
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 23,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        // By-ref gate (not the init-write gate) — message is the same for both asRecord settings.
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Sibling: using (point.Resource) implicitly Disposes a mutable value-type element.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_UsingMutatingDisposeElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Resource
+            {
+                public int Mutations;
+                public void Dispose() => Mutations++;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Resource: new Resource(), Y: 2);
+                    using (point.Resource)
+                    {
+                    }
+
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 13,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        // By-ref gate (not the init-write gate) — message is the same for both asRecord settings.
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Over-refusal guard: readonly GetEnumerator on a mutable value-type element still converts.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_ForeachReadonlyGetEnumeratorElement_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Sequence
+            {
+                public readonly Enumerator GetEnumerator() => new Enumerator();
+
+                public struct Enumerator
+                {
+                    public int Current => 0;
+                    public bool MoveNext() => false;
+                }
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Sequence: new Sequence(), Y: 2);
+                    foreach (var item in point.Sequence)
+                    {
+                    }
+
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 18,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public TestApp.Sequence Sequence { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("foreach (var item in point.Sequence)", text, StringComparison.Ordinal);
+    }
+
     // Codex P2 on #3441: by-ref through a reference-type element remains valid after conversion.
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordFalse_RefThroughReferenceTypeElement_Succeeds()
@@ -7648,6 +7805,120 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
         Assert.Equal(originalPrimary, await File.ReadAllTextAsync(primaryPath));
         Assert.Equal(originalSecondary, await File.ReadAllTextAsync(secondaryPath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs606U0Z): constructor initializer : this(value, 0)
+    // must forward the tracked parameter into the destination ctor.
+    [SkippableTheory]
+    [InlineData(false, ": this(value, 0)")]
+    [InlineData(true, ": this(value, 0)")]
+    [InlineData(false, ": this(value: value, other: 0)")]
+    [InlineData(true, ": this(value: value, other: 0)")]
+    public async Task ConvertTupleToStruct_ConstructorInitializerForwardRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string initializer)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Holder
+            {
+                public dynamic Value;
+
+                public Holder(object value) {{initializer}}
+                {
+                }
+
+                public Holder(object value, int other)
+                {
+                    dynamic copy = value;
+                    Bump(ref copy.Item1);
+                    Value = value;
+                }
+
+                static void Bump(ref int v) => v++;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (1, 2);
+                    var holder = new Holder(point);
+                    return holder;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 25,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Over-refusal guard: constructor initializer that only reads the forwarded
+    // value still converts.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_ConstructorInitializerForwardByValue_Succeeds(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Holder
+            {
+                public object Value;
+
+                public Holder(object value) : this(value, 0)
+                {
+                }
+
+                public Holder(object value, int other)
+                {
+                    Value = value;
+                    System.Console.WriteLine(other);
+                }
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (1, 2);
+                    var holder = new Holder(point);
+                    return holder;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 22,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("new Holder(point)", text, StringComparison.Ordinal);
     }
 
     // Sibling: stored method-group / delegate field whose target lives in another

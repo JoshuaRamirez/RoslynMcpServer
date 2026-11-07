@@ -1621,6 +1621,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         continue;
                     }
                 }
+                else if (node is ConstructorInitializerSyntax constructorInitializer)
+                {
+                    // Holder(object value) : this(value, 0) / : base(value) — forward a
+                    // tracked constructor parameter into the destination ctor parameter
+                    // so by-ref uses in the chained body are gated (Codex P1 on #3441,
+                    // PRRT_kwDORD0nYs606U0Z).
+                    if (TryAddOrdinaryCalleeParameterAliasesFromConstructorInitializer(
+                            constructorInitializer, aliases, semanticModel, cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
 
                 if (alias == null || source == null || aliases.Contains(alias))
                     continue;
@@ -2558,6 +2571,56 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// When a tracked constructor parameter is forwarded through
+    /// <c>: this(value, 0)</c> / <c>: base(value)</c>, tracks the destination
+    /// constructor parameter so by-ref element uses inside that body are gated
+    /// (Codex P1 on #3441, PRRT_kwDORD0nYs606U0Z).
+    /// </summary>
+    private static bool TryAddOrdinaryCalleeParameterAliasesFromConstructorInitializer(
+        ConstructorInitializerSyntax constructorInitializer,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (constructorInitializer.ArgumentList.Arguments.Count == 0)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(constructorInitializer, cancellationToken).Symbol
+            is not IMethodSymbol constructor)
+        {
+            return false;
+        }
+
+        var added = false;
+        for (var i = 0; i < constructorInitializer.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = constructorInitializer.ArgumentList.Arguments[i];
+            var expr = SkipTransparentWrappers(argument.Expression);
+            if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
+                continue;
+
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            var parameter = ResolveInvocationParameter(constructor, argument, i);
+            if (parameter == null)
+                continue;
+
+            ISymbol alias = parameter.OriginalDefinition;
+            if (aliases.Contains(alias))
+                continue;
+
+            aliases.Add(alias);
+            added = true;
+        }
+
+        return added;
+    }
+
+    /// <summary>
     /// Maps a stored-delegate invocation argument ordinal onto the source lambda /
     /// anonymous-method / method-group parameter the delegate was assigned from
     /// (e.g. <c>Action&lt;dynamic&gt; use = copy =&gt; …; use(point)</c>).
@@ -2631,6 +2694,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 case BaseObjectCreationExpressionSyntax objectCreation:
                     if (ObjectCreationHasUnresolvedCalleeEscape(
                             objectCreation, aliases, semanticModel, cancellationToken))
+                    {
+                        return true;
+                    }
+
+                    break;
+
+                case ConstructorInitializerSyntax constructorInitializer:
+                    // : this(value) / : base(value) with a storage-bearing argument
+                    // whose destination ctor cannot be precisely analyzed (Codex P1
+                    // on #3441, PRRT_kwDORD0nYs606U0Z).
+                    if (ConstructorInitializerHasUnresolvedCalleeEscape(
+                            constructorInitializer, aliases, semanticModel, cancellationToken))
                     {
                         return true;
                     }
@@ -2745,6 +2820,55 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         for (var i = 0; i < objectCreation.ArgumentList.Arguments.Count; i++)
         {
             var argument = objectCreation.ArgumentList.Arguments[i];
+            var expr = SkipTransparentWrappers(argument.Expression);
+            if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
+                continue;
+
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            var parameter = ResolveInvocationParameter(constructor, argument, i);
+            if (parameter == null)
+            {
+                if (MethodHasParamsParameter(constructor))
+                    return true;
+
+                continue;
+            }
+
+            if (parameter.IsParams)
+                return true;
+
+            if (!CanPreciselyAnalyzeCalleeBody(constructor))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool ConstructorInitializerHasUnresolvedCalleeEscape(
+        ConstructorInitializerSyntax constructorInitializer,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (constructorInitializer.ArgumentList.Arguments.Count == 0)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(constructorInitializer, cancellationToken).Symbol
+            is not IMethodSymbol constructor)
+        {
+            // Unresolved this()/base() target with a storage-bearing argument escapes.
+            return ArgumentListReferencesStorage(
+                constructorInitializer.ArgumentList, aliases, semanticModel, cancellationToken);
+        }
+
+        for (var i = 0; i < constructorInitializer.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = constructorInitializer.ArgumentList.Arguments[i];
             var expr = SkipTransparentWrappers(argument.Expression);
             if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
                 continue;
@@ -7012,7 +7136,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// non-<c>readonly</c> mutable value-type instance-method receiver (including
     /// positional <c>ItemN</c> aliases), a non-<c>readonly</c> property / indexer
     /// getter on a mutable value-type element (e.g. <c>point.Counter.Next</c>),
-    /// or an assignment / increment / decrement
+    /// an implicit <c>foreach</c> / <c>await foreach</c> <c>GetEnumerator</c> /
+    /// <c>GetAsyncEnumerator</c> on a mutable value-type element (e.g.
+    /// <c>foreach (var item in point.Sequence)</c>), an implicit <c>using</c> /
+    /// <c>await using</c> <c>Dispose</c> / <c>DisposeAsync</c> on a mutable
+    /// value-type element expression, or an assignment / increment / decrement
     /// target that traverses a value-type converted element (for example
     /// <c>point.Counter.Value++</c> — CS1612 on the property temporary).
     /// Generated properties cannot accept those uses (CS0206 / silent copy / CS1612);
@@ -7063,6 +7191,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 ElementAccessExpressionSyntax elementAccess when
                     TryGetMutatingPropertyOrIndexerReceiver(elementAccess, semanticModel, out var indexReceiver)
                     => indexReceiver,
+                // foreach / await foreach implicitly calls GetEnumerator on the collection
+                // with no InvocationExpressionSyntax — a non-readonly GetEnumerator on a
+                // mutable value-type element mutates a property temporary after conversion
+                // (Codex P1 on #3441, PRRT_kwDORD0nYs606U0c).
+                CommonForEachStatementSyntax forEach when
+                    TryGetMutatingForeachCollectionReceiver(forEach, semanticModel, out var foreachReceiver)
+                    => foreachReceiver,
+                // using (point.Resource) / await using (point.Resource) implicitly calls
+                // Dispose / DisposeAsync on a variable resource expression — same silent
+                // copy hazard when the element becomes a property (Codex P1 sibling).
+                UsingStatementSyntax usingStatement when
+                    TryGetMutatingUsingResourceReceiver(usingStatement, semanticModel, out var usingReceiver)
+                    => usingReceiver,
                 // Nested field writes through a value-type element (Codex P1 CS1612):
                 // point.Counter.Value++ / point.Counter.Value = 1 mutate a property temporary.
                 AssignmentExpressionSyntax assignment => assignment.Left,
@@ -7230,6 +7371,149 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         receiver = receiverExpression;
         return true;
+    }
+
+    /// <summary>
+    /// True when a <c>foreach</c> / <c>await foreach</c> collection expression is a
+    /// mutable value-type element whose resolved <c>GetEnumerator</c> /
+    /// <c>GetAsyncEnumerator</c> is a non-<c>readonly</c> instance method — the
+    /// compiler-generated call has no <see cref="InvocationExpressionSyntax"/>, so
+    /// the ordinary mutating-receiver switch misses it (Codex P1 on #3441,
+    /// PRRT_kwDORD0nYs606U0c). After conversion the element is a property temporary
+    /// and the enumerator factory mutates only that copy.
+    /// </summary>
+    private static bool TryGetMutatingForeachCollectionReceiver(
+        CommonForEachStatementSyntax forEach,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? receiver)
+    {
+        receiver = null;
+        var info = semanticModel.GetForEachStatementInfo(forEach);
+        // ForEachStatementInfo exposes GetEnumeratorMethod for both sync foreach and
+        // await foreach (where it is GetAsyncEnumerator). Fall back to a type lookup
+        // when the info is incomplete.
+        var enumeratorMethod = info.GetEnumeratorMethod
+            ?? ResolveEnumeratorMethod(forEach.Expression, semanticModel, isAsync: forEach.AwaitKeyword != default);
+        if (enumeratorMethod == null ||
+            enumeratorMethod.IsStatic ||
+            enumeratorMethod.IsReadOnly)
+        {
+            return false;
+        }
+
+        if (!IsMutatingValueTypeReceiver(
+                enumeratorMethod.ContainingType,
+                semanticModel.GetTypeInfo(forEach.Expression).Type))
+        {
+            return false;
+        }
+
+        receiver = forEach.Expression;
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves <c>GetEnumerator</c> / <c>GetAsyncEnumerator</c> on the collection
+    /// expression's type when <see cref="ForEachStatementInfo"/> is incomplete.
+    /// </summary>
+    private static IMethodSymbol? ResolveEnumeratorMethod(
+        ExpressionSyntax collection,
+        SemanticModel semanticModel,
+        bool isAsync)
+    {
+        var type = semanticModel.GetTypeInfo(collection).Type;
+        if (type == null)
+            return null;
+
+        var name = isAsync ? "GetAsyncEnumerator" : "GetEnumerator";
+        foreach (var member in type.GetMembers(name).OfType<IMethodSymbol>())
+        {
+            if (!member.IsStatic)
+                return member;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when a <c>using (expr)</c> / <c>await using (expr)</c> resource expression
+    /// (not a declaration) is a mutable value-type element whose resolved
+    /// <c>Dispose</c> / <c>DisposeAsync</c> is a non-<c>readonly</c> instance method.
+    /// Declaration forms (<c>using var x = …</c> / <c>using (var x = …)</c>) Dispose the
+    /// declared local copy both before and after conversion, so they are allowed.
+    /// </summary>
+    private static bool TryGetMutatingUsingResourceReceiver(
+        UsingStatementSyntax usingStatement,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? receiver)
+    {
+        receiver = null;
+        // Declaration forms dispose a local copy — behavior is unchanged after conversion.
+        if (usingStatement.Declaration != null || usingStatement.Expression == null)
+            return false;
+
+        var resource = usingStatement.Expression;
+        var disposeMethod = ResolveDisposeMethod(resource, semanticModel);
+        if (disposeMethod == null ||
+            disposeMethod.IsStatic ||
+            disposeMethod.IsReadOnly)
+        {
+            return false;
+        }
+
+        if (!IsMutatingValueTypeReceiver(
+                disposeMethod.ContainingType,
+                semanticModel.GetTypeInfo(resource).Type))
+        {
+            return false;
+        }
+
+        receiver = resource;
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves the instance <c>Dispose</c> / <c>DisposeAsync</c> that a
+    /// <c>using</c> / <c>await using</c> statement would invoke on
+    /// <paramref name="resource"/> (interface or pattern-based).
+    /// </summary>
+    private static IMethodSymbol? ResolveDisposeMethod(
+        ExpressionSyntax resource,
+        SemanticModel semanticModel)
+    {
+        var type = semanticModel.GetTypeInfo(resource).Type;
+        if (type == null)
+            return null;
+
+        // Prefer pattern-based Dispose / DisposeAsync on the concrete type, then
+        // IDisposable / IAsyncDisposable interface members.
+        foreach (var name in new[] { "DisposeAsync", "Dispose" })
+        {
+            foreach (var member in type.GetMembers(name).OfType<IMethodSymbol>())
+            {
+                if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty)
+                    return member;
+            }
+        }
+
+        foreach (var iface in type.AllInterfaces)
+        {
+            if (iface.SpecialType == SpecialType.System_IDisposable ||
+                (iface.Name is "IAsyncDisposable" &&
+                 iface.ContainingNamespace?.ToDisplayString() == "System"))
+            {
+                foreach (var member in iface.GetMembers().OfType<IMethodSymbol>())
+                {
+                    if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty &&
+                        member.Name is "Dispose" or "DisposeAsync")
+                    {
+                        return member;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
