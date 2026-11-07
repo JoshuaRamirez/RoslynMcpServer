@@ -732,7 +732,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     out var elementSources) ||
                 elementSources == null)
             {
-                return false;
+                // (var copy, var other) = Wrap(point) — no literal elements (Codex P1).
+                return TryAddOpaqueDeconstructionSourceAliases(
+                    leftTuple, right, aliases, semanticModel, cancellationToken);
             }
 
             var added = false;
@@ -817,7 +819,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                             out var elementSources) ||
                         elementSources == null)
                     {
-                        return false;
+                        // var (copy, _) = Wrap(point) — generic call result (Codex P1).
+                        return TryAddOpaqueDeconstructionSourceAliases(
+                            parenthesized, source, aliases, semanticModel, cancellationToken);
                     }
 
                     var added = false;
@@ -882,6 +886,80 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // Chained aliases: var a = (point, 0); var b = a; var (copy, _) = b;
         return TryGetTupleElementExpressions(
             initializer, expectedCount, semanticModel, root, cancellationToken, out elements);
+    }
+
+    /// <summary>
+    /// Fallback for deconstruction / positional-pattern sources without literal
+    /// tuple elements to pair with — for example a generic call result
+    /// (<c>var (copy, _) = Wrap(point)</c> with
+    /// <c>static (T Value, int Other) Wrap&lt;T&gt;(T value)</c>) or a local
+    /// initialized from one. When <paramref name="source"/> carries converted
+    /// storage, every destination local whose declared type embeds a tracked
+    /// storage type is treated as an alias (conservative — Codex P1 on #3441).
+    /// </summary>
+    private static bool TryAddOpaqueDeconstructionSourceAliases(
+        SyntaxNode destinations,
+        ExpressionSyntax source,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (!ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken))
+            return false;
+
+        var candidates = new List<ISymbol>();
+        foreach (var node in destinations.DescendantNodesAndSelf())
+        {
+            switch (node)
+            {
+                case SingleVariableDesignationSyntax single:
+                    if (semanticModel.GetDeclaredSymbol(single, cancellationToken) is { } declared)
+                        candidates.Add(declared);
+                    break;
+                // (copy, other) = Wrap(point) with pre-declared locals.
+                case ArgumentSyntax { Expression: IdentifierNameSyntax identifier }
+                    when node.Parent is TupleExpressionSyntax:
+                    if (semanticModel.GetSymbolInfo(identifier, cancellationToken).Symbol is
+                    { } assigned and (ILocalSymbol or IParameterSymbol or IFieldSymbol))
+                    {
+                        candidates.Add(assigned);
+                    }
+
+                    break;
+            }
+        }
+
+        var added = false;
+        foreach (var candidate in candidates)
+        {
+            if (aliases.Contains(candidate))
+                continue;
+
+            var type = GetAliasType(candidate);
+            if (type == null || !TypeEmbedsStorageAliasType(type, aliases))
+                continue;
+
+            aliases.Add(candidate);
+            added = true;
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// True when <paramref name="type"/> is or contains (array element, type
+    /// argument, tuple element) the type of a tracked storage alias.
+    /// </summary>
+    private static bool TypeEmbedsStorageAliasType(ITypeSymbol type, HashSet<ISymbol> aliases)
+    {
+        foreach (var alias in aliases)
+        {
+            var aliasType = GetAliasType(alias);
+            if (aliasType != null && TypeContainsOrEquals(type, aliasType))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -999,6 +1077,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                                     added = true;
                                 }
                             }
+                        }
+                        else if (TryAddOpaqueDeconstructionSourceAliases(
+                                     recursive.PositionalPatternClause,
+                                     input,
+                                     aliases,
+                                     semanticModel,
+                                     cancellationToken))
+                        {
+                            // Wrap(point) is (var copy, _) — generic call result (Codex P1).
+                            added = true;
                         }
                     }
 
@@ -2560,6 +2648,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 creation != null)
             {
                 yield return creation;
+                yield break;
+            }
+
+            // foreach / from / join / let variables have no declarator initializer;
+            // recover the projections that supply them, e.g.
+            // foreach (var box in from n in xs select new { Value = point }) (Codex P1).
+            foreach (var origin in EnumerateIterationVariableOrigins(
+                         symbol, semanticModel, root, depth: 0))
+            {
+                yield return origin;
             }
 
             yield break;
@@ -2608,6 +2706,162 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             foreach (var element in EnumerateContainerElementExpressions(containerInitializer))
                 yield return element;
         }
+    }
+
+    private const int MaxCarrierOriginDepth = 8;
+
+    /// <summary>
+    /// Yields the per-element expressions that supply an iteration / range
+    /// variable without a declarator initializer: <c>foreach</c> variables,
+    /// <c>from</c> / <c>join</c> range variables (elements of their source
+    /// sequence) and <c>let</c> variables (the let expression).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateIterationVariableOrigins(
+        ISymbol symbol,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        int depth)
+    {
+        if (depth > MaxCarrierOriginDepth)
+            yield break;
+
+        foreach (var node in root.DescendantNodes())
+        {
+            ExpressionSyntax? sequence = null;
+            ExpressionSyntax? direct = null;
+            switch (node)
+            {
+                case ForEachStatementSyntax forEach when
+                    SymbolEqualityComparer.Default.Equals(
+                        semanticModel.GetDeclaredSymbol(forEach), symbol):
+                    sequence = forEach.Expression;
+                    break;
+                case FromClauseSyntax fromClause when
+                    SymbolEqualityComparer.Default.Equals(
+                        semanticModel.GetDeclaredSymbol(fromClause), symbol):
+                    sequence = fromClause.Expression;
+                    break;
+                case JoinClauseSyntax joinClause when
+                    SymbolEqualityComparer.Default.Equals(
+                        semanticModel.GetDeclaredSymbol(joinClause), symbol):
+                    sequence = joinClause.InExpression;
+                    break;
+                case LetClauseSyntax letClause when
+                    SymbolEqualityComparer.Default.Equals(
+                        semanticModel.GetDeclaredSymbol(letClause), symbol):
+                    direct = letClause.Expression;
+                    break;
+                default:
+                    continue;
+            }
+
+            if (direct != null)
+            {
+                foreach (var origin in EnumerateCarrierOrigins(direct, semanticModel, root, depth + 1))
+                    yield return origin;
+            }
+            else if (sequence != null)
+            {
+                foreach (var element in EnumerateSequenceElementOrigins(
+                             sequence, semanticModel, root, depth + 1))
+                {
+                    yield return element;
+                }
+            }
+
+            yield break;
+        }
+    }
+
+    /// <summary>
+    /// Yields element expressions produced by <paramref name="sequence"/>: the
+    /// final <c>select</c> projection of a query, the elements of an array /
+    /// collection literal, or (through a local initializer) either of those.
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateSequenceElementOrigins(
+        ExpressionSyntax sequence,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        int depth)
+    {
+        if (depth > MaxCarrierOriginDepth)
+            yield break;
+
+        sequence = UnwrapParenthesesAndNullForgiving(sequence);
+
+        if (sequence is QueryExpressionSyntax query)
+        {
+            var body = query.Body;
+            while (body.Continuation != null)
+                body = body.Continuation.Body;
+
+            if (body.SelectOrGroup is SelectClauseSyntax select)
+            {
+                foreach (var origin in EnumerateCarrierOrigins(
+                             select.Expression, semanticModel, root, depth + 1))
+                {
+                    yield return origin;
+                }
+            }
+
+            yield break;
+        }
+
+        var yieldedElement = false;
+        foreach (var element in EnumerateContainerElementExpressions(sequence))
+        {
+            yieldedElement = true;
+            foreach (var origin in EnumerateCarrierOrigins(element, semanticModel, root, depth + 1))
+                yield return origin;
+        }
+
+        if (yieldedElement)
+            yield break;
+
+        var symbol = semanticModel.GetSymbolInfo(sequence).Symbol;
+        if (symbol != null &&
+            TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) &&
+            initializer != null)
+        {
+            foreach (var element in EnumerateSequenceElementOrigins(
+                         initializer, semanticModel, root, depth + 1))
+            {
+                yield return element;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Yields <paramref name="expression"/> itself plus, when it names a local or
+    /// range variable, the expressions that originally supplied that variable
+    /// (declarator initializer or iteration / query source).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateCarrierOrigins(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        int depth)
+    {
+        expression = UnwrapParenthesesAndNullForgiving(expression);
+        yield return expression;
+
+        if (depth > MaxCarrierOriginDepth || expression is not IdentifierNameSyntax)
+            yield break;
+
+        var symbol = semanticModel.GetSymbolInfo(expression).Symbol;
+        if (symbol is not (ILocalSymbol or IRangeVariableSymbol))
+            yield break;
+
+        if (TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) &&
+            initializer != null)
+        {
+            foreach (var origin in EnumerateCarrierOrigins(initializer, semanticModel, root, depth + 1))
+                yield return origin;
+            yield break;
+        }
+
+        foreach (var origin in EnumerateIterationVariableOrigins(symbol, semanticModel, root, depth + 1))
+            yield return origin;
     }
 
     /// <summary>

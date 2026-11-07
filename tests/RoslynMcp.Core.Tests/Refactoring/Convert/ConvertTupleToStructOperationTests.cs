@@ -2783,6 +2783,104 @@ public class ConvertTupleToStructOperationTests
         AssertTupleContainerCompiles(after);
     }
 
+    // Codex P1 on #3441: deconstruction sources returned by generic calls must
+    // resolve to the forwarded storage (no variable initializer to walk).
+    [SkippableTheory]
+    [InlineData(false, "var (copy, _) = Wrap(point); Bump(ref copy.X);")]
+    [InlineData(true, "var (copy, _) = Wrap(point); Bump(ref copy.X);")]
+    [InlineData(false, "(var copy, var other) = Wrap(point); Bump(ref copy.X);")]
+    [InlineData(true, "(var copy, var other) = Wrap(point); Bump(ref copy.X);")]
+    [InlineData(false, "var wrapped = Wrap(point); var (copy, _) = wrapped; Bump(ref copy.X);")]
+    [InlineData(true, "var wrapped = Wrap(point); var (copy, _) = wrapped; Bump(ref copy.X);")]
+    [InlineData(false, "if (Wrap(point) is (var copy, _)) Bump(ref copy.X);")]
+    [InlineData(true, "if (Wrap(point) is (var copy, _)) Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_DeconstructionFromGenericCallRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+                static (T Value, int Other) Wrap<T>(T value) => (value, 0);
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 10,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: iteration variables over query projections / container
+    // literals must recover the anonymous-object carrier that supplies them.
+    [SkippableTheory]
+    [InlineData(false, "var query = from n in new[] { 0 } select new { Value = point }; foreach (var box in query) Bump(ref box.Value.X);")]
+    [InlineData(true, "var query = from n in new[] { 0 } select new { Value = point }; foreach (var box in query) Bump(ref box.Value.X);")]
+    [InlineData(false, "foreach (var box in from n in new[] { 0 } select new { Value = point }) Bump(ref box.Value.X);")]
+    [InlineData(true, "foreach (var box in from n in new[] { 0 } select new { Value = point }) Bump(ref box.Value.X);")]
+    [InlineData(false, "var query = from n in new[] { 0 } let b = new { Value = point } select b; foreach (var box in query) Bump(ref box.Value.X);")]
+    [InlineData(true, "var query = from n in new[] { 0 } let b = new { Value = point } select b; foreach (var box in query) Bump(ref box.Value.X);")]
+    [InlineData(false, "foreach (var box in new[] { new { Value = point } }) Bump(ref box.Value.X);")]
+    [InlineData(true, "foreach (var box in new[] { new { Value = point } }) Bump(ref box.Value.X);")]
+    public async Task ConvertTupleToStruct_QueryAnonymousProjectionCarrierRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     // Codex P1 on #3441: list-pattern element designations must be traversed.
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordFalse_ListPatternAliasRefElement_ThrowsAndWritesNothing()
