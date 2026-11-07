@@ -2037,7 +2037,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// True when <paramref name="memberAccess"/> yields a constructed type argument
     /// of its receiver that matches tracked storage (e.g. <c>Box&lt;T&gt;.Value</c>
     /// where <c>T</c> is the converted tuple). Skips tuple/anonymous carriers, which
-    /// use the aggregate-creation walk instead.
+    /// use the aggregate-creation walk instead (including invocation returns that
+    /// embed <c>T</c> — see <see cref="EnumerateInvocationForwardedMemberArguments"/>).
     /// </summary>
     private static bool MemberAccessUnwrapsStorageTypeArgument(
         MemberAccessExpressionSyntax memberAccess,
@@ -2074,8 +2075,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// True when <paramref name="parameter"/> is type parameter <c>T</c> and the
-    /// method returns a constructed generic whose sole type argument is <c>T</c>
-    /// (e.g. <c>Task.FromResult&lt;T&gt;</c>).
+    /// method return type contains <c>T</c> — sole-arg wrappers
+    /// (<c>Task.FromResult&lt;T&gt;</c>), multi-arg generics, or tuple returns that
+    /// embed <c>T</c> (e.g. <c>(T Value, int Other) Pair&lt;T&gt;(T value)</c>).
     /// </summary>
     private static bool MethodReturnWrapsElementAsConstructedGeneric(
         IMethodSymbol method,
@@ -2088,12 +2090,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (original.Parameters[parameter.Ordinal].Type is not ITypeParameterSymbol elementTypeParameter)
             return false;
 
-        if (original.ReturnType is not INamedTypeSymbol { Arity: 1 } namedReturn)
-            return false;
-
-        return SymbolEqualityComparer.Default.Equals(
-            namedReturn.TypeArguments[0],
-            elementTypeParameter);
+        // Recurse into multi-arg generics / nested / tuple returns rather than
+        // requiring Arity: 1 (Codex P1 on #3441).
+        return TypeContainsOrEquals(original.ReturnType, elementTypeParameter);
     }
 
     /// <summary>
@@ -2377,6 +2376,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 initializer != null)
             {
                 yield return initializer;
+            }
+
+            // Pair(point)-style multi-arg / tuple generic returns have no literal
+            // initializer to walk; map return members typed as a parameter back to
+            // the corresponding arguments (Codex P1 on #3441).
+            foreach (var forwarded in EnumerateInvocationForwardedMemberArguments(
+                         creation, memberName, semanticModel))
+            {
+                yield return forwarded;
             }
         }
     }
@@ -2704,6 +2712,97 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 initializer = value;
                 return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// For an invocation creation such as <c>Pair(point)</c> returning
+    /// <c>(T Value, int Other)</c>, yields argument expressions whose parameter
+    /// type matches the named return member's type so carrier lookup can treat
+    /// <c>wrapped.Value</c> as forwarding <c>point</c> (Codex P1 on #3441).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateInvocationForwardedMemberArguments(
+        ExpressionSyntax creation,
+        string memberName,
+        SemanticModel semanticModel)
+    {
+        creation = UnwrapParenthesesAndNullForgiving(creation);
+        if (creation is not InvocationExpressionSyntax invocation)
+            yield break;
+
+        if (semanticModel.GetSymbolInfo(invocation).Symbol is not IMethodSymbol method)
+            yield break;
+
+        if (!TryGetReturnMemberType(method.ReturnType, memberName, out var memberType) ||
+            memberType == null)
+        {
+            yield break;
+        }
+
+        var args = invocation.ArgumentList.Arguments;
+        for (var i = 0; i < args.Count; i++)
+        {
+            var arg = args[i];
+            var parameter = ResolveInvocationParameter(method, arg, i);
+            if (parameter == null)
+                continue;
+
+            if (SymbolEqualityComparer.Default.Equals(parameter.Type, memberType) ||
+                TypeContainsOrEquals(memberType, parameter.Type) ||
+                TypeContainsOrEquals(parameter.Type, memberType))
+            {
+                yield return arg.Expression;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resolves the type of a named member / tuple element on
+    /// <paramref name="returnType"/> (constructed method return).
+    /// </summary>
+    private static bool TryGetReturnMemberType(
+        ITypeSymbol returnType,
+        string memberName,
+        out ITypeSymbol? memberType)
+    {
+        memberType = null;
+
+        if (returnType is INamedTypeSymbol { IsTupleType: true } tuple)
+        {
+            for (var i = 0; i < tuple.TupleElements.Length; i++)
+            {
+                var element = tuple.TupleElements[i];
+                if (string.Equals(element.Name, memberName, StringComparison.Ordinal) ||
+                    string.Equals(
+                        StripVerbatimPrefix(element.Name),
+                        StripVerbatimPrefix(memberName),
+                        StringComparison.Ordinal) ||
+                    string.Equals($"Item{i + 1}", memberName, StringComparison.Ordinal))
+                {
+                    memberType = element.Type;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (returnType is INamedTypeSymbol named)
+        {
+            foreach (var member in named.GetMembers(memberName))
+            {
+                switch (member)
+                {
+                    case IFieldSymbol field when !field.IsStatic:
+                        memberType = field.Type;
+                        return true;
+                    case IPropertySymbol property when !property.IsStatic:
+                        memberType = property.Type;
+                        return true;
+                }
             }
         }
 
