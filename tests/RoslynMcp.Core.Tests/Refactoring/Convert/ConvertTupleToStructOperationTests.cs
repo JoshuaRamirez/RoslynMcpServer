@@ -5368,4 +5368,173 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains("element assignments", ex.Message, StringComparison.Ordinal);
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
+
+    // Codex P1 on #3441: extended property-pattern paths ({ Inner.Value: var copy }) and
+    // nested property/positional/list combos must resolve every member component.
+    [SkippableTheory]
+    [InlineData(false, "var box = new { Inner = new { Value = point } }; if (box is { Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Inner = new { Value = point } }; if (box is { Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(false, "if (new { Inner = new { Value = point } } is { Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(true, "if (new { Inner = new { Value = point } } is { Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer.Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer.Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer.Inner: { Value: var copy } }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer.Inner: { Value: var copy } }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer: { Inner.Value: var copy } }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer: { Inner.Value: var copy } }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Inner = new { Value = point } }; if (box is { Inner.Value: { } copy }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Inner = new { Value = point } }; if (box is { Inner.Value: { } copy }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Inner = new { Pair = (point, 0) } }; if (box is { Inner.Pair: (var copy, _) }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Inner = new { Pair = (point, 0) } }; if (box is { Inner.Pair: (var copy, _) }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Pair = (point, 0) }; if (box is { Pair: (var copy, _) }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Pair = (point, 0) }; if (box is { Pair: (var copy, _) }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Items = new[] { point } }; if (box is { Items: [var copy] }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Items = new[] { point } }; if (box is { Items: [var copy] }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Inner = new { Items = new[] { point } } }; if (box is { Inner.Items: [var copy] }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Inner = new { Items = new[] { point } } }; if (box is { Inner.Items: [var copy] }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Inner = new { Value = point } }; switch (box) { case { Inner.Value: var copy }: Bump(ref copy.X); break; }")]
+    [InlineData(true, "var box = new { Inner = new { Value = point } }; switch (box) { case { Inner.Value: var copy }: Bump(ref copy.X); break; }")]
+    public async Task ConvertTupleToStruct_ExtendedPropertyPatternRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: null-forgiving (and checked/unchecked) wrappers around converted
+    // storage are transparent for by-ref element access and aliasing; aggregate member
+    // reads (box.Value, (point, 0).Item1) alias the embedded storage.
+    [SkippableTheory]
+    [InlineData(false, "Bump(ref point!.X);")]
+    [InlineData(true, "Bump(ref point!.X);")]
+    [InlineData(false, "Bump(ref (point!).X);")]
+    [InlineData(true, "Bump(ref (point!).X);")]
+    [InlineData(false, "Bump(ref point!.X!);")]
+    [InlineData(true, "Bump(ref point!.X!);")]
+    [InlineData(false, "var copy = point!; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = point!; Bump(ref copy.X);")]
+    [InlineData(false, "var copy = (point!); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = (point!); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = checked(point); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = checked(point); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = unchecked(point!); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = unchecked(point!); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = flag ? point! : point; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = flag ? point! : point; Bump(ref copy.X);")]
+    [InlineData(false, "ref var alias = ref point!; Bump(ref alias.X);")]
+    [InlineData(true, "ref var alias = ref point!; Bump(ref alias.X);")]
+    [InlineData(false, "var copies = points.Select(x => x!).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => x!).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => checked(x)).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => checked(x)).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "if (point! is var copy) Bump(ref copy.X);")]
+    [InlineData(true, "if (point! is var copy) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Value = point! }; if (box is { Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Value = point! }; if (box is { Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(false, "var copies = points!; Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points!; Bump(ref copies[0].X);")]
+    [InlineData(false, "Bump(ref points![0].X);")]
+    [InlineData(true, "Bump(ref points![0].X);")]
+    [InlineData(false, "Bump(ref points[0]!.X);")]
+    [InlineData(true, "Bump(ref points[0]!.X);")]
+    [InlineData(false, "var copies = new[] { point! }; Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = new[] { point! }; Bump(ref copies[0].X);")]
+    [InlineData(false, "ref var r = ref points![0]; Bump(ref r.X);")]
+    [InlineData(true, "ref var r = ref points![0]; Bump(ref r.X);")]
+    [InlineData(false, "var copies = points!.ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points!.ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => x).ToArray()!; Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => x).ToArray()!; Bump(ref copies[0].X);")]
+    [InlineData(false, "var copy = checked(points[0]); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = checked(points[0]); Bump(ref copy.X);")]
+    [InlineData(false, "var (copy, _) = (point!, 0); Bump(ref copy.X);")]
+    [InlineData(true, "var (copy, _) = (point!, 0); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = (point!, 0).Item1; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = (point!, 0).Item1; Bump(ref copy.X);")]
+    [InlineData(false, "var copy = points![0]!; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = points![0]!; Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Value = point }; var copy = box!.Value; Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Value = point }; var copy = box!.Value; Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Value = point }; if (box! is { Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Value = point }; if (box! is { Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(false, "var copy = (point, 0).Item1; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = (point, 0).Item1; Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Value = point }; var copy = box.Value; Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Value = point }; var copy = box.Value; Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Inner = new { Value = point } }; var copy = box!.Inner.Value; Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Inner = new { Value = point } }; var copy = box!.Inner.Value; Bump(ref copy.X);")]
+    [InlineData(false, "var wrapped = (point, 0); var copy = wrapped.Item1!; Bump(ref copy.X);")]
+    [InlineData(true, "var wrapped = (point, 0); var copy = wrapped.Item1!; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_NullForgivingStorageRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
 }

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -672,8 +673,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
                 while (true)
                 {
-                    if (source is ParenthesizedExpressionSyntax parenthesized)
-                        source = parenthesized.Expression;
+                    if (TryUnwrapTransparentWrapper(source, out var unwrappedSource))
+                        source = unwrappedSource;
                     else if (source is RefExpressionSyntax refExpression)
                         source = refExpression.Expression;
                     // Pointer aliases: var p = &point; / p = &point (Codex P1).
@@ -684,7 +685,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         break;
                 }
 
-                if (ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken))
+                if (ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken) ||
+                    // var copy = box.Value / (point, 0).Item1 / box!.Inner.Value — member
+                    // reads of aggregates that embed converted storage (Codex P1 on #3441).
+                    (TryResolveAggregateMemberRead(
+                         source, aliases, semanticModel, root, cancellationToken, out var memberSource) &&
+                     ExpressionReferencesStorageAlias(memberSource, aliases, semanticModel, cancellationToken)))
                 {
                     aliases.Add(alias);
                     changed = true;
@@ -1021,22 +1027,32 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     {
                         foreach (var subpattern in recursive.PropertyPatternClause.Subpatterns)
                         {
-                            var memberName = subpattern.NameColon?.Name.Identifier.ValueText;
-                            if (memberName == null)
+                            // { Value: var copy } (NameColon) and extended property
+                            // patterns { Inner.Value: var copy } (ExpressionColon) —
+                            // resolve every member-path component (Codex P1 on #3441).
+                            if (!TryGetPropertySubpatternMemberPath(subpattern, out var memberPath))
                                 continue;
 
-                            if (!TryResolvePatternMemberInput(
-                                    input,
-                                    memberName,
-                                    aliases,
-                                    semanticModel,
-                                    root,
-                                    cancellationToken,
-                                    out var memberInput) ||
-                                memberInput == null)
+                            ExpressionSyntax? memberInput = input;
+                            foreach (var memberName in memberPath)
                             {
-                                continue;
+                                if (!TryResolvePatternMemberInput(
+                                        memberInput,
+                                        memberName,
+                                        aliases,
+                                        semanticModel,
+                                        root,
+                                        cancellationToken,
+                                        out memberInput) ||
+                                    memberInput == null)
+                                {
+                                    memberInput = null;
+                                    break;
+                                }
                             }
+
+                            if (memberInput == null)
+                                continue;
 
                             if (TryAddPatternDesignationAliases(
                                     subpattern.Pattern,
@@ -1272,7 +1288,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
         {
             var argument = invocation.ArgumentList.Arguments[i];
-            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            var expr = SkipTransparentWrappers(argument.Expression);
             if (expr is not AnonymousFunctionExpressionSyntax)
                 continue;
 
@@ -1331,7 +1347,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (!argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword))
                 continue;
 
-            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            var expr = SkipTransparentWrappers(argument.Expression);
             if (expr is not DeclarationExpressionSyntax { Designation: { } designation })
                 continue;
 
@@ -1415,7 +1431,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
         {
             var argument = invocation.ArgumentList.Arguments[i];
-            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            var expr = SkipTransparentWrappers(argument.Expression);
             if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
                 continue;
 
@@ -1799,6 +1815,127 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return false;
     }
 
+    /// <summary>
+    /// Resolves a (possibly chained) member read such as <c>box.Inner.Value</c>
+    /// or <c>(point, 0).Item1</c> to the aggregate initializer expression it
+    /// reads, following anonymous-object / tuple creations and local initializers.
+    /// </summary>
+    private static bool TryResolveAggregateMemberRead(
+        ExpressionSyntax expression,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        [NotNullWhen(true)] out ExpressionSyntax? memberSource)
+    {
+        memberSource = null;
+        expression = SkipTransparentWrappers(expression);
+        if (expression is not MemberAccessExpressionSyntax memberAccess ||
+            !memberAccess.IsKind(SyntaxKind.SimpleMemberAccessExpression))
+        {
+            return false;
+        }
+
+        var receiver = SkipTransparentWrappers(memberAccess.Expression);
+        if (TryResolveAggregateMemberRead(
+                receiver, aliases, semanticModel, root, cancellationToken, out var resolvedReceiver))
+        {
+            receiver = resolvedReceiver;
+        }
+
+        if (!TryResolvePatternMemberInput(
+                receiver,
+                memberAccess.Name.Identifier.ValueText,
+                aliases,
+                semanticModel,
+                root,
+                cancellationToken,
+                out var resolved) ||
+            resolved == null)
+        {
+            return false;
+        }
+
+        memberSource = resolved;
+        return true;
+    }
+
+    /// <summary>
+    /// Member-name path a property subpattern binds against: <c>Value</c> for
+    /// <c>{ Value: p }</c>, <c>Inner, Value</c> for the extended property pattern
+    /// <c>{ Inner.Value: p }</c> (Codex P1 on #3441).
+    /// </summary>
+    private static bool TryGetPropertySubpatternMemberPath(
+        SubpatternSyntax subpattern,
+        out IReadOnlyList<string> memberPath)
+    {
+        if (subpattern.NameColon != null)
+        {
+            memberPath = [subpattern.NameColon.Name.Identifier.ValueText];
+            return true;
+        }
+
+        var names = new List<string>();
+        if (subpattern.ExpressionColon != null &&
+            TryCollectMemberPath(subpattern.ExpressionColon.Expression, names))
+        {
+            memberPath = names;
+            return true;
+        }
+
+        memberPath = [];
+        return false;
+    }
+
+    private static bool TryCollectMemberPath(ExpressionSyntax expression, List<string> names)
+    {
+        switch (expression)
+        {
+            case IdentifierNameSyntax identifier:
+                names.Add(identifier.Identifier.ValueText);
+                return true;
+            case MemberAccessExpressionSyntax memberAccess when
+                memberAccess.IsKind(SyntaxKind.SimpleMemberAccessExpression):
+                if (!TryCollectMemberPath(memberAccess.Expression, names))
+                    return false;
+                names.Add(memberAccess.Name.Identifier.ValueText);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Strips one value-transparent wrapper: parentheses, null-forgiving
+    /// <c>x!</c>, and <c>checked(x)</c> / <c>unchecked(x)</c> (Codex P1 on #3441).
+    /// </summary>
+    private static bool TryUnwrapTransparentWrapper(ExpressionSyntax expression, out ExpressionSyntax inner)
+    {
+        switch (expression)
+        {
+            case ParenthesizedExpressionSyntax parenthesized:
+                inner = parenthesized.Expression;
+                return true;
+            case PostfixUnaryExpressionSyntax postfix when
+                postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                inner = postfix.Operand;
+                return true;
+            case CheckedExpressionSyntax checkedExpression:
+                inner = checkedExpression.Expression;
+                return true;
+            default:
+                inner = expression;
+                return false;
+        }
+    }
+
+    private static ExpressionSyntax SkipTransparentWrappers(ExpressionSyntax expression)
+    {
+        while (TryUnwrapTransparentWrapper(expression, out var inner))
+            expression = inner;
+        return expression;
+    }
+
     private static PatternSyntax UnwrapParenthesizedPattern(PatternSyntax pattern)
     {
         while (pattern is ParenthesizedPatternSyntax parenthesized)
@@ -1810,8 +1947,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         while (true)
         {
-            if (expression is ParenthesizedExpressionSyntax parenthesized)
-                expression = parenthesized.Expression;
+            if (TryUnwrapTransparentWrapper(expression, out var inner))
+                expression = inner;
             else if (expression is RefExpressionSyntax refExpression)
                 expression = refExpression.Expression;
             else
@@ -1833,8 +1970,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         while (true)
         {
-            if (expression is ParenthesizedExpressionSyntax parenthesized)
-                expression = parenthesized.Expression;
+            // Parentheses, null-forgiving point!, checked(point) (Codex P1 on #3441).
+            if (TryUnwrapTransparentWrapper(expression, out var inner))
+                expression = inner;
             else if (expression is RefExpressionSyntax refExpression)
                 expression = refExpression.Expression;
             // Pointer indirection (*p).X — follow back to the tracked pointer alias
@@ -2315,7 +2453,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var lambdaIdentity = new List<bool>();
         foreach (var argument in invocation.ArgumentList.Arguments)
         {
-            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            var expr = SkipTransparentWrappers(argument.Expression);
 
             if (expr is SimpleLambdaExpressionSyntax simple)
             {
@@ -2376,7 +2514,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         foreach (var argument in invocation.ArgumentList.Arguments)
         {
-            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            var expr = SkipTransparentWrappers(argument.Expression);
 
             if (expr is SimpleLambdaExpressionSyntax simple &&
                 IsIdentityLambdaBody(simple.ExpressionBody, simple.Block, simple.Parameter.Identifier.ValueText))
@@ -2462,6 +2600,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 case PostfixUnaryExpressionSyntax postfix when
                     postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression):
                     pending.Push(postfix.Operand);
+                    break;
+                case CheckedExpressionSyntax checkedExpression:
+                    pending.Push(checkedExpression.Expression);
                     break;
                 case ConditionalExpressionSyntax conditional:
                     pending.Push(conditional.WhenTrue);
@@ -3696,6 +3837,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 continue;
             }
 
+            if (parent is CheckedExpressionSyntax checkedExpression)
+            {
+                current = checkedExpression;
+                continue;
+            }
+
             if (parent is MemberAccessExpressionSyntax memberAccess &&
                 memberAccess.Expression == current)
             {
@@ -3768,24 +3915,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return null;
     }
 
-    private static ExpressionSyntax UnwrapParenthesesAndNullForgiving(ExpressionSyntax expression)
-    {
-        while (true)
-        {
-            switch (expression)
-            {
-                case ParenthesizedExpressionSyntax parenthesized:
-                    expression = parenthesized.Expression;
-                    continue;
-                case PostfixUnaryExpressionSyntax postfix when
-                    postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression):
-                    expression = postfix.Operand;
-                    continue;
-                default:
-                    return expression;
-            }
-        }
-    }
+    private static ExpressionSyntax UnwrapParenthesesAndNullForgiving(ExpressionSyntax expression) =>
+        SkipTransparentWrappers(expression);
 
     /// <summary>
     /// True when <paramref name="receiver"/> is the converted tuple value (or a
