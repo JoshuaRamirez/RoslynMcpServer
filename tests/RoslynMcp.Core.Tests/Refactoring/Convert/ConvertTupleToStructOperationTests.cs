@@ -5905,6 +5905,54 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains("Bump(ref copy.X)", text, StringComparison.Ordinal);
     }
 
+    // Codex P2 on #3441 (PRRT_kwDORD0nYs600gmf): collection-initializer entries
+    // bind to Add parameters — { point, value } only puts point in the object key,
+    // so refs into dictionary values stay tuples. (Codex's literal ref dict[point].X
+    // is CS1612 — indexer values are not variables — so read a copy first.)
+    [SkippableTheory]
+    [InlineData(false, "Dictionary<object, (int X, int Y)> dict = new() { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(true, "Dictionary<object, (int X, int Y)> dict = new() { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(false, "var dict = new Dictionary<object, (int X, int Y)> { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(true, "var dict = new Dictionary<object, (int X, int Y)> { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_DictionaryInitializerObjectKey_DoesNotTaintValues_Succeeds(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains(".X)", text, StringComparison.Ordinal);
+    }
+
     // Codex P2 on #3441: still refuse when the converted tuple is the dictionary value.
     [SkippableTheory]
     [InlineData(false, "dict.Add(0, point); var copy = dict[0]; Bump(ref copy.X);")]
@@ -6199,6 +6247,65 @@ public class ConvertTupleToStructOperationTests
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
         Assert.Contains("Bump(ref other.A)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 on #3441 (PRRT_kwDORD0nYs600gme): only wrapper members whose
+    // original declared type mentions the bound type parameter forward storage.
+    // Box<T>.Other is a fixed tuple field that merely shares the constructed shape.
+    [SkippableTheory]
+    [InlineData(false, "var box = Wrap(point); Bump(ref box.Other.X);")]
+    [InlineData(true, "var box = Wrap(point); Bump(ref box.Other.X);")]
+    [InlineData(false, "var box = Wrap(point); var other = box.Other; Bump(ref other.X);")]
+    [InlineData(true, "var box = Wrap(point); var other = box.Other; Bump(ref other.X);")]
+    [InlineData(false, "var box = Wrap(point); var others = box.Others; Bump(ref others[0].X);")]
+    [InlineData(true, "var box = Wrap(point); var others = box.Others; Bump(ref others[0].X);")]
+    public async Task ConvertTupleToStruct_GenericWrapperFixedTupleMember_Succeeds(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+
+                static Box<T> Wrap<T>(T value) => new Box<T>(value);
+            }
+
+            public sealed class Box<T>
+            {
+                public Box(T value) => Value = value;
+                public T Value;
+                public (int X, int Y) Other;
+                public (int X, int Y)[] Others = new (int X, int Y)[1];
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains(".X)", text, StringComparison.Ordinal);
     }
 
     // Codex P1 on #3441 (PRRT_kwDORD0nYs600BUC): selectors passed as method

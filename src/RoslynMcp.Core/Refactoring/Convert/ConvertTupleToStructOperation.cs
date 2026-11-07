@@ -2485,18 +2485,37 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         {
             foreach (var element in initializer.Expressions)
             {
-                if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
-                    return true;
+                // Bind each entry to the collection initializer's Add method and only
+                // count parts flowing into parameters whose type embeds converted
+                // storage — { { point, value } } into Dictionary<object, V> only puts
+                // point in the object key (Codex P2 on #3441, PRRT_kwDORD0nYs600gmf).
+                // Mirrors TryAddCollectionInsertionReceiverAlias for explicit Add calls.
+                var addMethod = semanticModel.GetCollectionInitializerSymbolInfo(element, cancellationToken).Symbol
+                    as IMethodSymbol;
 
                 // new Dictionary<K, V> { { key, point } }: complex element initializers.
                 if (element is InitializerExpressionSyntax complexElement &&
                     complexElement.IsKind(SyntaxKind.ComplexElementInitializerExpression))
                 {
-                    foreach (var part in complexElement.Expressions)
+                    for (var i = 0; i < complexElement.Expressions.Count; i++)
                     {
-                        if (ExpressionReferencesStorageAlias(part, aliases, semanticModel, cancellationToken))
+                        if (!CollectionInitializerPartMayCarryStorage(addMethod, i, aliases))
+                            continue;
+
+                        if (ExpressionReferencesStorageAlias(
+                                complexElement.Expressions[i], aliases, semanticModel, cancellationToken))
+                        {
                             return true;
+                        }
                     }
+
+                    continue;
+                }
+
+                if (CollectionInitializerPartMayCarryStorage(addMethod, 0, aliases) &&
+                    ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                {
+                    return true;
                 }
             }
         }
@@ -2653,6 +2672,43 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// True when collection-initializer part <paramref name="index"/> binds to an
+    /// <c>Add</c> parameter whose type embeds converted storage. Refusal-leaning:
+    /// unresolved Add methods, params arrays, and out-of-range parts count.
+    /// </summary>
+    private static bool CollectionInitializerPartMayCarryStorage(
+        IMethodSymbol? addMethod,
+        int index,
+        HashSet<ISymbol> aliases)
+    {
+        if (addMethod == null)
+            return true;
+
+        var parameters = addMethod.Parameters;
+        if (parameters.Length == 0)
+            return true;
+
+        IParameterSymbol parameter;
+        if (index < parameters.Length)
+        {
+            parameter = parameters[index];
+        }
+        else if (parameters[^1].IsParams)
+        {
+            parameter = parameters[^1];
+        }
+        else
+        {
+            return true;
+        }
+
+        if (parameter.IsParams)
+            return true;
+
+        return TypeInvolvesStorageAliasType(parameter.Type, aliases);
+    }
+
+    /// <summary>
     /// True when <paramref name="memberAccess"/> yields a constructed type argument
     /// of its receiver that matches tracked storage (e.g. <c>Box&lt;T&gt;.Value</c>
     /// where <c>T</c> is the converted tuple). Skips tuple/anonymous carriers, which
@@ -2676,6 +2732,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return false;
         }
 
+        // Fields/properties: only members whose original declared type mentions a
+        // containing-type parameter bound to storage forward it. Box<T>.Other declared
+        // as (int X, int Y) merely shares the constructed shape (Codex P2 on #3441,
+        // PRRT_kwDORD0nYs600gme). Other member kinds keep the constructed-type check.
+        var member = semanticModel.GetSymbolInfo(memberAccess, cancellationToken).Symbol;
+        if (member is IFieldSymbol or IPropertySymbol)
+            return MemberOriginalTypeForwardsStorageTypeArgument(member, memberType);
+
         foreach (var argument in named.TypeArguments)
         {
             // Direct unwrap: Box<T>.Value where memberType == T.
@@ -2686,6 +2750,41 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 TypeContainsOrEquals(memberType, argument))
             {
                 return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when the original definition of field/property <paramref name="member"/>
+    /// declares its type in terms of a containing-type parameter (including outer
+    /// and base types) whose constructed argument appears in <paramref name="memberType"/>.
+    /// </summary>
+    private static bool MemberOriginalTypeForwardsStorageTypeArgument(
+        ISymbol member,
+        ITypeSymbol memberType)
+    {
+        var originalType = member.OriginalDefinition switch
+        {
+            IFieldSymbol field => field.Type,
+            IPropertySymbol property => property.Type,
+            _ => null
+        };
+        if (originalType == null)
+            return true;
+
+        for (var containing = member.ContainingType; containing != null; containing = containing.ContainingType)
+        {
+            var typeParameters = containing.OriginalDefinition.TypeParameters;
+            var typeArguments = containing.TypeArguments;
+            for (var i = 0; i < typeParameters.Length && i < typeArguments.Length; i++)
+            {
+                if (TypeContainsOrEquals(originalType, typeParameters[i]) &&
+                    TypeContainsOrEquals(memberType, typeArguments[i]))
+                {
+                    return true;
+                }
             }
         }
 
@@ -4069,13 +4168,80 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (parameter == null)
                 continue;
 
-            if (SymbolEqualityComparer.Default.Equals(parameter.Type, memberType) ||
-                TypeContainsOrEquals(memberType, parameter.Type) ||
-                TypeContainsOrEquals(parameter.Type, memberType))
+            if (!SymbolEqualityComparer.Default.Equals(parameter.Type, memberType) &&
+                !TypeContainsOrEquals(memberType, parameter.Type) &&
+                !TypeContainsOrEquals(parameter.Type, memberType))
             {
-                yield return arg.Expression;
+                continue;
+            }
+
+            // Generic wrappers (Box<T> Wrap<T>(T value)): constructed-type equality
+            // also matches fixed members such as Box<T>.Other declared as
+            // (int X, int Y). A method-type-parameter argument can only reach
+            // members whose original declared type mentions the containing-type
+            // parameter bound to it (Codex P2 on #3441, PRRT_kwDORD0nYs600gme).
+            if (!GenericParameterMayReachWrapperMember(method, parameter, memberName))
+                continue;
+
+            yield return arg.Expression;
+        }
+    }
+
+    /// <summary>
+    /// False only when <paramref name="parameter"/>'s original type is built from
+    /// method type parameters and the named field/property on the original return
+    /// type is declared without any containing-type parameter bound to them.
+    /// Refusal-leaning: concrete parameter types, tuple returns, and unresolved
+    /// shapes return true.
+    /// </summary>
+    private static bool GenericParameterMayReachWrapperMember(
+        IMethodSymbol method,
+        IParameterSymbol parameter,
+        string memberName)
+    {
+        var original = (method.ReducedFrom ?? method).OriginalDefinition;
+        var ordinal = parameter.Ordinal + (method.ReducedFrom != null ? 1 : 0);
+        if (ordinal < 0 || ordinal >= original.Parameters.Length)
+            return true;
+
+        var methodTypeParameters = original.TypeParameters
+            .Where(typeParameter => TypeContainsOrEquals(original.Parameters[ordinal].Type, typeParameter))
+            .ToList();
+        if (methodTypeParameters.Count == 0)
+            return true;
+
+        if (original.ReturnType is not INamedTypeSymbol { IsTupleType: false, IsAnonymousType: false } returnType)
+            return true;
+
+        ISymbol? member = returnType.GetMembers(memberName)
+            .FirstOrDefault(candidate => candidate is IFieldSymbol { IsStatic: false } or IPropertySymbol { IsStatic: false });
+        var memberOriginalType = member?.OriginalDefinition switch
+        {
+            IFieldSymbol field => field.Type,
+            IPropertySymbol property => property.Type,
+            _ => null
+        };
+        if (member == null || memberOriginalType == null)
+            return true;
+
+        for (var containing = member.ContainingType; containing != null; containing = containing.ContainingType)
+        {
+            var typeParameters = containing.OriginalDefinition.TypeParameters;
+            var typeArguments = containing.TypeArguments;
+            for (var i = 0; i < typeParameters.Length && i < typeArguments.Length; i++)
+            {
+                if (!TypeContainsOrEquals(memberOriginalType, typeParameters[i]))
+                    continue;
+
+                foreach (var methodTypeParameter in methodTypeParameters)
+                {
+                    if (TypeContainsOrEquals(typeArguments[i], methodTypeParameter))
+                        return true;
+                }
             }
         }
+
+        return false;
     }
 
     /// <summary>
