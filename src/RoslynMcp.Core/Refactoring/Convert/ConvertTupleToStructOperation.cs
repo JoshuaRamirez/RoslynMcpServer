@@ -525,13 +525,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         CancellationToken cancellationToken)
     {
         var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
-        var pending = new Stack<(Document Document, SyntaxNode Root, SemanticModel Model, ExpressionSyntax Value, string? Function)>();
-        pending.Push((document, root, model, creation, null));
+        var pending = new Stack<(Document Document, SyntaxNode Root, SemanticModel Model, ExpressionSyntax Value, string? Function, bool Sequence)>();
+        pending.Push((document, root, model, creation, null, false));
 
         while (pending.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var (currentDocument, currentRoot, currentModel, value, function) = pending.Pop();
+            var (currentDocument, currentRoot, currentModel, value, function, sequence) = pending.Pop();
 
             // Climb value-preserving wrappers / containers until storage or a return.
             ExpressionSyntax top = value;
@@ -543,6 +543,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     storage = TryGetAssignedStorageSymbol(top, currentModel, cancellationToken);
                     if (storage != null)
                         break;
+
+                    // foreach (dynamic copy in Get()) over an iterator / container
+                    // result: the iteration variable holds the boxed tuple (Codex P1
+                    // on #3441, PRRT_kwDORD0nYs605hQG).
+                    if (top.Parent is ForEachStatementSyntax forEach && forEach.Expression == top)
+                    {
+                        storage = currentModel.GetDeclaredSymbol(forEach, cancellationToken);
+                        if (storage != null)
+                            break;
+                    }
                 }
 
                 if (!TryClimbOpaqueReturnFlow(top, out var next))
@@ -561,8 +571,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 return function;
 
             if (!TryGetOpaqueReturningFunction(
-                    top, currentModel, cancellationToken, out var functionSymbol, out var lambda))
+                    top, currentModel, cancellationToken, out var functionSymbol, out var lambda, out var isIterator))
             {
+                // An iterator's sequence result that reaches neither storage, a
+                // foreach, nor a further opaque return (Get().First(), deconstructing
+                // foreach, LINQ chains, …) cannot be followed element-wise; refuse
+                // unless the result is simply discarded (Codex P1 on #3441,
+                // PRRT_kwDORD0nYs605hQG).
+                if (sequence && function != null && top.Parent is not ExpressionStatementSyntax)
+                    return function;
+
                 continue;
             }
 
@@ -626,7 +644,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     if (ignore)
                         continue;
 
-                    pending.Push((siteDocument, siteRoot, siteModel, result!, functionName));
+                    pending.Push((siteDocument, siteRoot, siteModel, result!, functionName, sequence || isIterator));
                 }
             }
         }
@@ -734,10 +752,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel model,
         CancellationToken cancellationToken,
         [NotNullWhen(true)] out ISymbol? function,
-        out AnonymousFunctionExpressionSyntax? lambda)
+        out AnonymousFunctionExpressionSyntax? lambda,
+        out bool isIterator)
     {
         function = null;
         lambda = null;
+        isIterator = false;
 
         SyntaxNode? owner = value.Parent switch
         {
@@ -749,11 +769,23 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         or AccessorDeclarationSyntax),
             ArrowExpressionClauseSyntax arrow when arrow.Expression == value => arrow.Parent,
             AnonymousFunctionExpressionSyntax anonymous when anonymous.ExpressionBody == value => anonymous,
+            // yield return (1, 2) in an iterator method / local function / getter:
+            // the call result is a sequence carrying the boxed tuple (Codex P1 on
+            // #3441, PRRT_kwDORD0nYs605hQG). Iterators cannot be lambdas.
+            YieldStatementSyntax yieldStatement
+                when yieldStatement.IsKind(SyntaxKind.YieldReturnStatement) && yieldStatement.Expression == value =>
+                yieldStatement.Ancestors().FirstOrDefault(a =>
+                    a is AnonymousFunctionExpressionSyntax
+                        or LocalFunctionStatementSyntax
+                        or BaseMethodDeclarationSyntax
+                        or AccessorDeclarationSyntax),
             _ => null
         };
 
-        if (owner == null)
+        if (owner == null || owner is AnonymousFunctionExpressionSyntax && value.Parent is YieldStatementSyntax)
             return false;
+
+        isIterator = value.Parent is YieldStatementSyntax;
 
         ISymbol? symbol = owner switch
         {
@@ -769,6 +801,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         var returnType = symbol switch
         {
+            _ when isIterator => symbol switch
+            {
+                IMethodSymbol method => TryGetIteratorElementType(method.ReturnType),
+                IPropertySymbol property => TryGetIteratorElementType(property.Type),
+                _ => null
+            },
             IMethodSymbol method => method.IsAsync ? UnwrapAsyncReturnType(method.ReturnType) : method.ReturnType,
             IPropertySymbol property => property.Type,
             _ => null
@@ -783,6 +821,44 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         function = symbol!;
         lambda = owner as AnonymousFunctionExpressionSyntax;
         return true;
+    }
+
+    /// <summary>
+    /// Element type yielded by an iterator returning <c>IEnumerable&lt;T&gt;</c> /
+    /// <c>IEnumerator&lt;T&gt;</c> / <c>IAsyncEnumerable&lt;T&gt;</c> /
+    /// <c>IAsyncEnumerator&lt;T&gt;</c>, or <c>object</c> for the non-generic
+    /// <c>IEnumerable</c> / <c>IEnumerator</c> forms.
+    /// </summary>
+    private static ITypeSymbol? TryGetIteratorElementType(ITypeSymbol returnType)
+    {
+        if (returnType is not INamedTypeSymbol named)
+            return null;
+
+        if (named.IsGenericType && named.TypeArguments.Length == 1 &&
+            named.OriginalDefinition.SpecialType is SpecialType.System_Collections_Generic_IEnumerable_T
+                or SpecialType.System_Collections_Generic_IEnumerator_T)
+        {
+            return named.TypeArguments[0];
+        }
+
+        if (named.IsGenericType && named.TypeArguments.Length == 1 &&
+            named.Name is "IAsyncEnumerable" or "IAsyncEnumerator" &&
+            named.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic")
+        {
+            return named.TypeArguments[0];
+        }
+
+        // Non-generic IEnumerable / IEnumerator: elements are object (Current).
+        if (named.SpecialType == SpecialType.System_Collections_IEnumerator)
+            return named.GetMembers("Current").OfType<IPropertySymbol>().FirstOrDefault()?.Type;
+
+        if (named.SpecialType == SpecialType.System_Collections_IEnumerable)
+        {
+            var enumerator = named.GetMembers("GetEnumerator").OfType<IMethodSymbol>().FirstOrDefault()?.ReturnType;
+            return enumerator?.GetMembers("Current").OfType<IPropertySymbol>().FirstOrDefault()?.Type;
+        }
+
+        return null;
     }
 
     private static ITypeSymbol? UnwrapAsyncReturnType(ITypeSymbol returnType) =>
@@ -1318,6 +1394,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 ISymbol? alias = null;
                 ExpressionSyntax? source = null;
+
+                // holder.Value = point / holder[i] = point / holder[point]:
+                // property / indexer accessor parameters (setter `value`, indexer
+                // index parameters) receive converted storage (Codex P1 on #3441,
+                // PRRT_kwDORD0nYs605hQL). consumer + point / (Wrapper)point:
+                // user-defined operator / conversion parameters likewise (Codex P1
+                // on #3441, PRRT_kwDORD0nYs605hQM). No `continue`: the ordinary
+                // branches below still run for the same node.
+                if (TryAddAccessorParameterAliases(node, aliases, semanticModel, cancellationToken) |
+                    TryAddUserDefinedOperatorParameterAliases(node, aliases, semanticModel, cancellationToken))
+                {
+                    changed = true;
+                }
 
                 if (node is VariableDeclaratorSyntax declarator &&
                     declarator.Initializer?.Value is { } init)
@@ -2513,6 +2602,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
                     break;
             }
+
+            // Property / indexer setters and user-defined operators / conversions
+            // receiving converted storage must bind to one concrete analyzable body
+            // (Codex P1s on #3441, PRRT_kwDORD0nYs605hQL / …605hQM).
+            if (AccessorHasUnresolvedCalleeEscape(node, aliases, semanticModel, cancellationToken) ||
+                OperatorHasUnresolvedCalleeEscape(node, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
         }
 
         return false;
@@ -2636,6 +2734,326 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             if (!CanPreciselyAnalyzeCalleeBody(constructor))
                 return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Accessor parameters that receive converted storage: the setter / init
+    /// <c>value</c> parameter for <c>holder.Value = point</c> / <c>holder[0] = point</c>
+    /// / <c>new Holder { Value = point }</c>, and indexer index parameters for
+    /// <c>holder[point]</c> (both accessors). Bodies are then gated like ordinary
+    /// callee parameters (Codex P1 on #3441, PRRT_kwDORD0nYs605hQL).
+    /// </summary>
+    private static bool TryAddAccessorParameterAliases(
+        SyntaxNode node,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var added = false;
+
+        if (node is AssignmentExpressionSyntax assignment &&
+            (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) ||
+             assignment.IsKind(SyntaxKind.CoalesceAssignmentExpression)) &&
+            TryGetAssignedPropertySetter(assignment, semanticModel, cancellationToken, out var setter) &&
+            !setter.Parameters.IsDefaultOrEmpty &&
+            ExpressionReferencesStorageAlias(assignment.Right, aliases, semanticModel, cancellationToken))
+        {
+            added |= aliases.Add(setter.OriginalDefinition.Parameters[^1]);
+        }
+
+        if (node is ElementAccessExpressionSyntax elementAccess &&
+            semanticModel.GetSymbolInfo(elementAccess, cancellationToken).Symbol is IPropertySymbol { IsIndexer: true } indexer)
+        {
+            var arguments = elementAccess.ArgumentList.Arguments;
+            for (var i = 0; i < arguments.Count; i++)
+            {
+                if (!ExpressionReferencesStorageAlias(
+                        arguments[i].Expression, aliases, semanticModel, cancellationToken))
+                {
+                    continue;
+                }
+
+                var parameter = ResolveIndexerParameter(indexer, arguments[i], i);
+                if (parameter == null)
+                    continue;
+
+                foreach (var accessor in new[] { indexer.GetMethod, indexer.SetMethod })
+                {
+                    if (accessor == null || parameter.Ordinal >= accessor.Parameters.Length)
+                        continue;
+                    added |= aliases.Add(accessor.OriginalDefinition.Parameters[parameter.Ordinal]);
+                }
+            }
+        }
+
+        return added;
+    }
+
+    private static IParameterSymbol? ResolveIndexerParameter(
+        IPropertySymbol indexer,
+        ArgumentSyntax argument,
+        int index)
+    {
+        if (argument.NameColon is { } nameColon)
+        {
+            return indexer.Parameters.FirstOrDefault(p =>
+                p.Name == nameColon.Name.Identifier.ValueText);
+        }
+
+        if (index < indexer.Parameters.Length)
+            return indexer.Parameters[index];
+
+        return null;
+    }
+
+    private static bool TryGetAssignedPropertySetter(
+        AssignmentExpressionSyntax assignment,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        [NotNullWhen(true)] out IMethodSymbol? setter)
+    {
+        setter = null;
+        var left = UnwrapParenthesesAndNullForgiving(assignment.Left);
+        if (semanticModel.GetSymbolInfo(left, cancellationToken).Symbol is not IPropertySymbol property)
+            return false;
+
+        setter = property.SetMethod;
+        return setter != null;
+    }
+
+    /// <summary>
+    /// <c>consumer + point</c> / <c>-point</c> / <c>acc += point</c> bound to a
+    /// user-defined operator, and <c>(Wrapper)point</c> / <c>Wrapper w = point</c>
+    /// bound to a user-defined conversion: maps each storage-bearing operand to the
+    /// operator / conversion parameter so its body is gated like an ordinary callee
+    /// (Codex P1 on #3441, PRRT_kwDORD0nYs605hQM).
+    /// </summary>
+    private static bool TryAddUserDefinedOperatorParameterAliases(
+        SyntaxNode node,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var added = false;
+        foreach (var (operand, parameter) in EnumerateUserDefinedOperatorOperands(
+                     node, semanticModel, cancellationToken))
+        {
+            if (parameter == null ||
+                !ExpressionReferencesStorageAlias(operand, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            added |= aliases.Add(parameter.OriginalDefinition);
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// Yields (operand, bound parameter) pairs for a node that invokes a
+    /// user-defined operator or conversion. The parameter is null when the
+    /// operand cannot be mapped (dynamic binding is handled by
+    /// <see cref="OperatorHasUnresolvedCalleeEscape"/>).
+    /// </summary>
+    private static IEnumerable<(ExpressionSyntax Operand, IParameterSymbol? Parameter)> EnumerateUserDefinedOperatorOperands(
+        SyntaxNode node,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        switch (node)
+        {
+            case BinaryExpressionSyntax binary
+                when !binary.IsKind(SyntaxKind.AsExpression) &&
+                     !binary.IsKind(SyntaxKind.IsExpression) &&
+                     !binary.IsKind(SyntaxKind.CoalesceExpression):
+                if (TryGetUserDefinedOperator(binary, semanticModel, cancellationToken) is { } binaryOperator)
+                {
+                    yield return (binary.Left, ParameterAt(binaryOperator, 0));
+                    yield return (binary.Right, ParameterAt(binaryOperator, 1));
+                }
+
+                break;
+
+            case PrefixUnaryExpressionSyntax prefix:
+                if (TryGetUserDefinedOperator(prefix, semanticModel, cancellationToken) is { } prefixOperator)
+                    yield return (prefix.Operand, ParameterAt(prefixOperator, 0));
+                break;
+
+            case PostfixUnaryExpressionSyntax postfix
+                when !postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                if (TryGetUserDefinedOperator(postfix, semanticModel, cancellationToken) is { } postfixOperator)
+                    yield return (postfix.Operand, ParameterAt(postfixOperator, 0));
+                break;
+
+            case AssignmentExpressionSyntax compound
+                when !compound.IsKind(SyntaxKind.SimpleAssignmentExpression) &&
+                     !compound.IsKind(SyntaxKind.CoalesceAssignmentExpression):
+                if (TryGetUserDefinedOperator(compound, semanticModel, cancellationToken) is { } compoundOperator)
+                {
+                    if (compoundOperator.Parameters.Length == 1 && !compoundOperator.IsStatic)
+                    {
+                        // C# 14 instance compound-assignment operator: right → param 0.
+                        yield return (compound.Right, ParameterAt(compoundOperator, 0));
+                    }
+                    else
+                    {
+                        yield return (compound.Left, ParameterAt(compoundOperator, 0));
+                        yield return (compound.Right, ParameterAt(compoundOperator, 1));
+                    }
+                }
+
+                break;
+        }
+
+        // User-defined conversions: explicit casts, and implicit conversions
+        // applied to an expression in its converted context.
+        if (node is CastExpressionSyntax cast)
+        {
+            var castOperator = semanticModel.GetOperation(cast, cancellationToken) is
+                Microsoft.CodeAnalysis.Operations.IConversionOperation { OperatorMethod: { } conversionMethod }
+                ? conversionMethod
+                : semanticModel.GetConversion(cast, cancellationToken) is { IsUserDefined: true, MethodSymbol: { } fallback }
+                    ? fallback
+                    : null;
+            if (castOperator != null)
+                yield return (cast.Expression, ParameterAt(castOperator, 0));
+        }
+        else if (node is ExpressionSyntax expression &&
+                 node is not (AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax) &&
+                 !(node.Parent is ParenthesizedExpressionSyntax) &&
+                 semanticModel.GetConversion(expression, cancellationToken) is { IsUserDefined: true, MethodSymbol: { } implicitOperator })
+        {
+            yield return (expression, ParameterAt(implicitOperator, 0));
+        }
+    }
+
+    private static IParameterSymbol? ParameterAt(IMethodSymbol method, int ordinal) =>
+        ordinal < method.Parameters.Length ? method.Parameters[ordinal] : null;
+
+    private static IMethodSymbol? TryGetUserDefinedOperator(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        semanticModel.GetSymbolInfo(expression, cancellationToken).Symbol is IMethodSymbol
+        {
+            MethodKind: MethodKind.UserDefinedOperator or MethodKind.Conversion
+        } method
+            ? method
+            : null;
+
+    /// <summary>
+    /// A property / indexer assignment of converted storage whose setter is
+    /// abstract, interface-declared, or open-virtual cannot be attributed to one
+    /// setter body (Codex P1 on #3441, PRRT_kwDORD0nYs605hQL).
+    /// </summary>
+    private static bool AccessorHasUnresolvedCalleeEscape(
+        SyntaxNode node,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (node is not AssignmentExpressionSyntax assignment ||
+            !(assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) ||
+              assignment.IsKind(SyntaxKind.CoalesceAssignmentExpression)))
+        {
+            return false;
+        }
+
+        if (!TryGetAssignedPropertySetter(assignment, semanticModel, cancellationToken, out var setter))
+        {
+            // Dynamic member / indexer assignment (dynamicHolder.Value = point):
+            // the runtime binder may pick any setter.
+            var left = UnwrapParenthesesAndNullForgiving(assignment.Left);
+            return left is MemberAccessExpressionSyntax or ElementAccessExpressionSyntax &&
+                   semanticModel.GetSymbolInfo(left, cancellationToken).Symbol == null &&
+                   semanticModel.GetTypeInfo(left, cancellationToken).Type is { TypeKind: TypeKind.Dynamic } &&
+                   ExpressionReferencesStorageAlias(assignment.Right, aliases, semanticModel, cancellationToken);
+        }
+
+        return !CanPreciselyAnalyzeCalleeBody(setter) &&
+               ExpressionReferencesStorageAlias(assignment.Right, aliases, semanticModel, cancellationToken);
+    }
+
+    /// <summary>
+    /// Storage-bearing operands of an operator whose target cannot be resolved to
+    /// one concrete body: static abstract / virtual interface operators, and
+    /// dynamically bound operators whose other operand's source type declares
+    /// user-defined operators / conversions (Codex P1 on #3441,
+    /// PRRT_kwDORD0nYs605hQM).
+    /// </summary>
+    private static bool OperatorHasUnresolvedCalleeEscape(
+        SyntaxNode node,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var (operand, parameter) in EnumerateUserDefinedOperatorOperands(
+                     node, semanticModel, cancellationToken))
+        {
+            if (!ExpressionReferencesStorageAlias(operand, aliases, semanticModel, cancellationToken))
+                continue;
+
+            if (parameter == null || !CanPreciselyAnalyzeCalleeBody((IMethodSymbol)parameter.ContainingSymbol))
+                return true;
+        }
+
+        // Dynamic binding: consumer + copy where copy is dynamic picks
+        // operator +(Consumer, object) at runtime.
+        ExpressionSyntax[] operands = node switch
+        {
+            BinaryExpressionSyntax binary
+                when !binary.IsKind(SyntaxKind.AsExpression) &&
+                     !binary.IsKind(SyntaxKind.IsExpression) &&
+                     !binary.IsKind(SyntaxKind.CoalesceExpression) &&
+                     !binary.IsKind(SyntaxKind.LogicalAndExpression) &&
+                     !binary.IsKind(SyntaxKind.LogicalOrExpression) => new[] { binary.Left, binary.Right },
+            AssignmentExpressionSyntax compound
+                when !compound.IsKind(SyntaxKind.SimpleAssignmentExpression) &&
+                     !compound.IsKind(SyntaxKind.CoalesceAssignmentExpression) => new[] { compound.Left, compound.Right },
+            _ => Array.Empty<ExpressionSyntax>()
+        };
+
+        if (operands.Length != 2)
+            return false;
+
+        // Roslyn reports dynamic binding as a synthesized built-in
+        // `dynamic.operator +` with CandidateReason.LateBound.
+        var operatorInfo = semanticModel.GetSymbolInfo(node, cancellationToken);
+        var lateBound = operatorInfo.Symbol == null ||
+                        operatorInfo.CandidateReason == CandidateReason.LateBound ||
+                        operands.Any(o => semanticModel.GetTypeInfo(o, cancellationToken).Type is { TypeKind: TypeKind.Dynamic });
+        if (!lateBound)
+            return false;
+
+        for (var i = 0; i < 2; i++)
+        {
+            if (!ExpressionReferencesStorageAlias(operands[i], aliases, semanticModel, cancellationToken))
+                continue;
+
+            var other = semanticModel.GetTypeInfo(operands[1 - i], cancellationToken).Type;
+            if (other is INamedTypeSymbol { DeclaringSyntaxReferences.IsDefaultOrEmpty: false } named &&
+                TypeDeclaresUserDefinedOperators(named))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TypeDeclaresUserDefinedOperators(INamedTypeSymbol type)
+    {
+        for (INamedTypeSymbol? cursor = type; cursor != null; cursor = cursor.BaseType)
+        {
+            if (cursor.GetMembers().OfType<IMethodSymbol>().Any(m =>
+                    m.MethodKind is MethodKind.UserDefinedOperator or MethodKind.Conversion))
+            {
+                return true;
+            }
         }
 
         return false;

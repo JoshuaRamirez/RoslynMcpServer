@@ -8122,4 +8122,239 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
         Assert.Contains("new Point", text, StringComparison.Ordinal);
     }
+
+    private const string CalleeFlowTemplate = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public static class Worker
+        {
+            static void Bump(ref dynamic v) => v++;
+            DECL
+            public static void Run()
+            {
+                USE
+            }
+        }
+        """;
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs605hQG): a tuple produced by `yield return`
+    // in an object / dynamic iterator (method, getter, async iterator) is followed
+    // through the iterator's call sites; foreach elements used by ref refuse, and
+    // sequence results that cannot be followed element-wise refuse conservatively.
+    [SkippableTheory]
+    [InlineData(false, 11, "static IEnumerable<dynamic> Get() { yield return (1, 2); }", "var items = Get(); foreach (dynamic copy in items) Bump(ref copy.Item1);")]
+    [InlineData(true, 11, "static IEnumerable<dynamic> Get() { yield return (1, 2); }", "var items = Get(); foreach (dynamic copy in items) Bump(ref copy.Item1);")]
+    [InlineData(false, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "foreach (dynamic copy in Get()) Bump(ref copy.Item1);")]
+    [InlineData(true, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "foreach (dynamic copy in Get()) Bump(ref copy.Item1);")]
+    [InlineData(false, 11, "static System.Collections.IEnumerable Get() { yield return (1, 2); }", "foreach (dynamic copy in Get()) Bump(ref copy.Item1);")]
+    [InlineData(true, 11, "static System.Collections.IEnumerable Get() { yield return (1, 2); }", "foreach (dynamic copy in Get()) Bump(ref copy.Item1);")]
+    [InlineData(false, 11, "static IEnumerable<dynamic> Get() { yield return (1, 2); }", "dynamic copy = Get().First(); Bump(ref copy.Item1);")]
+    [InlineData(true, 11, "static IEnumerable<dynamic> Get() { yield return (1, 2); }", "dynamic copy = Get().First(); Bump(ref copy.Item1);")]
+    [InlineData(false, 11, "static IEnumerable<object> Items { get { yield return (1, 2); } }", "foreach (dynamic copy in Items) Bump(ref copy.Item1);")]
+    [InlineData(true, 11, "static IEnumerable<object> Items { get { yield return (1, 2); } }", "foreach (dynamic copy in Items) Bump(ref copy.Item1);")]
+    [InlineData(false, 11, "static async IAsyncEnumerable<object> Get() { await Task.Yield(); yield return (1, 2); } static async Task Consume() { await foreach (dynamic copy in Get()) Bump(ref copy.Item1); }", "Consume().Wait();")]
+    [InlineData(true, 11, "static async IAsyncEnumerable<object> Get() { await Task.Yield(); yield return (1, 2); } static async Task Consume() { await foreach (dynamic copy in Get()) Bump(ref copy.Item1); }", "Consume().Wait();")]
+    public async Task ConvertTupleToStruct_IteratorYieldRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        int line,
+        string declaration,
+        string use)
+    {
+        var source = CalleeFlowTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Companion to PRRT_kwDORD0nYs605hQG: iterator elements only read still convert.
+    [SkippableTheory]
+    [InlineData(false, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "foreach (object copy in Get()) Console.WriteLine(copy);")]
+    [InlineData(true, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "foreach (object copy in Get()) Console.WriteLine(copy);")]
+    [InlineData(false, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "var items = Get(); foreach (var copy in items) Console.WriteLine(copy);")]
+    [InlineData(true, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "var items = Get(); foreach (var copy in items) Console.WriteLine(copy);")]
+    public async Task ConvertTupleToStruct_IteratorYieldNoRefUse_Succeeds(
+        bool asRecord,
+        int line,
+        string declaration,
+        string use)
+    {
+        var source = CalleeFlowTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("new Point", text, StringComparison.Ordinal);
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs605hQL): assigning converted storage to an
+    // object / dynamic property or indexer maps it onto the setter / init `value`
+    // (and indexer index) parameter; open-virtual setters refuse conservatively.
+    [SkippableTheory]
+    [InlineData(false, 14, "sealed class Holder { public object Value { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point;")]
+    [InlineData(true, 14, "sealed class Holder { public object Value { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point;")]
+    [InlineData(false, 14, "sealed class Holder { public dynamic Value { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point;")]
+    [InlineData(true, 14, "sealed class Holder { public dynamic Value { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point;")]
+    [InlineData(false, 14, "sealed class Holder { public object Value { init { dynamic copy = value; Bump(ref copy.Item1); } } }", "var point = (1, 2); var holder = new Holder { Value = point };")]
+    [InlineData(true, 14, "sealed class Holder { public object Value { init { dynamic copy = value; Bump(ref copy.Item1); } } }", "var point = (1, 2); var holder = new Holder { Value = point };")]
+    [InlineData(false, 14, "sealed class Holder { public object this[int i] { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); var point = (1, 2); holder[0] = point;")]
+    [InlineData(true, 14, "sealed class Holder { public object this[int i] { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); var point = (1, 2); holder[0] = point;")]
+    [InlineData(false, 14, "sealed class Holder { public int this[object key] { get { dynamic copy = key; Bump(ref copy.Item1); return 0; } } }", "var holder = new Holder(); var point = (1, 2); Console.WriteLine(holder[point]);")]
+    [InlineData(true, 14, "sealed class Holder { public int this[object key] { get { dynamic copy = key; Bump(ref copy.Item1); return 0; } } }", "var holder = new Holder(); var point = (1, 2); Console.WriteLine(holder[point]);")]
+    [InlineData(false, 14, "class Holder { public virtual object Value { get; set; } }", "Holder holder = new Holder(); var point = (1, 2); holder.Value = point;")]
+    [InlineData(true, 14, "class Holder { public virtual object Value { get; set; } }", "Holder holder = new Holder(); var point = (1, 2); holder.Value = point;")]
+    public async Task ConvertTupleToStruct_PropertySetterRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        int line,
+        string declaration,
+        string use)
+    {
+        var source = CalleeFlowTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Companion to PRRT_kwDORD0nYs605hQL: auto-properties / setters that only read convert.
+    [SkippableTheory]
+    [InlineData(false, 14, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point; Console.WriteLine(holder.Value);")]
+    [InlineData(true, 14, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point; Console.WriteLine(holder.Value);")]
+    [InlineData(false, 14, "sealed class Holder { public object Value { set { Console.WriteLine(value); } } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point;")]
+    [InlineData(true, 14, "sealed class Holder { public object Value { set { Console.WriteLine(value); } } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point;")]
+    public async Task ConvertTupleToStruct_PropertySetterNoRefUse_Succeeds(
+        bool asRecord,
+        int line,
+        string declaration,
+        string use)
+    {
+        var source = CalleeFlowTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("new Point", text, StringComparison.Ordinal);
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs605hQM): user-defined binary / compound
+    // operators and implicit / explicit conversions map storage-bearing operands to
+    // their parameters; dynamically bound operators against a type declaring
+    // user-defined operators refuse conservatively.
+    [SkippableTheory]
+    [InlineData(false, 14, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new Consumer(); var point = (1, 2); var result = consumer + point;")]
+    [InlineData(true, 14, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new Consumer(); var point = (1, 2); var result = consumer + point;")]
+    [InlineData(false, 14, "sealed class Accumulator { public static Accumulator operator +(Accumulator c, object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new Accumulator(); var point = (1, 2); consumer += point;")]
+    [InlineData(true, 14, "sealed class Accumulator { public static Accumulator operator +(Accumulator c, object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new Accumulator(); var point = (1, 2); consumer += point;")]
+    [InlineData(false, 14, "sealed class LateBound { public static LateBound operator +(LateBound c, object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new LateBound(); var point = (1, 2); dynamic boxed = point; var result = consumer + boxed;")]
+    [InlineData(true, 14, "sealed class LateBound { public static LateBound operator +(LateBound c, object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new LateBound(); var point = (1, 2); dynamic boxed = point; var result = consumer + boxed;")]
+    [InlineData(false, 14, "sealed class Wrapper { public static implicit operator Wrapper((int, int) boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return new Wrapper(); } }", "var point = (1, 2); Wrapper wrapper = point;")]
+    [InlineData(true, 14, "sealed class Wrapper { public static implicit operator Wrapper((int, int) boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return new Wrapper(); } }", "var point = (1, 2); Wrapper wrapper = point;")]
+    [InlineData(false, 14, "sealed class Wrapper { public static explicit operator Wrapper((int, int) boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return new Wrapper(); } }", "var point = (1, 2); var wrapper = (Wrapper)point;")]
+    [InlineData(true, 14, "sealed class Wrapper { public static explicit operator Wrapper((int, int) boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return new Wrapper(); } }", "var point = (1, 2); var wrapper = (Wrapper)point;")]
+    public async Task ConvertTupleToStruct_UserDefinedOperatorRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        int line,
+        string declaration,
+        string use)
+    {
+        var source = CalleeFlowTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Companion to PRRT_kwDORD0nYs605hQM: operator / conversion bodies that only read convert.
+    [SkippableTheory]
+    [InlineData(false, 14, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed); return c; } }", "var consumer = new Consumer(); var point = (1, 2); var result = consumer + point;")]
+    [InlineData(true, 14, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed); return c; } }", "var consumer = new Consumer(); var point = (1, 2); var result = consumer + point;")]
+    [InlineData(false, 14, "sealed class Wrapper { public static implicit operator Wrapper((int, int) boxed) { Console.WriteLine(boxed.Item1); return new Wrapper(); } }", "var point = (1, 2); Wrapper wrapper = point;")]
+    [InlineData(true, 14, "sealed class Wrapper { public static implicit operator Wrapper((int, int) boxed) { Console.WriteLine(boxed.Item1); return new Wrapper(); } }", "var point = (1, 2); Wrapper wrapper = point;")]
+    public async Task ConvertTupleToStruct_UserDefinedOperatorNoRefUse_Succeeds(
+        bool asRecord,
+        int line,
+        string declaration,
+        string use)
+    {
+        var source = CalleeFlowTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("new Point", text, StringComparison.Ordinal);
+    }
 }
