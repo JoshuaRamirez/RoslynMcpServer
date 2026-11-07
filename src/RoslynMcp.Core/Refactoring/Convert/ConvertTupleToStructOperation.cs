@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -102,9 +103,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (@params.AsRecord)
             await ValidateRecordStructLanguageVersionAsync(creations, cancellationToken);
 
-        ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
+        // By-ref / init-breaking gates run before member-type availability so a
+        // constrained value-type receiver (T : struct, ICounter) is refused for the
+        // mutating call rather than only for "type parameter not available" (#3347).
         if (@params.AsRecord)
             await ValidateNoInitBreakingElementWritesAsync(creations, members, tupleType, cancellationToken);
+        // Both generated kinds expose properties, so neither supports __makeref
+        // or other field-only uses. Keep the record write gate first for init diagnostics.
+        await ValidateNoByRefElementUsesAsync(creations, members, tupleType, cancellationToken);
+        ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
         var typeDeclaration = CreateNamedStruct(
             lookupName,
             @params.AsRecord,
@@ -363,9 +370,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         ITypeSymbol tupleType,
         CancellationToken cancellationToken)
     {
-        var memberNames = members
-            .Select(m => StripVerbatimPrefix(m.Name))
-            .ToHashSet(StringComparer.Ordinal);
+        var memberNames = BuildElementMemberNames(members);
 
         foreach (var target in creations)
         {
@@ -392,8 +397,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (storage == null)
                 continue;
 
-            var storages = CollectStorageAliases(root, model, storage, cancellationToken);
-            if (HasElementWrite(root, model, storages, memberNames, tupleType))
+            if (await HasStorageElementWriteAsync(
+                    target.Document, root, model, storage, memberNames, tupleType, cancellationToken))
             {
                 throw new RefactoringException(
                     ErrorCodes.CannotConvert,
@@ -402,34 +407,314 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
     }
 
+    /// <summary>
+    /// Named structs emit <c>{ get; set; }</c> properties; reject when a converted
+    /// creation's storage (or alias) later passes a tuple element by <c>ref</c>/<c>out</c>/<c>in</c>,
+    /// takes its address, binds it to a ref local/return (CS0206), or assigns / increments
+    /// a nested location through a value-type element (CS1612 — the property returns a
+    /// temporary). Direct element assignments and increments remain allowed for non-record
+    /// structs (setters work).
+    /// </summary>
+    private static async Task ValidateNoByRefElementUsesAsync(
+        IReadOnlyList<CreationTarget> creations,
+        IReadOnlyList<TupleMember> members,
+        ITypeSymbol tupleType,
+        CancellationToken cancellationToken)
+    {
+        var memberNames = BuildElementMemberNames(members);
+
+        foreach (var target in creations)
+        {
+            var root = await target.Document.GetSyntaxRootAsync(cancellationToken);
+            var model = await target.Document.GetSemanticModelAsync(cancellationToken);
+            if (root == null || model == null)
+                continue;
+
+            var node = root.FindNode(target.Span, getInnermostNodeForTie: true);
+            ExpressionSyntax? creation = null;
+            for (SyntaxNode? cursor = node; cursor != null; cursor = cursor.Parent)
+            {
+                if (cursor is ExpressionSyntax expression && IsRewritableCreationSyntax(expression))
+                {
+                    creation = expression;
+                    break;
+                }
+            }
+
+            if (creation == null)
+                continue;
+
+            var storage = TryGetAssignedStorageSymbol(creation, model, cancellationToken);
+            if (storage == null)
+                continue;
+
+            if (await HasStorageElementByRefUseAsync(
+                    target.Document, root, model, storage, memberNames, tupleType, cancellationToken))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CannotConvert,
+                    $"Cannot convert because '{storage.Name}' has an element passed by reference; the generated struct exposes properties, not fields.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Fields / properties (and other non-local storage) may be used from another
+    /// document of a partial type or from a referencing/dependent project; scan the
+    /// originating project and every project that can already see it (same set as
+    /// <see cref="CollectSameShapeCreationsAsync"/>) for aliases and by-ref uses
+    /// (Codex P1 on #3441). Locals / parameters / range variables stay document-scoped.
+    /// </summary>
+    private static bool RequiresCrossDocumentStorageScan(ISymbol storage) =>
+        storage is IFieldSymbol or IPropertySymbol;
+
+    private static async Task<bool> HasStorageElementByRefUseAsync(
+        Document originatingDocument,
+        SyntaxNode originatingRoot,
+        SemanticModel originatingModel,
+        ISymbol storage,
+        HashSet<string> memberNames,
+        ITypeSymbol tupleType,
+        CancellationToken cancellationToken)
+    {
+        if (!RequiresCrossDocumentStorageScan(storage))
+        {
+            var storages = CollectStorageAliases(
+                originatingRoot, originatingModel, storage, cancellationToken);
+            return HasElementByRefUse(
+                originatingRoot, originatingModel, storages, memberNames, tupleType);
+        }
+
+        var (aliases, documents) = await CollectCrossDocumentStorageAliasesAsync(
+            originatingDocument, storage, cancellationToken);
+        foreach (var (root, model) in documents)
+        {
+            if (HasElementByRefUse(root, model, aliases, memberNames, tupleType))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static async Task<bool> HasStorageElementWriteAsync(
+        Document originatingDocument,
+        SyntaxNode originatingRoot,
+        SemanticModel originatingModel,
+        ISymbol storage,
+        HashSet<string> memberNames,
+        ITypeSymbol tupleType,
+        CancellationToken cancellationToken)
+    {
+        if (!RequiresCrossDocumentStorageScan(storage))
+        {
+            var storages = CollectStorageAliases(
+                originatingRoot, originatingModel, storage, cancellationToken);
+            return HasElementWrite(
+                originatingRoot, originatingModel, storages, memberNames, tupleType);
+        }
+
+        var (aliases, documents) = await CollectCrossDocumentStorageAliasesAsync(
+            originatingDocument, storage, cancellationToken);
+        foreach (var (root, model) in documents)
+        {
+            if (HasElementWrite(root, model, aliases, memberNames, tupleType))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Fixpoint-collects aliases of <paramref name="storage"/> across every document
+    /// in the originating project (partial types / sibling files) and in referencing
+    /// / dependent projects the refactoring already rewrites
+    /// (<see cref="ProjectCanReference"/>), then returns the loaded roots+models for
+    /// by-ref / write checks (Codex P1 on #3441).
+    /// </summary>
+    private static async Task<(HashSet<ISymbol> Aliases, List<(SyntaxNode Root, SemanticModel Model)> Documents)>
+        CollectCrossDocumentStorageAliasesAsync(
+            Document originatingDocument,
+            ISymbol storage,
+            CancellationToken cancellationToken)
+    {
+        var aliases = new HashSet<ISymbol>(SymbolEqualityComparer.Default) { storage };
+        var documents = new List<(SyntaxNode Root, SemanticModel Model)>();
+        var loaded = new List<(SyntaxNode Root, SemanticModel Model)>();
+        var originatingProject = originatingDocument.Project;
+
+        foreach (var project in originatingProject.Solution.Projects)
+        {
+            if (!ProjectCanReference(project, originatingProject))
+                continue;
+
+            foreach (var document in project.Documents)
+            {
+                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+                var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                if (root == null || model == null)
+                    continue;
+                loaded.Add((root, model));
+            }
+        }
+
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            var seed = aliases.ToArray();
+            foreach (var (root, model) in loaded)
+            {
+                foreach (var symbol in seed)
+                {
+                    foreach (var alias in CollectStorageAliases(root, model, symbol, cancellationToken))
+                    {
+                        if (aliases.Add(alias))
+                            changed = true;
+                    }
+                }
+            }
+        }
+
+        documents.AddRange(loaded);
+        return (aliases, documents);
+    }
+
+    /// <summary>
+    /// Resolves the local/parameter/field/property that a convertible creation
+    /// initializes. Walks through nested array/collection/object/anonymous/tuple
+    /// containers so <c>dynamic[] points = { (1, 2) }</c> tracks <c>points</c>
+    /// rather than returning null when the tuple's parent is an initializer
+    /// (Codex P1 on #3441).
+    /// </summary>
     internal static ISymbol? TryGetAssignedStorageSymbol(
         ExpressionSyntax creation,
         SemanticModel semanticModel,
         CancellationToken cancellationToken = default)
     {
         SyntaxNode node = creation;
-        while (node.Parent is ParenthesizedExpressionSyntax parenthesized)
-            node = parenthesized;
-
-        if (node.Parent is EqualsValueClauseSyntax equals)
+        while (true)
         {
-            switch (equals.Parent)
+            while (node.Parent is ParenthesizedExpressionSyntax parenthesized)
+                node = parenthesized;
+
+            // (1, 2)! inside an initializer — climb through null-forgiving.
+            while (node.Parent is PostfixUnaryExpressionSyntax postfix &&
+                   postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression))
             {
-                case VariableDeclaratorSyntax declarator:
-                    return semanticModel.GetDeclaredSymbol(declarator, cancellationToken);
-                case PropertyDeclarationSyntax property:
-                    return semanticModel.GetDeclaredSymbol(property, cancellationToken);
+                node = postfix;
             }
-        }
 
-        if (node.Parent is AssignmentExpressionSyntax assignment &&
-            assignment.Right == node)
-        {
-            return semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
-        }
+            // checked((1, 2)) / unchecked((1, 2)) inside a container.
+            while (node.Parent is CheckedExpressionSyntax checkedExpression)
+                node = checkedExpression;
 
-        return null;
+            if (node.Parent is EqualsValueClauseSyntax equals && equals.Value == node)
+            {
+                switch (equals.Parent)
+                {
+                    case VariableDeclaratorSyntax declarator:
+                        return semanticModel.GetDeclaredSymbol(declarator, cancellationToken);
+                    case PropertyDeclarationSyntax property:
+                        return semanticModel.GetDeclaredSymbol(property, cancellationToken);
+                }
+
+                return null;
+            }
+
+            if (node.Parent is AssignmentExpressionSyntax assignment &&
+                assignment.Right == node)
+            {
+                // Object / with initializers assign a member; keep climbing to the
+                // enclosing storage (new Box { Value = (1, 2) } → box).
+                if (assignment.Parent is InitializerExpressionSyntax)
+                {
+                    node = assignment;
+                    continue;
+                }
+
+                return semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
+            }
+
+            if (!TryClimbAssignedStorageContainer(node, out var container))
+                return null;
+
+            node = container;
+        }
     }
+
+    /// <summary>
+    /// Climbs one nesting level from a nested convertible creation (or an
+    /// intermediate container already climbed into) toward enclosing storage.
+    /// Only walks value-preserving initializer / collection / aggregate wrappers —
+    /// not invocations or other transforming expressions.
+    /// </summary>
+    private static bool TryClimbAssignedStorageContainer(
+        SyntaxNode node,
+        out SyntaxNode container)
+    {
+        container = null!;
+        var parent = node.Parent;
+        if (parent == null)
+            return false;
+
+        // Array / collection / object / complex-element initializers.
+        if (parent is InitializerExpressionSyntax)
+        {
+            container = parent;
+            return true;
+        }
+
+        // new[] { … } / new T[] { … } / stackalloc / new List<> { … } / new { }
+        // that own an initializer we already climbed into.
+        if (node is InitializerExpressionSyntax &&
+            parent is ExpressionSyntax owningExpression &&
+            IsStorageCarryingContainerExpression(owningExpression))
+        {
+            container = owningExpression;
+            return true;
+        }
+
+        // Collection expressions: [(1, 2)] / [..(other), (1, 2)].
+        if (parent is ExpressionElementSyntax { Parent: CollectionExpressionSyntax collection })
+        {
+            container = collection;
+            return true;
+        }
+
+        // Spread elements: [.. points] / [.. new[] { (1, 2) }] (Codex P1 on #3441).
+        if (parent is SpreadElementSyntax { Parent: CollectionExpressionSyntax spreadCollection })
+        {
+            container = spreadCollection;
+            return true;
+        }
+
+        // Nested tuples: ((1, 2), 0) / (Value: (1, 2), Other: 0).
+        if (parent is ArgumentSyntax { Parent: TupleExpressionSyntax tuple })
+        {
+            container = tuple;
+            return true;
+        }
+
+        // Anonymous members: new { Value = (1, 2) }.
+        if (parent is AnonymousObjectMemberDeclaratorSyntax
+            {
+                Parent: AnonymousObjectCreationExpressionSyntax anonymous
+            })
+        {
+            container = anonymous;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsStorageCarryingContainerExpression(ExpressionSyntax expression) =>
+        expression is ImplicitArrayCreationExpressionSyntax
+            or ArrayCreationExpressionSyntax
+            or ImplicitStackAllocArrayCreationExpressionSyntax
+            or StackAllocArrayCreationExpressionSyntax
+            or BaseObjectCreationExpressionSyntax
+            or AnonymousObjectCreationExpressionSyntax;
 
     /// <summary>
     /// Collects <paramref name="storage"/> plus locals/parameters/fields that are
@@ -458,17 +743,183 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     source = init;
                 }
                 else if (node is AssignmentExpressionSyntax assignment &&
-                         assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+                         (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) ||
+                          assignment.IsKind(SyntaxKind.CoalesceAssignmentExpression)))
                 {
+                    // var (copy, _) = (point, 0); / (copy, _) = … / (var copy, var _) = …
+                    // Also copy ??= point (Codex P1 on #3441).
+                    if (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) &&
+                        TryAddDeconstructionAliasesFromAssignment(
+                            assignment.Left,
+                            assignment.Right,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+
+                    // list[0] = point / map[key] = point: the indexed container
+                    // carries converted storage, not just the indexer symbol.
+                    // Also list[0] ??= point for coalesce assignment.
+                    if (UnwrapParenthesesAndNullForgiving(assignment.Left) is ElementAccessExpressionSyntax
+                        {
+                            Expression: { } indexedContainer
+                        } &&
+                        TryAddContainerReceiverAlias(
+                            indexedContainer,
+                            assignment.Right,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+
                     alias = semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
                     source = assignment.Right;
                 }
-                else if (node is ForEachStatementSyntax forEach &&
-                         forEach.Type is RefTypeSyntax)
+                else if (node is ForEachStatementSyntax forEach)
                 {
                     // foreach (ref var p in points.AsSpan()) p.X = 3;
+                    // foreach (var copy in points) Bump(ref copy.X); (Codex P1)
                     alias = semanticModel.GetDeclaredSymbol(forEach, cancellationToken);
                     source = forEach.Expression;
+                }
+                else if (node is ForEachVariableStatementSyntax forEachVariable)
+                {
+                    // foreach (var (copy, _) in new[] { (point, 0) }) Bump(ref copy.X);
+                    // Deconstructing foreach never enters ForEachStatementSyntax (Codex P1).
+                    if (ExpressionReferencesStorageAlias(
+                            forEachVariable.Expression,
+                            aliases,
+                            semanticModel,
+                            cancellationToken) &&
+                        TryAddForeachVariableDesignationAliases(
+                            forEachVariable.Variable,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
+                else if (node is IsPatternExpressionSyntax isPattern)
+                {
+                    // if (point is var copy) / point is { } copy (Codex P1)
+                    if (TryAddPatternDesignationAliases(
+                            isPattern.Pattern,
+                            isPattern.Expression,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
+                else if (node is SwitchExpressionArmSyntax arm &&
+                         arm.Parent is SwitchExpressionSyntax switchExpression)
+                {
+                    if (TryAddPatternDesignationAliases(
+                            arm.Pattern,
+                            switchExpression.GoverningExpression,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
+                else if (node is CasePatternSwitchLabelSyntax caseLabel &&
+                         caseLabel.Parent?.Parent is SwitchStatementSyntax switchStatement)
+                {
+                    if (TryAddPatternDesignationAliases(
+                            caseLabel.Pattern,
+                            switchStatement.Expression,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken))
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
+                else if (node is FromClauseSyntax fromClause)
+                {
+                    // from copy in new[] { point } select Read(ref copy.X) (Codex P1)
+                    alias = semanticModel.GetDeclaredSymbol(fromClause, cancellationToken);
+                    source = fromClause.Expression;
+                }
+                else if (node is LetClauseSyntax letClause)
+                {
+                    // let copy = point (Codex P1)
+                    alias = semanticModel.GetDeclaredSymbol(letClause, cancellationToken);
+                    source = letClause.Expression;
+                }
+                else if (node is JoinClauseSyntax joinClause)
+                {
+                    // join copy in new[] { point } on ... (Codex P1)
+                    alias = semanticModel.GetDeclaredSymbol(joinClause, cancellationToken);
+                    source = joinClause.InExpression;
+                }
+                else if (node is JoinIntoClauseSyntax joinInto &&
+                         joinInto.Parent is JoinClauseSyntax parentJoin)
+                {
+                    // join ... into group (Codex P1)
+                    alias = semanticModel.GetDeclaredSymbol(joinInto, cancellationToken);
+                    source = parentJoin.InExpression;
+                }
+                else if (node is QueryContinuationSyntax continuation &&
+                         continuation.Parent is QueryBodySyntax queryBody)
+                {
+                    // ... select x into copy (Codex P1)
+                    alias = semanticModel.GetDeclaredSymbol(continuation, cancellationToken);
+                    source = queryBody.SelectOrGroup switch
+                    {
+                        SelectClauseSyntax select => select.Expression,
+                        GroupClauseSyntax group => group.GroupExpression,
+                        _ => null
+                    };
+                }
+                else if (node is LocalFunctionStatementSyntax localFunction)
+                {
+                    // (int X, int Y) Get() => point; var copy = Get(); (Codex P1 on #3441)
+                    var localSymbol = semanticModel.GetDeclaredSymbol(localFunction, cancellationToken);
+                    if (localSymbol != null &&
+                        !aliases.Contains(localSymbol) &&
+                        LocalFunctionReturnsConvertedStorage(
+                            localFunction, aliases, semanticModel, cancellationToken))
+                    {
+                        aliases.Add(localSymbol);
+                        changed = true;
+                        continue;
+                    }
+                }
+                else if (node is InvocationExpressionSyntax invocation)
+                {
+                    // Array.ForEach / List<T>.ForEach / Copy(point, out var copy) (Codex P1)
+                    var lambdaAdded = TryAddLambdaParameterAliasesFromInvocation(
+                        invocation, aliases, semanticModel, root, cancellationToken);
+                    var outVarAdded = TryAddOutVarAliasesFromInvocation(
+                        invocation, aliases, semanticModel, root, cancellationToken);
+                    // list.Add(point) / queue.Enqueue(point): the receiver now carries
+                    // converted storage (read back via ToArray/indexer/foreach).
+                    var insertionAdded = TryAddCollectionInsertionReceiverAlias(
+                        invocation, aliases, semanticModel, cancellationToken);
+                    if (lambdaAdded || outVarAdded || insertionAdded)
+                    {
+                        changed = true;
+                        continue;
+                    }
                 }
 
                 if (alias == null || source == null || aliases.Contains(alias))
@@ -476,15 +927,32 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
                 while (true)
                 {
-                    if (source is ParenthesizedExpressionSyntax parenthesized)
-                        source = parenthesized.Expression;
+                    if (TryUnwrapTransparentWrapper(source, out var unwrappedSource))
+                        source = unwrappedSource;
                     else if (source is RefExpressionSyntax refExpression)
                         source = refExpression.Expression;
+                    // Pointer aliases: var p = &point; / p = &point (Codex P1).
+                    else if (source is PrefixUnaryExpressionSyntax addressOf &&
+                             addressOf.IsKind(SyntaxKind.AddressOfExpression))
+                        source = addressOf.Operand;
+                    // Pointer-derived aliases: var q = p + 0 / p - 0 / ++p / p++ /
+                    // (T*)p / (p += 0) (Codex P1 on #3441).
+                    else if (TryUnwrapPointerDerivedSource(source, semanticModel, out var pointerOperand))
+                        source = pointerOperand;
+                    // Built-in identity/boxing casts / as: dynamic copy = point as object (Codex P1).
+                    else if (TryUnwrapValuePreservingCast(
+                                 source, semanticModel, cancellationToken, out var castOperand))
+                        source = castOperand;
                     else
                         break;
                 }
 
-                if (ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken))
+                if (ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken) ||
+                    // var copy = box.Value / (point, 0).Item1 / box!.Inner.Value — member
+                    // reads of aggregates that embed converted storage (Codex P1 on #3441).
+                    (TryResolveAggregateMemberRead(
+                         source, aliases, semanticModel, root, cancellationToken, out var memberSource) &&
+                     ExpressionReferencesStorageAlias(memberSource, aliases, semanticModel, cancellationToken)))
                 {
                     aliases.Add(alias);
                     changed = true;
@@ -496,10 +964,1756 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// <c>list.Add(point)</c> / <c>list.Insert(0, point)</c> / <c>queue.Enqueue(point)</c>:
+    /// marks the receiver as carrying converted storage so reads back through
+    /// <c>ToArray()</c>, indexers, or <c>foreach</c> stay gated (refusal-leaning).
+    /// </summary>
+    private static bool TryAddCollectionInsertionReceiverAlias(
+        InvocationExpressionSyntax invocation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (invocation.Expression is not MemberAccessExpressionSyntax
+            {
+                Name.Identifier.ValueText: "Add" or "AddRange" or "Insert" or "InsertRange"
+                    or "Push" or "Enqueue" or "TryAdd" or "AddFirst" or "AddLast"
+            } memberAccess)
+        {
+            return false;
+        }
+
+        if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method ||
+            (method.ReducedFrom == null && method.IsStatic))
+        {
+            return false;
+        }
+
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
+            var parameter = ResolveInvocationParameter(method, argument, i);
+            if (parameter == null)
+                continue;
+
+            // Only taint when the argument flows into a parameter whose type
+            // embeds converted storage. Dictionary<object, (int X, int Y)>.Add(point, …)
+            // must not mark the receiver via the unrelated object key (Codex P2 on #3441).
+            if (!TypeInvolvesStorageAliasType(parameter.Type, aliases))
+                continue;
+
+            if (TryAddContainerReceiverAlias(
+                    memberAccess.Expression,
+                    argument.Expression,
+                    aliases,
+                    semanticModel,
+                    cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Adds the symbol behind <paramref name="container"/> as an alias when
+    /// <paramref name="value"/> embeds converted storage.
+    /// </summary>
+    private static bool TryAddContainerReceiverAlias(
+        ExpressionSyntax container,
+        ExpressionSyntax value,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        while (TryUnwrapTransparentWrapper(value, out var unwrappedValue))
+            value = unwrappedValue;
+
+        if (!ExpressionReferencesStorageAlias(value, aliases, semanticModel, cancellationToken))
+            return false;
+
+        container = UnwrapParenthesesAndNullForgiving(container);
+        var receiver = semanticModel.GetSymbolInfo(container, cancellationToken).Symbol;
+        if (receiver is not (ILocalSymbol or IParameterSymbol or IFieldSymbol or IPropertySymbol) ||
+            aliases.Contains(receiver))
+        {
+            return false;
+        }
+
+        aliases.Add(receiver);
+        return true;
+    }
+
+    /// <summary>
+    /// Adds aliases for deconstruction destinations on an assignment LHS
+    /// (<c>(copy, _) = (point, 0)</c> or <c>(var copy, var _) = (point, 0)</c>).
+    /// </summary>
+    private static bool TryAddDeconstructionAliasesFromAssignment(
+        ExpressionSyntax left,
+        ExpressionSyntax right,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken)
+    {
+        left = UnwrapParenthesesAndNullForgiving(left);
+
+        if (left is DeclarationExpressionSyntax declaration &&
+            declaration.Designation != null)
+        {
+            return TryAddDeconstructionAliases(
+                declaration.Designation,
+                right,
+                aliases,
+                semanticModel,
+                root,
+                cancellationToken);
+        }
+
+        if (left is TupleExpressionSyntax leftTuple)
+        {
+            if (!TryGetTupleElementExpressions(
+                    right,
+                    leftTuple.Arguments.Count,
+                    semanticModel,
+                    root,
+                    cancellationToken,
+                    out var elementSources) ||
+                elementSources == null)
+            {
+                // (var copy, var other) = Wrap(point) — no literal elements (Codex P1).
+                return TryAddOpaqueDeconstructionSourceAliases(
+                    leftTuple, right, aliases, semanticModel, cancellationToken);
+            }
+
+            var added = false;
+            for (var i = 0; i < leftTuple.Arguments.Count; i++)
+            {
+                var dest = leftTuple.Arguments[i].Expression;
+                var src = elementSources[i];
+
+                if (dest is DeclarationExpressionSyntax nestedDeclaration &&
+                    nestedDeclaration.Designation != null)
+                {
+                    if (TryAddDeconstructionAliases(
+                            nestedDeclaration.Designation,
+                            src,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken))
+                    {
+                        added = true;
+                    }
+
+                    continue;
+                }
+
+                dest = UnwrapParenthesesAndNullForgiving(dest);
+                var destSymbol = semanticModel.GetSymbolInfo(dest, cancellationToken).Symbol;
+                if (destSymbol == null || aliases.Contains(destSymbol))
+                    continue;
+
+                if (ExpressionReferencesStorageAlias(src, aliases, semanticModel, cancellationToken))
+                {
+                    aliases.Add(destSymbol);
+                    added = true;
+                }
+            }
+
+            return added;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Pairs deconstruction destinations with corresponding RHS tuple elements
+    /// so <c>var (copy, _) = (point, 0)</c> tracks <c>copy</c> as a storage alias.
+    /// Also resolves tuple-typed expressions (aliases / locals), not only literal
+    /// <see cref="TupleExpressionSyntax"/> RHS values (Codex P1).
+    /// </summary>
+    private static bool TryAddDeconstructionAliases(
+        VariableDesignationSyntax designation,
+        ExpressionSyntax source,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken)
+    {
+        source = UnwrapParenthesesAndRef(source);
+
+        switch (designation)
+        {
+            case SingleVariableDesignationSyntax single:
+                {
+                    var alias = semanticModel.GetDeclaredSymbol(single, cancellationToken);
+                    if (alias == null || aliases.Contains(alias))
+                        return false;
+
+                    if (!ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken))
+                        return false;
+
+                    aliases.Add(alias);
+                    return true;
+                }
+            case ParenthesizedVariableDesignationSyntax parenthesized:
+                {
+                    if (!TryGetTupleElementExpressions(
+                            source,
+                            parenthesized.Variables.Count,
+                            semanticModel,
+                            root,
+                            cancellationToken,
+                            out var elementSources) ||
+                        elementSources == null)
+                    {
+                        // var (copy, _) = Wrap(point) — generic call result (Codex P1).
+                        return TryAddOpaqueDeconstructionSourceAliases(
+                            parenthesized, source, aliases, semanticModel, cancellationToken);
+                    }
+
+                    var added = false;
+                    for (var i = 0; i < parenthesized.Variables.Count; i++)
+                    {
+                        if (TryAddDeconstructionAliases(
+                                parenthesized.Variables[i],
+                                elementSources[i],
+                                aliases,
+                                semanticModel,
+                                root,
+                                cancellationToken))
+                        {
+                            added = true;
+                        }
+                    }
+
+                    return added;
+                }
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Resolves the per-element expressions of a deconstruction / positional-pattern
+    /// source: a literal tuple, or the tuple initializer of a tuple-typed expression
+    /// (e.g. <c>var wrapped = (point, 0); var (copy, _) = wrapped</c>).
+    /// </summary>
+    private static bool TryGetTupleElementExpressions(
+        ExpressionSyntax source,
+        int expectedCount,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        out ExpressionSyntax[]? elements)
+    {
+        elements = null;
+        source = UnwrapParenthesesAndRef(source);
+
+        if (source is TupleExpressionSyntax tuple)
+        {
+            if (tuple.Arguments.Count != expectedCount)
+                return false;
+
+            elements = new ExpressionSyntax[expectedCount];
+            for (var i = 0; i < expectedCount; i++)
+                elements[i] = tuple.Arguments[i].Expression;
+            return true;
+        }
+
+        var symbol = semanticModel.GetSymbolInfo(source, cancellationToken).Symbol;
+        if (symbol == null)
+            return false;
+
+        if (!TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) ||
+            initializer == null)
+        {
+            return false;
+        }
+
+        // Chained aliases: var a = (point, 0); var b = a; var (copy, _) = b;
+        return TryGetTupleElementExpressions(
+            initializer, expectedCount, semanticModel, root, cancellationToken, out elements);
+    }
+
+    /// <summary>
+    /// Fallback for deconstruction / positional-pattern sources without literal
+    /// tuple elements to pair with — for example a generic call result
+    /// (<c>var (copy, _) = Wrap(point)</c> with
+    /// <c>static (T Value, int Other) Wrap&lt;T&gt;(T value)</c>) or a local
+    /// initialized from one. When <paramref name="source"/> carries converted
+    /// storage, every destination local whose declared type embeds a tracked
+    /// storage type is treated as an alias (conservative — Codex P1 on #3441).
+    /// </summary>
+    private static bool TryAddOpaqueDeconstructionSourceAliases(
+        SyntaxNode destinations,
+        ExpressionSyntax source,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (!ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken))
+            return false;
+
+        var candidates = new List<ISymbol>();
+        foreach (var node in destinations.DescendantNodesAndSelf())
+        {
+            switch (node)
+            {
+                case SingleVariableDesignationSyntax single:
+                    if (semanticModel.GetDeclaredSymbol(single, cancellationToken) is { } declared)
+                        candidates.Add(declared);
+                    break;
+                // (copy, other) = Wrap(point) with pre-declared locals.
+                case ArgumentSyntax { Expression: IdentifierNameSyntax identifier }
+                    when node.Parent is TupleExpressionSyntax:
+                    if (semanticModel.GetSymbolInfo(identifier, cancellationToken).Symbol is
+                    { } assigned and (ILocalSymbol or IParameterSymbol or IFieldSymbol))
+                    {
+                        candidates.Add(assigned);
+                    }
+
+                    break;
+            }
+        }
+
+        var added = false;
+        foreach (var candidate in candidates)
+        {
+            if (aliases.Contains(candidate))
+                continue;
+
+            var type = GetAliasType(candidate);
+            if (type == null || !TypeEmbedsStorageAliasType(type, aliases))
+                continue;
+
+            aliases.Add(candidate);
+            added = true;
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// True when <paramref name="type"/> is or contains (array element, type
+    /// argument, tuple element) the type of a tracked storage alias.
+    /// </summary>
+    private static bool TypeEmbedsStorageAliasType(ITypeSymbol type, HashSet<ISymbol> aliases)
+    {
+        foreach (var alias in aliases)
+        {
+            var aliasType = GetAliasType(alias);
+            if (aliasType != null && TypeContainsOrEquals(type, aliasType))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Adds aliases for pattern designations that copy converted storage
+    /// (<c>if (point is var copy)</c>, <c>point is { } copy</c>, switch arms/cases),
+    /// including nested recursive-pattern designations such as
+    /// <c>new { Value = point } is { Value: var copy }</c>, and list-pattern
+    /// element designations such as <c>points is [var copy]</c> (Codex P1).
+    /// </summary>
+    private static bool TryAddPatternDesignationAliases(
+        PatternSyntax pattern,
+        ExpressionSyntax input,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken)
+    {
+        pattern = UnwrapParenthesizedPattern(pattern);
+
+        switch (pattern)
+        {
+            case VarPatternSyntax varPattern:
+                return TryAddDeconstructionAliases(
+                    varPattern.Designation,
+                    input,
+                    aliases,
+                    semanticModel,
+                    root,
+                    cancellationToken);
+
+            case DeclarationPatternSyntax declarationPattern when
+                declarationPattern.Designation != null:
+                return TryAddDeconstructionAliases(
+                    declarationPattern.Designation,
+                    input,
+                    aliases,
+                    semanticModel,
+                    root,
+                    cancellationToken);
+
+            case RecursivePatternSyntax recursive:
+                {
+                    var added = false;
+
+                    if (recursive.Designation != null &&
+                        TryAddDeconstructionAliases(
+                            recursive.Designation,
+                            input,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken))
+                    {
+                        added = true;
+                    }
+
+                    // Nested property subpatterns: { Value: var copy }
+                    if (recursive.PropertyPatternClause != null)
+                    {
+                        foreach (var subpattern in recursive.PropertyPatternClause.Subpatterns)
+                        {
+                            // { Value: var copy } (NameColon) and extended property
+                            // patterns { Inner.Value: var copy } (ExpressionColon) —
+                            // resolve every member-path component (Codex P1 on #3441).
+                            if (!TryGetPropertySubpatternMemberPath(subpattern, out var memberPath))
+                                continue;
+
+                            ExpressionSyntax? memberInput = input;
+                            foreach (var memberName in memberPath)
+                            {
+                                if (!TryResolvePatternMemberInput(
+                                        memberInput,
+                                        memberName,
+                                        aliases,
+                                        semanticModel,
+                                        root,
+                                        cancellationToken,
+                                        out memberInput) ||
+                                    memberInput == null)
+                                {
+                                    memberInput = null;
+                                    break;
+                                }
+                            }
+
+                            if (memberInput == null)
+                                continue;
+
+                            if (TryAddPatternDesignationAliases(
+                                    subpattern.Pattern,
+                                    memberInput,
+                                    aliases,
+                                    semanticModel,
+                                    root,
+                                    cancellationToken))
+                            {
+                                added = true;
+                            }
+                        }
+                    }
+
+                    // Nested positional subpatterns: (var copy, _)
+                    if (recursive.PositionalPatternClause != null)
+                    {
+                        var subpatterns = recursive.PositionalPatternClause.Subpatterns;
+                        if (TryGetTupleElementExpressions(
+                                input,
+                                subpatterns.Count,
+                                semanticModel,
+                                root,
+                                cancellationToken,
+                                out var elementSources) &&
+                            elementSources != null)
+                        {
+                            for (var i = 0; i < subpatterns.Count; i++)
+                            {
+                                if (TryAddPatternDesignationAliases(
+                                        subpatterns[i].Pattern,
+                                        elementSources[i],
+                                        aliases,
+                                        semanticModel,
+                                        root,
+                                        cancellationToken))
+                                {
+                                    added = true;
+                                }
+                            }
+                        }
+                        else if (TryAddOpaqueDeconstructionSourceAliases(
+                                     recursive.PositionalPatternClause,
+                                     input,
+                                     aliases,
+                                     semanticModel,
+                                     cancellationToken))
+                        {
+                            // Wrap(point) is (var copy, _) — generic call result (Codex P1).
+                            added = true;
+                        }
+                    }
+
+                    return added;
+                }
+
+            case ListPatternSyntax listPattern:
+                return TryAddListPatternDesignationAliases(
+                    listPattern, input, aliases, semanticModel, root, cancellationToken);
+
+            case BinaryPatternSyntax binary:
+                {
+                    var left = TryAddPatternDesignationAliases(
+                        binary.Left, input, aliases, semanticModel, root, cancellationToken);
+                    var right = TryAddPatternDesignationAliases(
+                        binary.Right, input, aliases, semanticModel, root, cancellationToken);
+                    return left || right;
+                }
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Walks list-pattern element designations (<c>points is [var copy]</c>) and
+    /// optional slice subpatterns, pairing elements with container initializers
+    /// when possible (Codex P1).
+    /// </summary>
+    private static bool TryAddListPatternDesignationAliases(
+        ListPatternSyntax listPattern,
+        ExpressionSyntax input,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken)
+    {
+        var added = false;
+
+        if (listPattern.Designation != null &&
+            TryAddDeconstructionAliases(
+                listPattern.Designation,
+                input,
+                aliases,
+                semanticModel,
+                root,
+                cancellationToken))
+        {
+            added = true;
+        }
+
+        var patterns = listPattern.Patterns;
+        var hasSlice = false;
+        foreach (var pattern in patterns)
+        {
+            if (UnwrapParenthesizedPattern(pattern) is SlicePatternSyntax)
+            {
+                hasSlice = true;
+                break;
+            }
+        }
+
+        ExpressionSyntax[]? elementSources = null;
+        var hasElementSources = !hasSlice &&
+            TryGetListPatternElementSources(
+                input,
+                patterns.Count,
+                semanticModel,
+                root,
+                cancellationToken,
+                out elementSources);
+
+        for (var i = 0; i < patterns.Count; i++)
+        {
+            var subpattern = UnwrapParenthesizedPattern(patterns[i]);
+
+            if (subpattern is SlicePatternSyntax slice)
+            {
+                // Slice binds a subsequence of the container; nested pattern
+                // still needs tracking when the container carries converted storage.
+                if (slice.Pattern != null &&
+                    TryAddPatternDesignationAliases(
+                        slice.Pattern,
+                        input,
+                        aliases,
+                        semanticModel,
+                        root,
+                        cancellationToken))
+                {
+                    added = true;
+                }
+
+                continue;
+            }
+
+            var elementInput = hasElementSources && elementSources != null
+                ? elementSources[i]
+                : input;
+
+            if (TryAddPatternDesignationAliases(
+                    patterns[i],
+                    elementInput,
+                    aliases,
+                    semanticModel,
+                    root,
+                    cancellationToken))
+            {
+                added = true;
+            }
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// Resolves per-element expressions for a list pattern from a container
+    /// creation (literal or symbol initializer). Returns false when the pattern
+    /// count does not match the initializer (e.g. slices) so callers can fall
+    /// back to the container expression.
+    /// </summary>
+    private static bool TryGetListPatternElementSources(
+        ExpressionSyntax input,
+        int patternCount,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        out ExpressionSyntax[]? elements)
+    {
+        elements = null;
+        input = UnwrapParenthesesAndRef(input);
+
+        var elementList = EnumerateContainerElementExpressions(input).ToList();
+        if (elementList.Count == 0)
+        {
+            var symbol = semanticModel.GetSymbolInfo(input, cancellationToken).Symbol;
+            if (symbol != null &&
+                TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) &&
+                initializer != null)
+            {
+                elementList = EnumerateContainerElementExpressions(initializer).ToList();
+            }
+        }
+
+        if (elementList.Count == 0 || elementList.Count != patternCount)
+            return false;
+
+        // Slices are counted in patternCount but are not 1:1 with elements.
+        elements = elementList.ToArray();
+        return true;
+    }
+
+    /// <summary>
+    /// When an invocation feeds converted storage into a callback lambda via a
+    /// method or containing-type type parameter (receiver or argument), tracks
+    /// only the lambda parameters whose bound delegate inputs use that type
+    /// parameter — e.g. <c>Array.ForEach(new[] { point }, copy =&gt; Bump(ref copy.X))</c>,
+    /// <c>points.ForEach(copy =&gt; …)</c> on <c>List&lt;T&gt;</c>, and
+    /// <c>other.Zip(points, (n, copy) =&gt; …)</c> (Codex P1), but not an
+    /// unrelated sibling lambda such as <c>Run(point, other =&gt; …)</c> whose
+    /// delegate input stays the original tuple type (Codex P2).
+    /// </summary>
+    private static bool TryAddLambdaParameterAliasesFromInvocation(
+        InvocationExpressionSyntax invocation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken)
+    {
+        if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out var method) ||
+            method == null)
+        {
+            return false;
+        }
+
+        var definingMethod = (method.ReducedFrom ?? method).OriginalDefinition;
+        var extensionOffset = method.ReducedFrom != null ? 1 : 0;
+        var storageTypeParameters = CollectStorageSourcedTypeParametersFromInvocation(
+            invocation, method, definingMethod, extensionOffset, aliases, semanticModel, root, cancellationToken);
+
+        if (storageTypeParameters.Count == 0)
+            return false;
+
+        var added = false;
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
+            var expr = SkipTransparentWrappers(argument.Expression);
+            if (expr is not AnonymousFunctionExpressionSyntax)
+                continue;
+
+            var reducedParameter = ResolveInvocationParameter(method, argument, i);
+            if (reducedParameter == null)
+                continue;
+
+            var definingOrdinal = reducedParameter.Ordinal + extensionOffset;
+            if (definingOrdinal < 0 || definingOrdinal >= definingMethod.Parameters.Length)
+                continue;
+
+            if (TryAddAliasesFromCallbackLambda(
+                    expr,
+                    definingMethod.Parameters[definingOrdinal].Type,
+                    storageTypeParameters,
+                    aliases,
+                    semanticModel,
+                    cancellationToken))
+            {
+                added = true;
+            }
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// When converted storage determines a generic <c>out var</c> type, such as
+    /// <c>Copy(point, out var copy)</c> with <c>Copy&lt;T&gt;(T value, out T copy)</c>,
+    /// tracks the declared <c>out</c> destination as a storage alias (Codex P1).
+    /// </summary>
+    private static bool TryAddOutVarAliasesFromInvocation(
+        InvocationExpressionSyntax invocation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken)
+    {
+        if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out var method) ||
+            method == null)
+        {
+            return false;
+        }
+
+        var definingMethod = (method.ReducedFrom ?? method).OriginalDefinition;
+        var extensionOffset = method.ReducedFrom != null ? 1 : 0;
+        var storageTypeParameters = CollectStorageSourcedTypeParametersFromInvocation(
+            invocation, method, definingMethod, extensionOffset, aliases, semanticModel, root, cancellationToken);
+
+        if (storageTypeParameters.Count == 0)
+            return false;
+
+        var added = false;
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
+            if (!argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword))
+                continue;
+
+            var expr = SkipTransparentWrappers(argument.Expression);
+            if (expr is not DeclarationExpressionSyntax { Designation: { } designation })
+                continue;
+
+            var reducedParameter = ResolveInvocationParameter(method, argument, i);
+            if (reducedParameter == null)
+                continue;
+
+            var definingOrdinal = reducedParameter.Ordinal + extensionOffset;
+            if (definingOrdinal < 0 || definingOrdinal >= definingMethod.Parameters.Length)
+                continue;
+
+            if (!TypeContainsAnyMethodTypeParameter(
+                    definingMethod.Parameters[definingOrdinal].Type,
+                    storageTypeParameters))
+            {
+                continue;
+            }
+
+            if (TryAddDesignationAlias(designation, aliases, semanticModel, cancellationToken))
+                added = true;
+        }
+
+        return added;
+    }
+
+    private static bool TryResolveInvocationMethod(
+        InvocationExpressionSyntax invocation,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out IMethodSymbol? method)
+    {
+        var symbolInfo = semanticModel.GetSymbolInfo(invocation, cancellationToken);
+        method = symbolInfo.Symbol as IMethodSymbol;
+        if (method == null &&
+            symbolInfo.CandidateSymbols.Length == 1)
+        {
+            method = symbolInfo.CandidateSymbols[0] as IMethodSymbol;
+        }
+
+        return method != null;
+    }
+
+    /// <summary>
+    /// Collects method / containing-type type parameters sourced by converted
+    /// storage on an invocation: storage-carrying arguments, reduced extension
+    /// receivers, and constructed generic instance receivers such as
+    /// <c>List&lt;T&gt;.ForEach</c> (Codex P1).
+    /// </summary>
+    private static HashSet<ITypeParameterSymbol> CollectStorageSourcedTypeParametersFromInvocation(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol method,
+        IMethodSymbol definingMethod,
+        int extensionOffset,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken)
+    {
+        var storageTypeParameters = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+
+        if (extensionOffset == 1 &&
+            invocation.Expression is MemberAccessExpressionSyntax extensionReceiver &&
+            definingMethod.Parameters.Length > 0 &&
+            ExpressionReferencesStorageAlias(
+                extensionReceiver.Expression, aliases, semanticModel, cancellationToken))
+        {
+            CollectMethodTypeParameters(definingMethod.Parameters[0].Type, storageTypeParameters);
+        }
+
+        // Instance method on a constructed generic whose receiver carries storage
+        // (e.g. List&lt;T&gt;.ForEach) — map containing-type parameters (Codex P1).
+        if (method.ReducedFrom == null &&
+            invocation.Expression is MemberAccessExpressionSyntax instanceReceiver &&
+            method.ContainingType is { IsGenericType: true } containingType &&
+            ExpressionReferencesStorageAlias(
+                instanceReceiver.Expression, aliases, semanticModel, cancellationToken))
+        {
+            CollectStorageSourcedContainingTypeParameters(
+                containingType,
+                instanceReceiver.Expression,
+                aliases,
+                semanticModel,
+                root,
+                storageTypeParameters,
+                cancellationToken);
+        }
+
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
+            var expr = SkipTransparentWrappers(argument.Expression);
+            if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
+                continue;
+
+            var reducedParameter = ResolveInvocationParameter(method, argument, i);
+            if (reducedParameter == null)
+                continue;
+
+            var definingOrdinal = reducedParameter.Ordinal + extensionOffset;
+            if (definingOrdinal < 0 || definingOrdinal >= definingMethod.Parameters.Length)
+                continue;
+
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            CollectMethodTypeParameters(
+                definingMethod.Parameters[definingOrdinal].Type,
+                storageTypeParameters);
+        }
+
+        return storageTypeParameters;
+    }
+
+    /// <summary>
+    /// Adds containing-type type parameters whose constructed type arguments
+    /// involve a tracked storage alias type (e.g. <c>T</c> from
+    /// <c>List&lt;(int X, int Y)&gt;</c> when <c>point</c>/<c>points</c> is tracked).
+    /// Prefers factory provenance so <c>Runner&lt;T, (int X, int Y)&gt; Make&lt;T&gt;(T)</c>
+    /// only marks <c>T</c>, not the unrelated second type argument (Codex P2 on #3441).
+    /// </summary>
+    private static void CollectStorageSourcedContainingTypeParameters(
+        INamedTypeSymbol constructedContainingType,
+        ExpressionSyntax receiverExpression,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        HashSet<ITypeParameterSymbol> into,
+        CancellationToken cancellationToken)
+    {
+        if (TryCollectStorageSourcedContainingTypeParametersFromProvenance(
+                receiverExpression,
+                constructedContainingType,
+                aliases,
+                semanticModel,
+                root,
+                into,
+                cancellationToken))
+        {
+            return;
+        }
+
+        var original = constructedContainingType.OriginalDefinition;
+        var typeArguments = constructedContainingType.TypeArguments;
+        var limit = Math.Min(typeArguments.Length, original.TypeParameters.Length);
+        for (var i = 0; i < limit; i++)
+        {
+            if (TypeArgumentEmbedsStorageAliasType(typeArguments[i], aliases))
+                into.Add(original.TypeParameters[i]);
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="typeArgument"/> equals or embeds an element-shaped
+    /// storage alias type. Skips composite carrier aliases (<c>List&lt;T&gt;</c>,
+    /// <c>Runner&lt;T,U&gt;</c>) so reverse containment cannot mark sibling type
+    /// parameters (Codex P2 on #3441).
+    /// </summary>
+    private static bool TypeArgumentEmbedsStorageAliasType(ITypeSymbol typeArgument, HashSet<ISymbol> aliases)
+    {
+        foreach (var alias in aliases)
+        {
+            var aliasType = GetAliasType(alias);
+            if (aliasType == null)
+                continue;
+
+            // Composite carriers: matching via TypeContainsOrEquals(carrier, typeArg)
+            // would mark every type argument of Runner&lt;T,U&gt;. Element aliases
+            // (the original tuple / direct copies) still match.
+            if (aliasType is INamedTypeSymbol { IsGenericType: true, IsTupleType: false })
+                continue;
+
+            if (SymbolEqualityComparer.Default.Equals(typeArgument, aliasType) ||
+                TypeContainsOrEquals(typeArgument, aliasType))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// When a tracked receiver was produced by a generic factory that only embeds
+    /// storage in some return-type arguments (e.g. <c>Runner&lt;T, (int X, int Y)&gt;
+    /// Make&lt;T&gt;(T value)</c>), collects only those containing-type type parameters
+    /// derived from the storage-bearing factory parameter (Codex P2 on #3441).
+    /// </summary>
+    private static bool TryCollectStorageSourcedContainingTypeParametersFromProvenance(
+        ExpressionSyntax receiverExpression,
+        INamedTypeSymbol constructedContainingType,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        HashSet<ITypeParameterSymbol> into,
+        CancellationToken cancellationToken)
+    {
+        var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        var current = UnwrapParenthesesAndNullForgiving(receiverExpression);
+
+        while (true)
+        {
+            if (TryCollectContainingTypeParametersFromFactoryInvocation(
+                    current,
+                    constructedContainingType,
+                    aliases,
+                    semanticModel,
+                    into,
+                    cancellationToken))
+            {
+                return true;
+            }
+
+            var symbol = semanticModel.GetSymbolInfo(current, cancellationToken).Symbol;
+            if (symbol == null || !visited.Add(symbol))
+                return false;
+
+            if (!TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) ||
+                initializer == null)
+            {
+                return false;
+            }
+
+            current = UnwrapParenthesesAndNullForgiving(initializer);
+        }
+    }
+
+    /// <summary>
+    /// Maps storage-sourced method type parameters through a factory return type
+    /// onto the constructed containing type's type parameters.
+    /// </summary>
+    private static bool TryCollectContainingTypeParametersFromFactoryInvocation(
+        ExpressionSyntax expression,
+        INamedTypeSymbol constructedContainingType,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        HashSet<ITypeParameterSymbol> into,
+        CancellationToken cancellationToken)
+    {
+        expression = UnwrapParenthesesAndNullForgiving(expression);
+        if (expression is not InvocationExpressionSyntax invocation)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method)
+            return false;
+
+        var definingMethod = (method.ReducedFrom ?? method).OriginalDefinition;
+        if (definingMethod.ReturnType is not INamedTypeSymbol originalReturn)
+            return false;
+
+        if (!SymbolEqualityComparer.Default.Equals(
+                originalReturn.OriginalDefinition,
+                constructedContainingType.OriginalDefinition))
+        {
+            return false;
+        }
+
+        var storageMethodTypeParameters = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+        var extensionOffset = method.ReducedFrom != null ? 1 : 0;
+
+        if (extensionOffset == 1 &&
+            invocation.Expression is MemberAccessExpressionSyntax extensionReceiver &&
+            definingMethod.Parameters.Length > 0 &&
+            ExpressionReferencesStorageAlias(
+                extensionReceiver.Expression, aliases, semanticModel, cancellationToken))
+        {
+            CollectMethodTypeParameters(definingMethod.Parameters[0].Type, storageMethodTypeParameters);
+        }
+
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            var reducedParameter = ResolveInvocationParameter(method, argument, i);
+            if (reducedParameter == null)
+                continue;
+
+            var definingOrdinal = reducedParameter.Ordinal + extensionOffset;
+            if (definingOrdinal < 0 || definingOrdinal >= definingMethod.Parameters.Length)
+                continue;
+
+            CollectMethodTypeParameters(
+                definingMethod.Parameters[definingOrdinal].Type,
+                storageMethodTypeParameters);
+        }
+
+        if (storageMethodTypeParameters.Count == 0)
+            return false;
+
+        var constructedOriginal = constructedContainingType.OriginalDefinition;
+        var limit = Math.Min(originalReturn.TypeArguments.Length, constructedOriginal.TypeParameters.Length);
+        var added = false;
+        for (var i = 0; i < limit; i++)
+        {
+            if (!TypeContainsAnyMethodTypeParameter(
+                    originalReturn.TypeArguments[i], storageMethodTypeParameters))
+            {
+                continue;
+            }
+
+            into.Add(constructedOriginal.TypeParameters[i]);
+            added = true;
+        }
+
+        return added;
+    }
+
+    private static bool TypeInvolvesStorageAliasType(ITypeSymbol type, HashSet<ISymbol> aliases)
+    {
+        foreach (var alias in aliases)
+        {
+            var aliasType = GetAliasType(alias);
+            if (aliasType == null)
+                continue;
+
+            if (SymbolEqualityComparer.Default.Equals(type, aliasType) ||
+                TypeContainsOrEquals(aliasType, type) ||
+                TypeContainsOrEquals(type, aliasType))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static ITypeSymbol? GetAliasType(ISymbol alias) => alias switch
+    {
+        ILocalSymbol local => local.Type,
+        IParameterSymbol parameter => parameter.Type,
+        IFieldSymbol field => field.Type,
+        IPropertySymbol property => property.Type,
+        IEventSymbol eventSymbol => eventSymbol.Type,
+        _ => null
+    };
+
+    private static bool TypeContainsOrEquals(ITypeSymbol type, ITypeSymbol target)
+    {
+        if (SymbolEqualityComparer.Default.Equals(type, target))
+            return true;
+
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                return TypeContainsOrEquals(array.ElementType, target);
+            case INamedTypeSymbol named:
+                foreach (var argument in named.TypeArguments)
+                {
+                    if (TypeContainsOrEquals(argument, target))
+                        return true;
+                }
+
+                if (named.IsTupleType)
+                {
+                    foreach (var element in named.TupleElements)
+                    {
+                        if (TypeContainsOrEquals(element.Type, target))
+                            return true;
+                    }
+                }
+
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Adds foreach-deconstruction designations whose declared type involves
+    /// tracked storage (<c>foreach (var (copy, _) in …)</c>) when the enumerated
+    /// expression already carries converted storage (Codex P1).
+    /// </summary>
+    private static bool TryAddForeachVariableDesignationAliases(
+        ExpressionSyntax variable,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        variable = UnwrapParenthesesAndNullForgiving(variable);
+
+        if (variable is DeclarationExpressionSyntax { Designation: { } designation })
+        {
+            return TryAddStorageInvolvingDesignationAliases(
+                designation, aliases, semanticModel, cancellationToken);
+        }
+
+        // foreach ((var copy, var _) in …) — tuple of declaration expressions
+        if (variable is TupleExpressionSyntax tuple)
+        {
+            var added = false;
+            foreach (var argument in tuple.Arguments)
+            {
+                if (TryAddForeachVariableDesignationAliases(
+                        argument.Expression, aliases, semanticModel, cancellationToken))
+                {
+                    added = true;
+                }
+            }
+
+            return added;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Walks a designation tree and records locals whose type involves tracked
+    /// storage (skips discards and unrelated <c>int</c> partners).
+    /// </summary>
+    private static bool TryAddStorageInvolvingDesignationAliases(
+        VariableDesignationSyntax designation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        switch (designation)
+        {
+            case SingleVariableDesignationSyntax single:
+                {
+                    var alias = semanticModel.GetDeclaredSymbol(single, cancellationToken);
+                    if (alias == null || aliases.Contains(alias))
+                        return false;
+
+                    var type = GetAliasType(alias);
+                    if (type == null || !TypeInvolvesStorageAliasType(type, aliases))
+                        return false;
+
+                    aliases.Add(alias);
+                    return true;
+                }
+            case ParenthesizedVariableDesignationSyntax parenthesized:
+                {
+                    var added = false;
+                    foreach (var nested in parenthesized.Variables)
+                    {
+                        if (TryAddStorageInvolvingDesignationAliases(
+                                nested, aliases, semanticModel, cancellationToken))
+                        {
+                            added = true;
+                        }
+                    }
+
+                    return added;
+                }
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// True when a query's final <c>select</c>/<c>group</c> projection (after
+    /// any <c>into</c> continuations) yields converted storage.
+    /// </summary>
+    private static bool QueryProjectionYieldsConvertedStorage(
+        QueryExpressionSyntax queryExpression,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var body = queryExpression.Body;
+        while (body.Continuation != null)
+            body = body.Continuation.Body;
+
+        return body.SelectOrGroup switch
+        {
+            SelectClauseSyntax select => ExpressionReferencesStorageAlias(
+                select.Expression, aliases, semanticModel, cancellationToken),
+            GroupClauseSyntax group => ExpressionReferencesStorageAlias(
+                group.GroupExpression, aliases, semanticModel, cancellationToken),
+            _ => false
+        };
+    }
+
+    private static bool TryAddDesignationAlias(
+        VariableDesignationSyntax designation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        switch (designation)
+        {
+            case SingleVariableDesignationSyntax single:
+                {
+                    var alias = semanticModel.GetDeclaredSymbol(single, cancellationToken);
+                    if (alias == null || aliases.Contains(alias))
+                        return false;
+
+                    aliases.Add(alias);
+                    return true;
+                }
+            case ParenthesizedVariableDesignationSyntax parenthesized:
+                {
+                    var added = false;
+                    foreach (var nested in parenthesized.Variables)
+                    {
+                        if (TryAddDesignationAlias(nested, aliases, semanticModel, cancellationToken))
+                            added = true;
+                    }
+
+                    return added;
+                }
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryAddAliasesFromCallbackLambda(
+        ExpressionSyntax expression,
+        ITypeSymbol delegateParameterType,
+        HashSet<ITypeParameterSymbol> storageTypeParameters,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (delegateParameterType is not INamedTypeSymbol { DelegateInvokeMethod: { } invoke })
+            return false;
+
+        IReadOnlyList<ParameterSyntax>? parameters = expression switch
+        {
+            SimpleLambdaExpressionSyntax simple => new[] { simple.Parameter },
+            ParenthesizedLambdaExpressionSyntax parenthesized => parenthesized.ParameterList.Parameters,
+            AnonymousMethodExpressionSyntax { ParameterList: { } list } => list.Parameters,
+            _ => null
+        };
+
+        if (parameters == null || parameters.Count == 0)
+            return false;
+
+        var added = false;
+        var limit = Math.Min(parameters.Count, invoke.Parameters.Length);
+        for (var i = 0; i < limit; i++)
+        {
+            if (!TypeContainsAnyMethodTypeParameter(invoke.Parameters[i].Type, storageTypeParameters))
+                continue;
+
+            var alias = semanticModel.GetDeclaredSymbol(parameters[i], cancellationToken);
+            if (alias == null || aliases.Contains(alias))
+                continue;
+
+            aliases.Add(alias);
+            added = true;
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// Collects method type parameters appearing in <paramref name="type"/>
+    /// (e.g. <c>T</c> from <c>IEnumerable&lt;T&gt;</c> / <c>T[]</c> / <c>Action&lt;T&gt;</c>).
+    /// </summary>
+    private static void CollectMethodTypeParameters(
+        ITypeSymbol type,
+        HashSet<ITypeParameterSymbol> into)
+    {
+        switch (type)
+        {
+            case ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } typeParameter:
+                into.Add(typeParameter);
+                break;
+            case IArrayTypeSymbol array:
+                CollectMethodTypeParameters(array.ElementType, into);
+                break;
+            case INamedTypeSymbol named:
+                foreach (var argument in named.TypeArguments)
+                    CollectMethodTypeParameters(argument, into);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="type"/> mentions any of
+    /// <paramref name="typeParameters"/>.
+    /// </summary>
+    private static bool TypeContainsAnyMethodTypeParameter(
+        ITypeSymbol type,
+        HashSet<ITypeParameterSymbol> typeParameters)
+    {
+        switch (type)
+        {
+            case ITypeParameterSymbol typeParameter:
+                return typeParameters.Contains(typeParameter);
+            case IArrayTypeSymbol array:
+                return TypeContainsAnyMethodTypeParameter(array.ElementType, typeParameters);
+            case INamedTypeSymbol named:
+                foreach (var argument in named.TypeArguments)
+                {
+                    if (TypeContainsAnyMethodTypeParameter(argument, typeParameters))
+                        return true;
+                }
+
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Resolves the expression that a recursive property subpattern binds against
+    /// (e.g. <c>Value</c> in <c>new { Value = point } is { Value: var copy }</c>).
+    /// </summary>
+    private static bool TryResolvePatternMemberInput(
+        ExpressionSyntax input,
+        string memberName,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        out ExpressionSyntax? memberInput)
+    {
+        memberInput = null;
+        input = UnwrapParenthesesAndRef(input);
+
+        if (TryGetNamedMemberInitializer(input, memberName, semanticModel, out memberInput) &&
+            memberInput != null)
+        {
+            return true;
+        }
+
+        var symbol = semanticModel.GetSymbolInfo(input, cancellationToken).Symbol;
+        if (symbol != null &&
+            TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) &&
+            initializer != null)
+        {
+            return TryResolvePatternMemberInput(
+                initializer,
+                memberName,
+                aliases,
+                semanticModel,
+                root,
+                cancellationToken,
+                out memberInput);
+        }
+
+        foreach (var creation in EnumerateAggregateCreations(input, aliases, semanticModel, root))
+        {
+            if (TryGetNamedMemberInitializer(creation, memberName, semanticModel, out memberInput) &&
+                memberInput != null)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves a (possibly chained) member read such as <c>box.Inner.Value</c>
+    /// or <c>(point, 0).Item1</c> to the aggregate initializer expression it
+    /// reads, following anonymous-object / tuple creations and local initializers.
+    /// </summary>
+    private static bool TryResolveAggregateMemberRead(
+        ExpressionSyntax expression,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        [NotNullWhen(true)] out ExpressionSyntax? memberSource)
+    {
+        memberSource = null;
+        expression = SkipTransparentWrappers(expression);
+
+        // box?.Value / box?.Inner.Value — same aggregate provenance as ordinary member
+        // access (Codex P1 on #3441, PRRT_kwDORD0nYs602M2n).
+        if (expression is ConditionalAccessExpressionSyntax conditionalAccess)
+        {
+            return TryResolveAggregateMemberReadFromConditionalWhenNotNull(
+                conditionalAccess.Expression,
+                SkipTransparentWrappers(conditionalAccess.WhenNotNull),
+                aliases,
+                semanticModel,
+                root,
+                cancellationToken,
+                out memberSource);
+        }
+
+        if (expression is not MemberAccessExpressionSyntax memberAccess ||
+            !memberAccess.IsKind(SyntaxKind.SimpleMemberAccessExpression))
+        {
+            return false;
+        }
+
+        var receiver = SkipTransparentWrappers(memberAccess.Expression);
+        if (TryResolveAggregateMemberRead(
+                receiver, aliases, semanticModel, root, cancellationToken, out var resolvedReceiver))
+        {
+            receiver = resolvedReceiver;
+        }
+
+        if (!TryResolvePatternMemberInput(
+                receiver,
+                memberAccess.Name.Identifier.ValueText,
+                aliases,
+                semanticModel,
+                root,
+                cancellationToken,
+                out var resolved) ||
+            resolved == null)
+        {
+            return false;
+        }
+
+        memberSource = resolved;
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves a null-conditional member chain (<c>box?.Value</c> /
+    /// <c>box?.Inner.Value</c>) to the aggregate initializer expression it reads.
+    /// </summary>
+    private static bool TryResolveAggregateMemberReadFromConditionalWhenNotNull(
+        ExpressionSyntax receiver,
+        ExpressionSyntax whenNotNull,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        [NotNullWhen(true)] out ExpressionSyntax? memberSource)
+    {
+        memberSource = null;
+        whenNotNull = SkipTransparentWrappers(whenNotNull);
+
+        switch (whenNotNull)
+        {
+            case MemberBindingExpressionSyntax memberBinding:
+                {
+                    receiver = SkipTransparentWrappers(receiver);
+                    if (TryResolveAggregateMemberRead(
+                            receiver, aliases, semanticModel, root, cancellationToken, out var resolvedReceiver))
+                    {
+                        receiver = resolvedReceiver;
+                    }
+
+                    if (!TryResolvePatternMemberInput(
+                            receiver,
+                            memberBinding.Name.Identifier.ValueText,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken,
+                            out var resolved) ||
+                        resolved == null)
+                    {
+                        return false;
+                    }
+
+                    memberSource = resolved;
+                    return true;
+                }
+            case MemberAccessExpressionSyntax memberAccess when
+                memberAccess.IsKind(SyntaxKind.SimpleMemberAccessExpression):
+                {
+                    // box?.Inner.Value — resolve the binding prefix, then the final member.
+                    if (!TryResolveAggregateMemberReadFromConditionalWhenNotNull(
+                            receiver,
+                            memberAccess.Expression,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken,
+                            out var mid) ||
+                        mid == null)
+                    {
+                        return false;
+                    }
+
+                    if (!TryResolvePatternMemberInput(
+                            mid,
+                            memberAccess.Name.Identifier.ValueText,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken,
+                            out var resolved) ||
+                        resolved == null)
+                    {
+                        return false;
+                    }
+
+                    memberSource = resolved;
+                    return true;
+                }
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Member-name path a property subpattern binds against: <c>Value</c> for
+    /// <c>{ Value: p }</c>, <c>Inner, Value</c> for the extended property pattern
+    /// <c>{ Inner.Value: p }</c> (Codex P1 on #3441).
+    /// </summary>
+    private static bool TryGetPropertySubpatternMemberPath(
+        SubpatternSyntax subpattern,
+        out IReadOnlyList<string> memberPath)
+    {
+        if (subpattern.NameColon != null)
+        {
+            memberPath = [subpattern.NameColon.Name.Identifier.ValueText];
+            return true;
+        }
+
+        var names = new List<string>();
+        if (subpattern.ExpressionColon != null &&
+            TryCollectMemberPath(subpattern.ExpressionColon.Expression, names))
+        {
+            memberPath = names;
+            return true;
+        }
+
+        memberPath = [];
+        return false;
+    }
+
+    private static bool TryCollectMemberPath(ExpressionSyntax expression, List<string> names)
+    {
+        switch (expression)
+        {
+            case IdentifierNameSyntax identifier:
+                names.Add(identifier.Identifier.ValueText);
+                return true;
+            case MemberAccessExpressionSyntax memberAccess when
+                memberAccess.IsKind(SyntaxKind.SimpleMemberAccessExpression):
+                if (!TryCollectMemberPath(memberAccess.Expression, names))
+                    return false;
+                names.Add(memberAccess.Name.Identifier.ValueText);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Strips one value-transparent wrapper: parentheses, null-forgiving
+    /// <c>x!</c>, <c>checked(x)</c> / <c>unchecked(x)</c>, struct <c>with</c>
+    /// expressions (<c>point with { Y = 3 }</c> — receiver is the storage source),
+    /// and simple assignment expressions used as values (<c>(tmp = point)</c>)
+    /// (Codex P1 on #3441).
+    /// </summary>
+    private static bool TryUnwrapTransparentWrapper(ExpressionSyntax expression, out ExpressionSyntax inner)
+    {
+        switch (expression)
+        {
+            case ParenthesizedExpressionSyntax parenthesized:
+                inner = parenthesized.Expression;
+                return true;
+            case PostfixUnaryExpressionSyntax postfix when
+                postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                inner = postfix.Operand;
+                return true;
+            case CheckedExpressionSyntax checkedExpression:
+                inner = checkedExpression.Expression;
+                return true;
+            // var copy = point with { Y = 3 }; — with creates a modified copy of the
+            // receiver; track the receiver as the storage source (Codex P1).
+            case WithExpressionSyntax withExpression:
+                inner = withExpression.Expression;
+                return true;
+            // var copy = (tmp = point); — assignment-as-value yields the RHS.
+            case AssignmentExpressionSyntax assignment when
+                assignment.IsKind(SyntaxKind.SimpleAssignmentExpression):
+                inner = assignment.Right;
+                return true;
+            default:
+                inner = expression;
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Unwraps one built-in identity or boxing cast / <c>as</c> (e.g. <c>(dynamic)point</c> /
+    /// <c>(object)point</c> / <c>point as object</c>). User-defined conversions are not
+    /// followed so a custom conversion cannot invent a false alias (Codex P1 on #3441).
+    /// </summary>
+    private static bool TryUnwrapValuePreservingCast(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out ExpressionSyntax operand)
+    {
+        operand = expression;
+
+        ExpressionSyntax? candidate = null;
+        if (expression is CastExpressionSyntax cast)
+            candidate = cast.Expression;
+        else if (expression is BinaryExpressionSyntax asExpression &&
+                 asExpression.IsKind(SyntaxKind.AsExpression))
+            candidate = asExpression.Left;
+        else
+            return false;
+
+        var conversion = semanticModel.GetConversion(expression, cancellationToken);
+        if (!conversion.IsIdentity && !conversion.IsBoxing)
+            return false;
+
+        operand = candidate;
+        return true;
+    }
+
+    /// <summary>
+    /// Unwraps one pointer-derived alias source to its pointer operand:
+    /// <c>p + 0</c> / <c>p - 0</c>, <c>++p</c> / <c>p++</c> / <c>--p</c> / <c>p--</c>,
+    /// pointer casts <c>(T*)p</c>, and compound <c>p += n</c> / <c>p -= n</c>
+    /// (Codex P1 on #3441). Address-of is handled separately.
+    /// </summary>
+    private static bool TryUnwrapPointerDerivedSource(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        out ExpressionSyntax pointerOperand)
+    {
+        switch (expression)
+        {
+            case BinaryExpressionSyntax binary when
+                binary.IsKind(SyntaxKind.AddExpression) ||
+                binary.IsKind(SyntaxKind.SubtractExpression):
+                if (IsPointerTyped(binary.Left, semanticModel))
+                {
+                    pointerOperand = binary.Left;
+                    return true;
+                }
+
+                if (IsPointerTyped(binary.Right, semanticModel))
+                {
+                    pointerOperand = binary.Right;
+                    return true;
+                }
+
+                break;
+
+            case PrefixUnaryExpressionSyntax prefix when
+                prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+                prefix.IsKind(SyntaxKind.PreDecrementExpression):
+                if (IsPointerTyped(prefix.Operand, semanticModel))
+                {
+                    pointerOperand = prefix.Operand;
+                    return true;
+                }
+
+                break;
+
+            case PostfixUnaryExpressionSyntax postfix when
+                postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+                postfix.IsKind(SyntaxKind.PostDecrementExpression):
+                if (IsPointerTyped(postfix.Operand, semanticModel))
+                {
+                    pointerOperand = postfix.Operand;
+                    return true;
+                }
+
+                break;
+
+            case CastExpressionSyntax cast:
+                // (T*)p / (void*)p — follow when the operand or result is a pointer.
+                if (IsPointerTyped(cast.Expression, semanticModel) ||
+                    semanticModel.GetTypeInfo(cast).Type is IPointerTypeSymbol)
+                {
+                    pointerOperand = cast.Expression;
+                    return true;
+                }
+
+                break;
+
+            case AssignmentExpressionSyntax assignment when
+                assignment.IsKind(SyntaxKind.AddAssignmentExpression) ||
+                assignment.IsKind(SyntaxKind.SubtractAssignmentExpression):
+                if (IsPointerTyped(assignment.Left, semanticModel))
+                {
+                    pointerOperand = assignment.Left;
+                    return true;
+                }
+
+                break;
+        }
+
+        pointerOperand = expression;
+        return false;
+    }
+
+    private static bool IsPointerTyped(ExpressionSyntax expression, SemanticModel semanticModel) =>
+        semanticModel.GetTypeInfo(expression).Type is IPointerTypeSymbol;
+
+    private static ExpressionSyntax SkipTransparentWrappers(ExpressionSyntax expression)
+    {
+        while (TryUnwrapTransparentWrapper(expression, out var inner))
+            expression = inner;
+        return expression;
+    }
+
+    private static PatternSyntax UnwrapParenthesizedPattern(PatternSyntax pattern)
+    {
+        while (pattern is ParenthesizedPatternSyntax parenthesized)
+            pattern = parenthesized.Pattern;
+        return pattern;
+    }
+
+    private static ExpressionSyntax UnwrapParenthesesAndRef(ExpressionSyntax expression)
+    {
+        while (true)
+        {
+            if (TryUnwrapTransparentWrapper(expression, out var inner))
+                expression = inner;
+            else if (expression is RefExpressionSyntax refExpression)
+                expression = refExpression.Expression;
+            else
+                return expression;
+        }
+    }
+
+    /// <summary>
     /// True when <paramref name="expression"/> is (or is a conditional /
-    /// switch / identity-like generic invocation / array-or-collection
-    /// creation / container element read / container-forwarding call that
-    /// forwards) a reference to a known storage alias.
+    /// null-coalescing / switch / identity-like generic invocation / array-or-collection
+    /// creation / container element read / container-forwarding call /
+    /// storage-returning-delegate selector that forwards) a reference to a known
+    /// storage alias.
     /// </summary>
     internal static bool ExpressionReferencesStorageAlias(
         ExpressionSyntax expression,
@@ -509,10 +2723,27 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         while (true)
         {
-            if (expression is ParenthesizedExpressionSyntax parenthesized)
-                expression = parenthesized.Expression;
+            // Parentheses, null-forgiving point!, checked(point) (Codex P1 on #3441).
+            if (TryUnwrapTransparentWrapper(expression, out var inner))
+                expression = inner;
             else if (expression is RefExpressionSyntax refExpression)
                 expression = refExpression.Expression;
+            // Pointer indirection (*p).X — follow back to the tracked pointer alias
+            // (Codex P1 on #3441). p->X already hits ReceiverYieldsConvertedStorage's
+            // IPointerTypeSymbol path; (*p) has no symbol of its own.
+            else if (expression is PrefixUnaryExpressionSyntax indirection &&
+                     indirection.IsKind(SyntaxKind.PointerIndirectionExpression))
+                expression = indirection.Operand;
+            // Pointer address-of / arithmetic / cast / ++/-- / compound += (Codex P1).
+            else if (expression is PrefixUnaryExpressionSyntax addressOf &&
+                     addressOf.IsKind(SyntaxKind.AddressOfExpression))
+                expression = addressOf.Operand;
+            else if (TryUnwrapPointerDerivedSource(expression, semanticModel, out var pointerOperand))
+                expression = pointerOperand;
+            // Built-in identity/boxing casts / as: (dynamic)point / point as object (Codex P1).
+            else if (TryUnwrapValuePreservingCast(
+                         expression, semanticModel, cancellationToken, out var castOperand))
+                expression = castOperand;
             else
                 break;
         }
@@ -528,6 +2759,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         {
             return ExpressionReferencesStorageAlias(conditional.WhenTrue, aliases, semanticModel, cancellationToken)
                 || ExpressionReferencesStorageAlias(conditional.WhenFalse, aliases, semanticModel, cancellationToken);
+        }
+
+        // Null-coalescing: var copy = maybe ?? point (Codex P1 on #3441).
+        if (expression is BinaryExpressionSyntax coalesce &&
+            coalesce.IsKind(SyntaxKind.CoalesceExpression))
+        {
+            return ExpressionReferencesStorageAlias(coalesce.Left, aliases, semanticModel, cancellationToken)
+                || ExpressionReferencesStorageAlias(coalesce.Right, aliases, semanticModel, cancellationToken);
         }
 
         if (expression is SwitchExpressionSyntax switchExpression)
@@ -565,8 +2804,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     // imply aliasing when the converter synthesizes fresh values.
                     if (RequiresIdentityConverterToForward(method))
                     {
-                        if (IsIdentitySelectInvocation(invocation, method) ||
-                            IsIdentityConvertAllInvocation(invocation, method))
+                        if (IsIdentitySelectInvocation(invocation, method, semanticModel, cancellationToken) ||
+                            IsIdentityConvertAllInvocation(invocation, method, semanticModel, cancellationToken) ||
+                            IsStorageReturningDelegateSelectorInvocation(invocation, method, semanticModel, cancellationToken))
                             return true;
                         continue;
                     }
@@ -589,7 +2829,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     return true;
 
                 // Task.FromResult(point) / similar: argument is T, return is G<T>.
-                if (MethodReturnWrapsElementAsConstructedGeneric(method, parameter))
+                if (MethodReturnWrapsElementAsConstructedGeneric(method, parameter, aliases))
+                    return true;
+
+                // Opaque MakeGetter(point) / factory(point) whose return is a
+                // storage-returning delegate (Func<T> / nested Func<Func<T>>) —
+                // including non-generic signatures MethodReturnWrapsElementAsConstructedGeneric
+                // misses (Codex P1 on #3441).
+                if (MethodReturnWrapsElementAsStorageReturningDelegate(method, parameter))
                     return true;
             }
 
@@ -602,13 +2849,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 (MethodReturnForwardsContainer(
                      method,
                      semanticModel.GetTypeInfo(memberAccess.Expression, cancellationToken).Type) ||
-                 IsIdentitySelectInvocation(invocation, method)))
+                 MethodReturnExtractsReceiverStorage(method, aliases) ||
+                 IsIdentitySelectInvocation(invocation, method, semanticModel, cancellationToken) ||
+                 IsStorageReturningDelegateSelectorInvocation(invocation, method, semanticModel, cancellationToken)))
             {
                 return true;
             }
 
             // points.Select(x => x) — TSource/TResult differ but selector forwards.
-            if (IsIdentitySelectInvocation(invocation, method))
+            // Also points.Select(x => () => x) — selector returns a storage-returning
+            // delegate carrier (Codex P1 on #3441).
+            if (IsIdentitySelectInvocation(invocation, method, semanticModel, cancellationToken) ||
+                IsStorageReturningDelegateSelectorInvocation(invocation, method, semanticModel, cancellationToken))
             {
                 if (invocation.Expression is MemberAccessExpressionSyntax receiverAccess &&
                     ExpressionReferencesStorageAlias(
@@ -626,10 +2878,32 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         return true;
                 }
             }
+
+            // Invoking a tracked delegate / local function that returns converted storage
+            // (var get = () => point; var copy = get();) (Codex P1 on #3441).
+            if (!method.ReturnsVoid &&
+                ExpressionReferencesStorageAlias(
+                    invocation.Expression, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
+
+            // Explicit .Invoke on a tracked delegate: get.Invoke() (Codex P1 on #3441).
+            if (!method.ReturnsVoid &&
+                invocation.Expression is MemberAccessExpressionSyntax
+                {
+                    Name.Identifier.ValueText: "Invoke"
+                } invokeAccess &&
+                ExpressionReferencesStorageAlias(
+                    invokeAccess.Expression, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
         }
 
         // Array / collection creations that embed an alias so
         // var points = new[] { point }; points[0].X = 3; tracks points.
+        // Also stackalloc[] { point } / stackalloc T[n] { point } (Codex P1 on #3441).
         if (expression is ImplicitArrayCreationExpressionSyntax implicitArray &&
             implicitArray.Initializer != null)
         {
@@ -650,12 +2924,100 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
+        if (expression is ImplicitStackAllocArrayCreationExpressionSyntax implicitStackAlloc &&
+            implicitStackAlloc.Initializer != null)
+        {
+            foreach (var element in implicitStackAlloc.Initializer.Expressions)
+            {
+                if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
+        }
+
+        if (expression is StackAllocArrayCreationExpressionSyntax stackAlloc &&
+            stackAlloc.Initializer != null)
+        {
+            foreach (var element in stackAlloc.Initializer.Expressions)
+            {
+                if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
+        }
+
+        // A declaration such as (int X, int Y)[] points = { point } has a
+        // bare array initializer, not an ArrayCreationExpressionSyntax. Track
+        // its elements just like explicit new T[] and inferred new[] arrays.
+        if (expression is InitializerExpressionSyntax arrayInitializer &&
+            arrayInitializer.IsKind(SyntaxKind.ArrayInitializerExpression))
+        {
+            foreach (var element in arrayInitializer.Expressions)
+            {
+                if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
+        }
+
         if (expression is CollectionExpressionSyntax collection)
         {
-            foreach (var element in collection.Elements.OfType<ExpressionElementSyntax>())
+            foreach (var element in collection.Elements)
             {
-                if (ExpressionReferencesStorageAlias(element.Expression, aliases, semanticModel, cancellationToken))
+                // Expression elements: [point] / [point, other]
+                // Spread elements: [.. points] — otherwise copies = [.. points] skips
+                // the carrier and later dynamic ref bindings miss the gate (Codex P1).
+                ExpressionSyntax? elementExpression = element switch
+                {
+                    ExpressionElementSyntax expressionElement => expressionElement.Expression,
+                    SpreadElementSyntax spreadElement => spreadElement.Expression,
+                    _ => null
+                };
+                if (elementExpression != null &&
+                    ExpressionReferencesStorageAlias(elementExpression, aliases, semanticModel, cancellationToken))
+                {
                     return true;
+                }
+            }
+        }
+
+        // Explicit collection containers also carry converted values. Their generic
+        // element type may stay a tuple, but by-ref callbacks must still refuse
+        // before replacing the initializer value with an incompatible struct.
+        if (expression is BaseObjectCreationExpressionSyntax { Initializer: { } initializer } &&
+            initializer.IsKind(SyntaxKind.CollectionInitializerExpression))
+        {
+            foreach (var element in initializer.Expressions)
+            {
+                // Bind each entry to the collection initializer's Add method and only
+                // count parts flowing into parameters whose type embeds converted
+                // storage — { { point, value } } into Dictionary<object, V> only puts
+                // point in the object key (Codex P2 on #3441, PRRT_kwDORD0nYs600gmf).
+                // Mirrors TryAddCollectionInsertionReceiverAlias for explicit Add calls.
+                var addMethod = semanticModel.GetCollectionInitializerSymbolInfo(element, cancellationToken).Symbol
+                    as IMethodSymbol;
+
+                // new Dictionary<K, V> { { key, point } }: complex element initializers.
+                if (element is InitializerExpressionSyntax complexElement &&
+                    complexElement.IsKind(SyntaxKind.ComplexElementInitializerExpression))
+                {
+                    for (var i = 0; i < complexElement.Expressions.Count; i++)
+                    {
+                        if (!CollectionInitializerPartMayCarryStorage(addMethod, i, aliases))
+                            continue;
+
+                        if (ExpressionReferencesStorageAlias(
+                                complexElement.Expressions[i], aliases, semanticModel, cancellationToken))
+                        {
+                            return true;
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (CollectionInitializerPartMayCarryStorage(addMethod, 0, aliases) &&
+                    ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                {
+                    return true;
+                }
             }
         }
 
@@ -672,6 +3034,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
+        // Nested anonymous-object containers: var box = new { Value = point };
+        if (expression is AnonymousObjectCreationExpressionSyntax anonymousObject)
+        {
+            foreach (var member in anonymousObject.Initializers)
+            {
+                if (ExpressionReferencesStorageAlias(
+                        member.Expression, aliases, semanticModel, cancellationToken))
+                {
+                    return true;
+                }
+            }
+        }
+
         // Reads from tracked containers: var copy = points[0]; copy.X = 3;
         if (expression is ElementAccessExpressionSyntax elementAccess)
         {
@@ -679,8 +3054,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 elementAccess.Expression, aliases, semanticModel, cancellationToken);
         }
 
-        // Forwarding properties only (memory.Span). Do not treat every member
-        // of an alias-containing aggregate as an alias (wrapped.Fresh) — Codex P2.
+        // Forwarding members only. Do not treat every member of an
+        // alias-containing aggregate as an alias (wrapped.Fresh) — Codex P2.
         if (expression is MemberAccessExpressionSyntax nestedAccess)
         {
             var memberName = nestedAccess.Name.Identifier.ValueText;
@@ -689,6 +3064,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 return ExpressionReferencesStorageAlias(
                     nestedAccess.Expression, aliases, semanticModel, cancellationToken);
+            }
+
+            // Generic wrapper unwrap: Box<T>.Value where T matches tracked storage
+            // (Codex P1 on #3441). Tuples/anonymous carriers use the creation walk.
+            if (MemberAccessUnwrapsStorageTypeArgument(
+                    nestedAccess, aliases, semanticModel, cancellationToken) &&
+                ExpressionReferencesStorageAlias(
+                    nestedAccess.Expression, aliases, semanticModel, cancellationToken))
+            {
+                return true;
             }
         }
 
@@ -699,7 +3084,151 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 awaitExpression.Expression, aliases, semanticModel, cancellationToken);
         }
 
+        // Query results: var query = from x in new[] { point } select x;
+        // so foreach (var copy in query) tracks query as carrying converted storage
+        // (Codex P1). Range variables themselves are collected via FromClause/etc.
+        if (expression is QueryExpressionSyntax queryExpression)
+        {
+            return QueryProjectionYieldsConvertedStorage(
+                queryExpression, aliases, semanticModel, cancellationToken);
+        }
+
+        // Inferred delegates whose return yields converted storage:
+        // var get = () => point; (Codex P1 on #3441).
+        if (expression is AnonymousFunctionExpressionSyntax anonymousFunction)
+        {
+            return AnonymousFunctionReturnsConvertedStorage(
+                anonymousFunction, aliases, semanticModel, cancellationToken);
+        }
+
+        // Null-conditional member/element bindings: box?.Value / points?[0]
+        // (Codex P1 on #3441, PRRT_kwDORD0nYs602M2n).
+        if (expression is ConditionalAccessExpressionSyntax conditionalAccess)
+        {
+            return ConditionalAccessReferencesStorageAlias(
+                conditionalAccess, aliases, semanticModel, cancellationToken);
+        }
+
         return false;
+    }
+
+    /// <summary>
+    /// True when a null-conditional expression forwards converted storage the same
+    /// way the equivalent ordinary member/element/invocation access would
+    /// (<c>box?.Value</c>, <c>points?[0]</c>, <c>box?.Get()</c>).
+    /// </summary>
+    private static bool ConditionalAccessReferencesStorageAlias(
+        ConditionalAccessExpressionSyntax conditionalAccess,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        ExpressionReferencesStorageThroughConditionalWhenNotNull(
+            conditionalAccess.Expression,
+            conditionalAccess.WhenNotNull,
+            conditionalAccess,
+            aliases,
+            semanticModel,
+            cancellationToken);
+
+    /// <summary>
+    /// Walks the <c>WhenNotNull</c> side of a null-conditional chain as if each
+    /// member/element binding were an ordinary access rooted at <paramref name="receiver"/>.
+    /// </summary>
+    private static bool ExpressionReferencesStorageThroughConditionalWhenNotNull(
+        ExpressionSyntax receiver,
+        ExpressionSyntax whenNotNull,
+        ExpressionSyntax conditionalRoot,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        whenNotNull = SkipTransparentWrappers(whenNotNull);
+
+        switch (whenNotNull)
+        {
+            case MemberBindingExpressionSyntax memberBinding:
+                {
+                    var memberName = memberBinding.Name.Identifier.ValueText;
+                    if (memberName is "Span" or "Memory" or "Result")
+                    {
+                        return ExpressionReferencesStorageAlias(
+                            receiver, aliases, semanticModel, cancellationToken);
+                    }
+
+                    // box?.Value — same wrapper-member provenance as box.Value.
+                    return MemberAccessUnwrapsStorageTypeArgument(
+                               conditionalRoot,
+                               receiver,
+                               memberBinding.Name,
+                               aliases,
+                               semanticModel,
+                               cancellationToken) &&
+                           ExpressionReferencesStorageAlias(
+                               receiver, aliases, semanticModel, cancellationToken);
+                }
+            case ElementBindingExpressionSyntax:
+                // points?[0]
+                return ExpressionReferencesStorageAlias(
+                    receiver, aliases, semanticModel, cancellationToken);
+            case MemberAccessExpressionSyntax memberAccess when
+                memberAccess.IsKind(SyntaxKind.SimpleMemberAccessExpression):
+                {
+                    // box?.Inner.Value
+                    if (!ExpressionReferencesStorageThroughConditionalWhenNotNull(
+                            receiver,
+                            memberAccess.Expression,
+                            conditionalRoot,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    var memberName = memberAccess.Name.Identifier.ValueText;
+                    if (memberName is "Span" or "Memory" or "Result")
+                        return true;
+
+                    return MemberAccessUnwrapsStorageTypeArgument(
+                        memberAccess,
+                        memberAccess.Expression,
+                        memberAccess.Name,
+                        aliases,
+                        semanticModel,
+                        cancellationToken);
+                }
+            case ElementAccessExpressionSyntax elementAccess:
+                // box?.Values[0]
+                return ExpressionReferencesStorageThroughConditionalWhenNotNull(
+                    receiver,
+                    elementAccess.Expression,
+                    conditionalRoot,
+                    aliases,
+                    semanticModel,
+                    cancellationToken);
+            case InvocationExpressionSyntax invocation:
+                {
+                    // box?.Get() / box?.Unwrap() — extract storage from the conditional receiver.
+                    if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method ||
+                        method.ReturnsVoid)
+                    {
+                        return false;
+                    }
+
+                    if (!ExpressionReferencesStorageAlias(
+                            receiver, aliases, semanticModel, cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    return MethodReturnExtractsReceiverStorage(method, aliases) ||
+                           MethodReturnForwardsContainer(
+                               method,
+                               semanticModel.GetTypeInfo(receiver, cancellationToken).Type);
+                }
+            default:
+                return false;
+        }
     }
 
     /// <summary>
@@ -771,27 +3300,253 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// True when collection-initializer part <paramref name="index"/> binds to an
+    /// <c>Add</c> parameter whose type embeds converted storage. Refusal-leaning:
+    /// unresolved Add methods, params arrays, and out-of-range parts count.
+    /// </summary>
+    private static bool CollectionInitializerPartMayCarryStorage(
+        IMethodSymbol? addMethod,
+        int index,
+        HashSet<ISymbol> aliases)
+    {
+        if (addMethod == null)
+            return true;
+
+        var parameters = addMethod.Parameters;
+        if (parameters.Length == 0)
+            return true;
+
+        IParameterSymbol parameter;
+        if (index < parameters.Length)
+        {
+            parameter = parameters[index];
+        }
+        else if (parameters[^1].IsParams)
+        {
+            parameter = parameters[^1];
+        }
+        else
+        {
+            return true;
+        }
+
+        if (parameter.IsParams)
+            return true;
+
+        return TypeInvolvesStorageAliasType(parameter.Type, aliases);
+    }
+
+    /// <summary>
+    /// True when <paramref name="memberAccess"/> yields a constructed type argument
+    /// of its receiver that matches tracked storage (e.g. <c>Box&lt;T&gt;.Value</c>
+    /// where <c>T</c> is the converted tuple). Skips tuple/anonymous carriers, which
+    /// use the aggregate-creation walk instead (including invocation returns that
+    /// embed <c>T</c> — see <see cref="EnumerateInvocationForwardedMemberArguments"/>).
+    /// </summary>
+    private static bool MemberAccessUnwrapsStorageTypeArgument(
+        MemberAccessExpressionSyntax memberAccess,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        MemberAccessUnwrapsStorageTypeArgument(
+            memberAccess,
+            memberAccess.Expression,
+            memberAccess.Name,
+            aliases,
+            semanticModel,
+            cancellationToken);
+
+    /// <summary>
+    /// Shared unwrap check for ordinary member access and null-conditional member
+    /// bindings (<c>box?.Value</c>) — <paramref name="memberExpression"/> supplies
+    /// the member type (the conditional access node when lifted), while
+    /// <paramref name="receiverExpression"/> / <paramref name="memberName"/> supply
+    /// the receiver type and member symbol (Codex P1 on #3441).
+    /// </summary>
+    private static bool MemberAccessUnwrapsStorageTypeArgument(
+        ExpressionSyntax memberExpression,
+        ExpressionSyntax receiverExpression,
+        SimpleNameSyntax memberName,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var memberType = semanticModel.GetTypeInfo(memberExpression, cancellationToken).Type;
+        if (memberType == null || !TypeInvolvesStorageAliasType(memberType, aliases))
+            return false;
+
+        var receiverType = semanticModel.GetTypeInfo(receiverExpression, cancellationToken).Type;
+        if (receiverType is not INamedTypeSymbol { IsTupleType: false, IsAnonymousType: false } named ||
+            named.TypeArguments.Length == 0)
+        {
+            return false;
+        }
+
+        // Fields/properties: only members whose original declared type mentions a
+        // containing-type parameter bound to storage forward it. Box<T>.Other declared
+        // as (int X, int Y) merely shares the constructed shape (Codex P2 on #3441,
+        // PRRT_kwDORD0nYs600gme). Other member kinds keep the constructed-type check.
+        var member = semanticModel.GetSymbolInfo(memberName, cancellationToken).Symbol
+            ?? semanticModel.GetSymbolInfo(memberExpression, cancellationToken).Symbol;
+        if (member is IFieldSymbol or IPropertySymbol)
+            return MemberOriginalTypeForwardsStorageTypeArgument(member, memberType);
+
+        foreach (var argument in named.TypeArguments)
+        {
+            // Direct unwrap: Box<T>.Value where memberType == T.
+            // Nested: Box<T>.Values where memberType is T[] (or other nesting) —
+            // exact equality rejects forwarding; TypeContainsOrEquals recognizes
+            // the receiver type argument inside the member type (Codex P1).
+            if (SymbolEqualityComparer.Default.Equals(argument, memberType) ||
+                TypeContainsOrEquals(memberType, argument))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when the original definition of field/property <paramref name="member"/>
+    /// declares its type in terms of a containing-type parameter (including outer
+    /// and base types) whose constructed argument appears in <paramref name="memberType"/>.
+    /// </summary>
+    private static bool MemberOriginalTypeForwardsStorageTypeArgument(
+        ISymbol member,
+        ITypeSymbol memberType)
+    {
+        var originalType = member.OriginalDefinition switch
+        {
+            IFieldSymbol field => field.Type,
+            IPropertySymbol property => property.Type,
+            _ => null
+        };
+        if (originalType == null)
+            return true;
+
+        for (var containing = member.ContainingType; containing != null; containing = containing.ContainingType)
+        {
+            var typeParameters = containing.OriginalDefinition.TypeParameters;
+            var typeArguments = containing.TypeArguments;
+            for (var i = 0; i < typeParameters.Length && i < typeArguments.Length; i++)
+            {
+                if (TypeContainsOrEquals(originalType, typeParameters[i]) &&
+                    TypeContainsOrEquals(memberType, typeArguments[i]))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// True when <paramref name="parameter"/> is type parameter <c>T</c> and the
-    /// method returns a constructed generic whose sole type argument is <c>T</c>
-    /// (e.g. <c>Task.FromResult&lt;T&gt;</c>).
+    /// method return type contains <c>T</c> — sole-arg wrappers
+    /// (<c>Task.FromResult&lt;T&gt;</c>), multi-arg generics, or tuple returns that
+    /// embed <c>T</c> (e.g. <c>(T Value, int Other) Pair&lt;T&gt;(T value)</c>).
     /// </summary>
     private static bool MethodReturnWrapsElementAsConstructedGeneric(
         IMethodSymbol method,
-        IParameterSymbol parameter)
+        IParameterSymbol parameter,
+        HashSet<ISymbol> aliases)
     {
         var original = (method.ReducedFrom ?? method).OriginalDefinition;
-        if (parameter.Ordinal < 0 || parameter.Ordinal >= original.Parameters.Length)
+        // Reduced extension calls (5.With(point)) bind arguments to the reduced
+        // parameter list; the original definition carries the receiver at 0.
+        var ordinal = parameter.Ordinal + (method.ReducedFrom != null ? 1 : 0);
+        if (ordinal < 0 || ordinal >= original.Parameters.Length)
             return false;
 
-        if (original.Parameters[parameter.Ordinal].Type is not ITypeParameterSymbol elementTypeParameter)
-            return false;
+        var originalParameterType = original.Parameters[ordinal].Type;
+        if (originalParameterType is ITypeParameterSymbol elementTypeParameter)
+        {
+            // Recurse into multi-arg generics / nested / tuple returns rather than
+            // requiring Arity: 1 (Codex P1 on #3441).
+            return TypeContainsOrEquals(original.ReturnType, elementTypeParameter);
+        }
 
-        if (original.ReturnType is not INamedTypeSymbol { Arity: 1 } namedReturn)
-            return false;
+        // Inverse flow: storage nested in a parameter type (Box<T> / Pair<K, V>)
+        // and extracted by the return type (T Unwrap<T>(Box<T>)) — only the
+        // type parameters actually bound to converted storage count, so
+        // extracting an unrelated wrapper type argument does not alias
+        // (Codex P1 on #3441).
+        var sourced = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+        CollectStorageBoundTypeParameters(originalParameterType, parameter.Type, aliases, sourced);
+        return sourced.Count > 0 && TypeContainsAnyMethodTypeParameter(original.ReturnType, sourced);
+    }
 
-        return SymbolEqualityComparer.Default.Equals(
-            namedReturn.TypeArguments[0],
-            elementTypeParameter);
+    /// <summary>
+    /// True when an extension or instance call on a storage-carrying receiver
+    /// returns a type parameter bound to converted storage — e.g.
+    /// <c>box.Unwrap()</c> with <c>T Unwrap&lt;T&gt;(this Box&lt;T&gt;)</c> or
+    /// <c>box.Get()</c> on <c>Box&lt;T&gt;</c> (Codex P1 on #3441).
+    /// </summary>
+    private static bool MethodReturnExtractsReceiverStorage(
+        IMethodSymbol method,
+        HashSet<ISymbol> aliases)
+    {
+        var sourced = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+        ITypeSymbol originalReturnType;
+
+        if (method.ReducedFrom != null)
+        {
+            var original = method.ReducedFrom.OriginalDefinition;
+            if (original.Parameters.Length == 0 || method.ReceiverType == null)
+                return false;
+
+            CollectStorageBoundTypeParameters(
+                original.Parameters[0].Type, method.ReceiverType, aliases, sourced);
+            originalReturnType = original.ReturnType;
+        }
+        else if (!method.IsStatic && method.ContainingType is { IsGenericType: true } containingType)
+        {
+            CollectStorageBoundTypeParameters(
+                containingType.OriginalDefinition, containingType, aliases, sourced);
+            originalReturnType = method.OriginalDefinition.ReturnType;
+        }
+        else
+        {
+            return false;
+        }
+
+        return sourced.Count > 0 && TypeContainsAnyMethodTypeParameter(originalReturnType, sourced);
+    }
+
+    /// <summary>
+    /// Walks an original (open) type alongside its constructed form and collects
+    /// the type parameters whose constructed type argument embeds a tracked
+    /// storage alias type (e.g. <c>T</c> from <c>Box&lt;T&gt;</c> /
+    /// <c>Box&lt;(int X, int Y)&gt;</c>).
+    /// </summary>
+    private static void CollectStorageBoundTypeParameters(
+        ITypeSymbol originalType,
+        ITypeSymbol constructedType,
+        HashSet<ISymbol> aliases,
+        HashSet<ITypeParameterSymbol> into)
+    {
+        switch (originalType)
+        {
+            case ITypeParameterSymbol typeParameter:
+                if (TypeArgumentEmbedsStorageAliasType(constructedType, aliases))
+                    into.Add(typeParameter);
+                break;
+            case IArrayTypeSymbol originalArray when constructedType is IArrayTypeSymbol constructedArray:
+                CollectStorageBoundTypeParameters(
+                    originalArray.ElementType, constructedArray.ElementType, aliases, into);
+                break;
+            case INamedTypeSymbol originalNamed when constructedType is INamedTypeSymbol constructedNamed &&
+                                                     originalNamed.TypeArguments.Length == constructedNamed.TypeArguments.Length:
+                for (var i = 0; i < originalNamed.TypeArguments.Length; i++)
+                {
+                    CollectStorageBoundTypeParameters(
+                        originalNamed.TypeArguments[i], constructedNamed.TypeArguments[i], aliases, into);
+                }
+
+                break;
+        }
     }
 
     /// <summary>
@@ -801,10 +3556,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     private static bool MethodReturnWrapsElementAsSequence(IMethodSymbol method, IParameterSymbol parameter)
     {
         var original = (method.ReducedFrom ?? method).OriginalDefinition;
-        if (parameter.Ordinal < 0 || parameter.Ordinal >= original.Parameters.Length)
+        var ordinal = parameter.Ordinal + (method.ReducedFrom != null ? 1 : 0);
+        if (ordinal < 0 || ordinal >= original.Parameters.Length)
             return false;
 
-        if (original.Parameters[parameter.Ordinal].Type is not ITypeParameterSymbol elementTypeParameter)
+        if (original.Parameters[ordinal].Type is not ITypeParameterSymbol elementTypeParameter)
             return false;
 
         var returnElement = TryGetSequenceElementType(original.ReturnType);
@@ -832,6 +3588,17 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 break;
         }
 
+        // Instance copies on the container itself: List<T>.ToArray() /
+        // ImmutableArray<T>.ToBuilder() — the source element is the containing
+        // type's own sequence element type parameter.
+        if (originalSourceElement == null &&
+            method.ReducedFrom == null &&
+            !original.IsStatic &&
+            original.ContainingType is { } containingType)
+        {
+            originalSourceElement = TryGetSequenceElementType(containingType);
+        }
+
         if (originalSourceElement is not ITypeParameterSymbol sourceTypeParameter)
             return false;
 
@@ -851,7 +3618,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// True for <c>Select</c>/<c>SelectMany</c> whose selector is a simple identity
     /// (<c>x =&gt; x</c>), so <c>points.Select(x =&gt; x).ToArray()</c> still aliases.
     /// </summary>
-    private static bool IsIdentitySelectInvocation(InvocationExpressionSyntax invocation, IMethodSymbol method)
+    private static bool IsIdentitySelectInvocation(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol method,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
         if (name is not ("Select" or "SelectMany"))
@@ -860,7 +3631,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var lambdaIdentity = new List<bool>();
         foreach (var argument in invocation.ArgumentList.Arguments)
         {
-            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            var expr = SkipTransparentWrappers(argument.Expression);
 
             if (expr is SimpleLambdaExpressionSyntax simple)
             {
@@ -889,7 +3660,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 }
 
                 lambdaIdentity.Add(identity);
+                continue;
             }
+
+            // Method-group selectors: points.Select(Echo) (Codex P1 on #3441).
+            var groupForwards = MethodGroupSelectorForwardsElement(
+                expr, considerLastParameter: name == "SelectMany", semanticModel, cancellationToken);
+            if (groupForwards.HasValue)
+                lambdaIdentity.Add(groupForwards.Value);
         }
 
         // Select: any identity selector. SelectMany: every lambda must be identity
@@ -913,7 +3691,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return name is "ConvertAll" or "Select" or "SelectMany";
     }
 
-    private static bool IsIdentityConvertAllInvocation(InvocationExpressionSyntax invocation, IMethodSymbol method)
+    private static bool IsIdentityConvertAllInvocation(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol method,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
         if (name is not "ConvertAll")
@@ -921,7 +3703,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         foreach (var argument in invocation.ArgumentList.Arguments)
         {
-            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
+            var expr = SkipTransparentWrappers(argument.Expression);
 
             if (expr is SimpleLambdaExpressionSyntax simple &&
                 IsIdentityLambdaBody(simple.ExpressionBody, simple.Block, simple.Parameter.Identifier.ValueText))
@@ -934,31 +3716,461 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     paren.Block,
                     paren.ParameterList.Parameters[0].Identifier.ValueText))
                 return true;
+
+            // Method-group converters: Array.ConvertAll(points, Echo) (Codex P1 on #3441).
+            if (MethodGroupSelectorForwardsElement(
+                    expr, considerLastParameter: false, semanticModel, cancellationToken) == true)
+                return true;
         }
 
         return false;
     }
+
+    /// <summary>
+    /// For a selector argument that is a method group (<c>points.Select(Echo)</c>),
+    /// returns whether the referenced method forwards its element parameter's
+    /// storage: a generic return that mentions the element parameter's type
+    /// parameters (<c>T Echo&lt;T&gt;(T)</c>, <c>Func&lt;T&gt; MakeGetter&lt;T&gt;(T)</c>),
+    /// a non-generic source body that returns the parameter, or a non-generic
+    /// storage-returning delegate. Returns <see langword="null"/> when the
+    /// argument is not a method group (Codex P1 on #3441).
+    /// </summary>
+    private static bool? MethodGroupSelectorForwardsElement(
+        ExpressionSyntax expression,
+        bool considerLastParameter,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (expression is not (SimpleNameSyntax or MemberAccessExpressionSyntax))
+            return null;
+
+        var symbolInfo = semanticModel.GetSymbolInfo(expression, cancellationToken);
+        var group = symbolInfo.Symbol as IMethodSymbol;
+        if (group == null && symbolInfo.CandidateSymbols.Length == 1)
+            group = symbolInfo.CandidateSymbols[0] as IMethodSymbol;
+
+        if (group == null)
+            return null;
+
+        var original = (group.ReducedFrom ?? group).OriginalDefinition;
+        var extensionOffset = group.ReducedFrom != null ? 1 : 0;
+        if (original.Parameters.Length <= extensionOffset || original.ReturnsVoid)
+            return false;
+
+        var candidates = new List<int> { extensionOffset };
+        if (considerLastParameter && original.Parameters.Length - 1 > extensionOffset)
+            candidates.Add(original.Parameters.Length - 1);
+
+        foreach (var ordinal in candidates)
+        {
+            var elementParameter = original.Parameters[ordinal];
+            var typeParameters = new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+            CollectMethodTypeParameters(elementParameter.Type, typeParameters);
+            if (typeParameters.Count > 0 &&
+                TypeContainsAnyMethodTypeParameter(original.ReturnType, typeParameters))
+            {
+                return true;
+            }
+
+            if (IsStorageReturningDelegateType(original.ReturnType, elementParameter.Type))
+                return true;
+
+            foreach (var reference in original.DeclaringSyntaxReferences)
+            {
+                var (expressionBody, block) = reference.GetSyntax(cancellationToken) switch
+                {
+                    MethodDeclarationSyntax declaration => (declaration.ExpressionBody?.Expression, declaration.Body),
+                    LocalFunctionStatementSyntax local => (local.ExpressionBody?.Expression, local.Body),
+                    _ => ((ExpressionSyntax?)null, (BlockSyntax?)null)
+                };
+
+                if ((expressionBody != null || block != null) &&
+                    IsIdentityLambdaBody(expressionBody, block, elementParameter.Name))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True for <c>Select</c>/<c>SelectMany</c>/<c>ConvertAll</c> whose selector returns
+    /// a delegate that itself yields the element (e.g. <c>x =&gt; () =&gt; x</c>), so
+    /// <c>points.Select(x =&gt; () =&gt; x).ToArray(); getters[0]()</c> still aliases
+    /// (Codex P1 on #3441).
+    /// </summary>
+    private static bool IsStorageReturningDelegateSelectorInvocation(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol method,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
+        if (name is not ("Select" or "SelectMany" or "ConvertAll"))
+            return false;
+
+        foreach (var argument in invocation.ArgumentList.Arguments)
+        {
+            var expr = SkipTransparentWrappers(argument.Expression);
+
+            if (expr is SimpleLambdaExpressionSyntax simple &&
+                LambdaReturnsStorageReturningDelegate(
+                    simple.ExpressionBody,
+                    simple.Block,
+                    simple.Parameter.Identifier.ValueText,
+                    semanticModel,
+                    cancellationToken))
+            {
+                return true;
+            }
+
+            if (expr is ParenthesizedLambdaExpressionSyntax paren &&
+                paren.ParameterList.Parameters.Count >= 1)
+            {
+                var first = paren.ParameterList.Parameters[0].Identifier.ValueText;
+                if (LambdaReturnsStorageReturningDelegate(
+                        paren.ExpressionBody,
+                        paren.Block,
+                        first,
+                        semanticModel,
+                        cancellationToken))
+                {
+                    return true;
+                }
+
+                // SelectMany result selector may forward the inner element.
+                if (name == "SelectMany" &&
+                    paren.ParameterList.Parameters.Count > 1)
+                {
+                    var last = paren.ParameterList.Parameters[^1].Identifier.ValueText;
+                    if (LambdaReturnsStorageReturningDelegate(
+                            paren.ExpressionBody,
+                            paren.Block,
+                            last,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when a selector body yields a storage-returning delegate that forwards
+    /// <paramref name="parameterName"/> — either an inline anonymous function
+    /// (<c>x =&gt; () =&gt; x</c>) or an opaque call whose return is such a delegate
+    /// (<c>x =&gt; MakeGetter(x)</c>) (Codex P1 on #3441).
+    /// </summary>
+    private static bool LambdaReturnsStorageReturningDelegate(
+        ExpressionSyntax? expressionBody,
+        BlockSyntax? block,
+        string parameterName,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var returned in EnumerateSelectorReturnExpressions(expressionBody, block))
+        {
+            foreach (var leaf in EnumerateForwardedValueLeaves(returned))
+            {
+                if (leaf is InvocationExpressionSyntax invocation &&
+                    InvocationReturnsStorageReturningDelegateCarrier(
+                        invocation, parameterName, semanticModel, cancellationToken))
+                {
+                    return true;
+                }
+
+                if (leaf is not AnonymousFunctionExpressionSyntax nested)
+                    continue;
+
+                if (IsIdentityLambdaBody(
+                        nested.ExpressionBody, nested.Block, parameterName))
+                {
+                    return true;
+                }
+
+                // x => () => () => x — nested storage-returning delegate carriers.
+                if (LambdaReturnsStorageReturningDelegate(
+                        nested.ExpressionBody,
+                        nested.Block,
+                        parameterName,
+                        semanticModel,
+                        cancellationToken))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="invocation"/> receives <paramref name="parameterName"/>
+    /// (as an argument or extension/instance receiver) and its return type is a
+    /// (possibly nested) delegate that yields that parameter's storage type —
+    /// e.g. <c>MakeGetter(x)</c> with <c>Func&lt;T&gt; MakeGetter&lt;T&gt;(T value)</c>
+    /// (Codex P1 on #3441).
+    /// </summary>
+    private static bool InvocationReturnsStorageReturningDelegateCarrier(
+        InvocationExpressionSyntax invocation,
+        string parameterName,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        ITypeSymbol? storageType = null;
+
+        foreach (var argument in invocation.ArgumentList.Arguments)
+        {
+            if (TryGetNamedStorageType(
+                    argument.Expression, parameterName, semanticModel, cancellationToken, out storageType))
+            {
+                break;
+            }
+        }
+
+        if (storageType == null &&
+            invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+        {
+            TryGetNamedStorageType(
+                memberAccess.Expression, parameterName, semanticModel, cancellationToken, out storageType);
+        }
+
+        if (storageType == null)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method ||
+            method.ReturnsVoid)
+        {
+            return false;
+        }
+
+        return IsStorageReturningDelegateType(method.ReturnType, storageType);
+    }
+
+    private static bool TryGetNamedStorageType(
+        ExpressionSyntax expression,
+        string parameterName,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out ITypeSymbol? storageType)
+    {
+        storageType = null;
+        foreach (var leaf in EnumerateForwardedValueLeaves(expression))
+        {
+            if (leaf is IdentifierNameSyntax id &&
+                id.Identifier.ValueText == parameterName)
+            {
+                storageType = semanticModel.GetTypeInfo(leaf, cancellationToken).Type;
+                return storageType != null;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="type"/> is a delegate (possibly nested
+    /// <c>Func&lt;Func&lt;T&gt;&gt;</c>) whose ultimate invoke return embeds
+    /// <paramref name="storageType"/>.
+    /// </summary>
+    private static bool IsStorageReturningDelegateType(ITypeSymbol? type, ITypeSymbol storageType)
+    {
+        var current = type;
+        while (current is INamedTypeSymbol { DelegateInvokeMethod: { } invoke })
+        {
+            if (invoke.ReturnsVoid)
+                return false;
+
+            var returnType = invoke.ReturnType;
+            if (TypeContainsOrEquals(returnType, storageType))
+                return true;
+
+            // Nested storage-returning delegate: Func<Func<T>>.
+            if (returnType is INamedTypeSymbol { DelegateInvokeMethod: not null })
+            {
+                current = returnType;
+                continue;
+            }
+
+            return false;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> returns a (possibly nested) delegate
+    /// that yields <paramref name="parameter"/>'s type — covering opaque
+    /// <c>MakeGetter(point)</c> carriers, including non-generic signatures
+    /// (Codex P1 on #3441).
+    /// </summary>
+    private static bool MethodReturnWrapsElementAsStorageReturningDelegate(
+        IMethodSymbol method,
+        IParameterSymbol parameter) =>
+        IsStorageReturningDelegateType(method.ReturnType, parameter.Type);
 
     private static bool IsIdentityLambdaBody(
         ExpressionSyntax? expressionBody,
         BlockSyntax? block,
         string parameterName)
     {
-        if (expressionBody != null)
+        // Any returned value path that yields the element parameter forwards
+        // storage: x => x, x => flag ? x : x, x => (T)x, x => k switch { _ => x },
+        // x => { if (flag) return x; return x; } (Codex P1 on #3441).
+        foreach (var returned in EnumerateSelectorReturnExpressions(expressionBody, block))
         {
-            var body = ParenthesizedExpressionHelpers.SkipParentheses(expressionBody);
-
-            return body is IdentifierNameSyntax id &&
-                   id.Identifier.ValueText == parameterName;
-        }
-
-        if (block?.Statements is [ReturnStatementSyntax { Expression: { } returned }])
-        {
-            return ParenthesizedExpressionHelpers.SkipParentheses(returned) is IdentifierNameSyntax id &&
-                   id.Identifier.ValueText == parameterName;
+            foreach (var leaf in EnumerateForwardedValueLeaves(returned))
+            {
+                if (leaf is IdentifierNameSyntax id &&
+                    id.Identifier.ValueText == parameterName)
+                {
+                    return true;
+                }
+            }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Returned expressions of a selector body, excluding returns that belong to
+    /// nested lambdas / local functions.
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateSelectorReturnExpressions(
+        ExpressionSyntax? expressionBody,
+        BlockSyntax? block) =>
+        EnumerateFunctionReturnExpressions(expressionBody, block);
+
+    /// <summary>
+    /// Value leaves an expression may evaluate to: unwraps parentheses, casts,
+    /// null-forgiving, <c>with</c> receivers, assignment-as-value RHS, <c>?:</c>
+    /// branches, <c>??</c> operands and switch-expression arms.
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateForwardedValueLeaves(ExpressionSyntax expression)
+    {
+        var pending = new Stack<ExpressionSyntax>();
+        pending.Push(expression);
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            switch (current)
+            {
+                case ParenthesizedExpressionSyntax parenthesized:
+                    pending.Push(parenthesized.Expression);
+                    break;
+                case CastExpressionSyntax cast:
+                    pending.Push(cast.Expression);
+                    break;
+                case PostfixUnaryExpressionSyntax postfix when
+                    postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                    pending.Push(postfix.Operand);
+                    break;
+                case CheckedExpressionSyntax checkedExpression:
+                    pending.Push(checkedExpression.Expression);
+                    break;
+                case ConditionalExpressionSyntax conditional:
+                    pending.Push(conditional.WhenTrue);
+                    pending.Push(conditional.WhenFalse);
+                    break;
+                case BinaryExpressionSyntax coalesce when
+                    coalesce.IsKind(SyntaxKind.CoalesceExpression):
+                    pending.Push(coalesce.Left);
+                    pending.Push(coalesce.Right);
+                    break;
+                case SwitchExpressionSyntax switchExpression:
+                    foreach (var arm in switchExpression.Arms)
+                        pending.Push(arm.Expression);
+                    break;
+                case RefExpressionSyntax refExpression:
+                    pending.Push(refExpression.Expression);
+                    break;
+                case WithExpressionSyntax withExpression:
+                    pending.Push(withExpression.Expression);
+                    break;
+                case AssignmentExpressionSyntax assignment when
+                    assignment.IsKind(SyntaxKind.SimpleAssignmentExpression):
+                    pending.Push(assignment.Right);
+                    break;
+                default:
+                    yield return current;
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when an anonymous function / lambda returns converted storage
+    /// (<c>() =&gt; point</c> / <c>() =&gt; { return point; }</c>) so the assigned
+    /// delegate becomes a tracked carrier (Codex P1 on #3441).
+    /// </summary>
+    private static bool AnonymousFunctionReturnsConvertedStorage(
+        AnonymousFunctionExpressionSyntax anonymousFunction,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var returned in EnumerateFunctionReturnExpressions(
+                     anonymousFunction.ExpressionBody, anonymousFunction.Block))
+        {
+            if (ExpressionReferencesStorageAlias(
+                    returned, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when a local function returns converted storage
+    /// (<c>(int X, int Y) Get() =&gt; point;</c>) so invocations alias (Codex P1 on #3441).
+    /// </summary>
+    private static bool LocalFunctionReturnsConvertedStorage(
+        LocalFunctionStatementSyntax localFunction,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var returned in EnumerateFunctionReturnExpressions(
+                     localFunction.ExpressionBody?.Expression,
+                     localFunction.Body))
+        {
+            if (ExpressionReferencesStorageAlias(
+                    returned, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<ExpressionSyntax> EnumerateFunctionReturnExpressions(
+        ExpressionSyntax? expressionBody,
+        BlockSyntax? block)
+    {
+        if (expressionBody != null)
+            yield return expressionBody;
+
+        if (block == null)
+            yield break;
+
+        // Skip nested lambdas / local functions so their returns are not
+        // attributed to the outer function (Codex P2 on #3441).
+        foreach (var statement in block
+                     .DescendantNodes(n => n is not (AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))
+                     .OfType<ReturnStatementSyntax>())
+        {
+            if (statement.Expression != null)
+                yield return statement.Expression;
+        }
     }
 
     private static ITypeSymbol? TryGetSequenceElementType(ITypeSymbol type)
@@ -996,32 +4208,772 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// True when <paramref name="memberAccess"/> is <c>wrapped.Member</c> and
-    /// <c>wrapped</c> was initialized with a tuple literal whose <c>Member</c>
-    /// argument embeds converted storage.
+    /// True when <paramref name="expression"/> yields the converted tuple value —
+    /// directly (storage alias / container element of that type) or through one or
+    /// more aggregate carrier members (tuple or anonymous-object properties that
+    /// embed converted storage, including nested carriers).
     /// </summary>
-    private static bool TupleAggregateMemberCarriesStorage(
+    private static bool ExpressionYieldsConvertedStorage(
+        ExpressionSyntax expression,
+        HashSet<ISymbol> storages,
+        ITypeSymbol? tupleType,
+        SemanticModel semanticModel,
+        SyntaxNode root)
+    {
+        expression = UnwrapParenthesesAndNullForgiving(expression);
+
+        if (ReceiverYieldsConvertedStorage(expression, storages, tupleType, semanticModel))
+            return true;
+
+        if (expression is not MemberAccessExpressionSyntax memberAccess)
+            return false;
+
+        // Try every candidate carrier initializer (constant-index path plus
+        // conservative nonconstant-index enumeration — Codex P1).
+        foreach (var initializer in EnumerateCarriedMemberInitializers(
+                     memberAccess, storages, semanticModel, root))
+        {
+            if (ExpressionYieldsConvertedStorage(
+                    initializer, storages, tupleType, semanticModel, root))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves the initializer expression assigned to <paramref name="memberAccess"/>'s
+    /// member on a tracked aggregate (or nested carrier), when that aggregate was
+    /// created with a tuple or anonymous-object literal.
+    /// </summary>
+    private static bool TryGetCarriedMemberInitializer(
+        MemberAccessExpressionSyntax memberAccess,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        out ExpressionSyntax? initializer)
+    {
+        initializer = null;
+        foreach (var candidate in EnumerateCarriedMemberInitializers(
+                     memberAccess, storages, semanticModel, root))
+        {
+            initializer = candidate;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Yields every initializer that <paramref name="memberAccess"/>'s member may
+    /// resolve to on a tracked aggregate, including every element when the
+    /// receiver uses a nonconstant container index.
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateCarriedMemberInitializers(
         MemberAccessExpressionSyntax memberAccess,
         HashSet<ISymbol> storages,
         SemanticModel semanticModel,
         SyntaxNode root)
     {
-        var aggregate = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
-        if (aggregate == null || !storages.Contains(aggregate))
-            return false;
-
         var memberName = memberAccess.Name.Identifier.ValueText;
+
+        foreach (var creation in EnumerateAggregateCreations(
+                     memberAccess.Expression, storages, semanticModel, root))
+        {
+            if (TryGetNamedMemberInitializer(
+                    creation, memberName, semanticModel, out var initializer) &&
+                initializer != null)
+            {
+                yield return initializer;
+            }
+
+            // Pair(point)-style multi-arg / tuple generic returns have no literal
+            // initializer to walk; map return members typed as a parameter back to
+            // the corresponding arguments (Codex P1 on #3441).
+            foreach (var forwarded in EnumerateInvocationForwardedMemberArguments(
+                         creation, memberName, semanticModel))
+            {
+                yield return forwarded;
+            }
+        }
+    }
+
+    private static bool TryResolveAggregateCreation(
+        ExpressionSyntax receiver,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        out ExpressionSyntax? creation)
+    {
+        creation = null;
+        foreach (var candidate in EnumerateAggregateCreations(
+                     receiver, storages, semanticModel, root))
+        {
+            creation = candidate;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Yields aggregate creation expressions reachable from
+    /// <paramref name="receiver"/> (tracked symbol initializer, nested carrier
+    /// member, or container element — including every element when the index is
+    /// nonconstant).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateAggregateCreations(
+        ExpressionSyntax receiver,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root)
+    {
+        receiver = UnwrapParenthesesAndNullForgiving(receiver);
+
+        var symbol = semanticModel.GetSymbolInfo(receiver).Symbol;
+        if (symbol != null && storages.Contains(symbol))
+        {
+            if (TryFindSymbolInitializerExpression(
+                    symbol, root, semanticModel, out var creation) &&
+                creation != null)
+            {
+                yield return creation;
+                yield break;
+            }
+
+            // foreach / from / join / let variables have no declarator initializer;
+            // recover the projections that supply them, e.g.
+            // foreach (var box in from n in xs select new { Value = point }) (Codex P1).
+            foreach (var origin in EnumerateIterationVariableOrigins(
+                         symbol, semanticModel, root, depth: 0))
+            {
+                yield return origin;
+            }
+
+            yield break;
+        }
+
+        // Nested carrier: outer.Inner where Inner's initializer is itself an aggregate.
+        if (receiver is MemberAccessExpressionSyntax nested)
+        {
+            foreach (var initializer in EnumerateCarriedMemberInitializers(
+                         nested, storages, semanticModel, root))
+            {
+                yield return initializer;
+            }
+
+            yield break;
+        }
+
+        // Container element carrier: boxes[0] / boxes[i] where
+        // boxes = new[] { new { Value = point } } (Codex P1 — peel element-access;
+        // nonconstant indices enumerate every initialized element).
+        if (receiver is ElementAccessExpressionSyntax elementAccess)
+        {
+            if (!TryResolveContainerInitializer(
+                    elementAccess.Expression,
+                    storages,
+                    semanticModel,
+                    root,
+                    out var containerInitializer) ||
+                containerInitializer == null)
+            {
+                yield break;
+            }
+
+            if (TryGetConstantElementIndex(elementAccess, semanticModel, out var index))
+            {
+                if (TryGetElementAtConstantIndex(
+                        containerInitializer, index, out var element) &&
+                    element != null)
+                {
+                    yield return element;
+                }
+
+                yield break;
+            }
+
+            foreach (var element in EnumerateContainerElementExpressions(containerInitializer))
+                yield return element;
+        }
+    }
+
+    private const int MaxCarrierOriginDepth = 8;
+
+    /// <summary>
+    /// Yields the per-element expressions that supply an iteration / range
+    /// variable without a declarator initializer: <c>foreach</c> variables,
+    /// <c>from</c> / <c>join</c> range variables (elements of their source
+    /// sequence) and <c>let</c> variables (the let expression).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateIterationVariableOrigins(
+        ISymbol symbol,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        int depth)
+    {
+        if (depth > MaxCarrierOriginDepth)
+            yield break;
+
         foreach (var node in root.DescendantNodes())
         {
-            if (node is not VariableDeclaratorSyntax declarator ||
-                !SymbolEqualityComparer.Default.Equals(
+            ExpressionSyntax? sequence = null;
+            ExpressionSyntax? direct = null;
+            switch (node)
+            {
+                case ForEachStatementSyntax forEach when
+                    SymbolEqualityComparer.Default.Equals(
+                        semanticModel.GetDeclaredSymbol(forEach), symbol):
+                    sequence = forEach.Expression;
+                    break;
+                case FromClauseSyntax fromClause when
+                    SymbolEqualityComparer.Default.Equals(
+                        semanticModel.GetDeclaredSymbol(fromClause), symbol):
+                    sequence = fromClause.Expression;
+                    break;
+                case JoinClauseSyntax joinClause when
+                    SymbolEqualityComparer.Default.Equals(
+                        semanticModel.GetDeclaredSymbol(joinClause), symbol):
+                    sequence = joinClause.InExpression;
+                    break;
+                case LetClauseSyntax letClause when
+                    SymbolEqualityComparer.Default.Equals(
+                        semanticModel.GetDeclaredSymbol(letClause), symbol):
+                    direct = letClause.Expression;
+                    break;
+                default:
+                    continue;
+            }
+
+            if (direct != null)
+            {
+                foreach (var origin in EnumerateCarrierOrigins(direct, semanticModel, root, depth + 1))
+                    yield return origin;
+            }
+            else if (sequence != null)
+            {
+                foreach (var element in EnumerateSequenceElementOrigins(
+                             sequence, semanticModel, root, depth + 1))
+                {
+                    yield return element;
+                }
+            }
+
+            yield break;
+        }
+    }
+
+    /// <summary>
+    /// Yields element expressions produced by <paramref name="sequence"/>: the
+    /// final <c>select</c> projection of a query, the elements of an array /
+    /// collection literal, or (through a local initializer) either of those.
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateSequenceElementOrigins(
+        ExpressionSyntax sequence,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        int depth)
+    {
+        if (depth > MaxCarrierOriginDepth)
+            yield break;
+
+        sequence = UnwrapParenthesesAndNullForgiving(sequence);
+
+        if (sequence is QueryExpressionSyntax query)
+        {
+            var body = query.Body;
+            while (body.Continuation != null)
+                body = body.Continuation.Body;
+
+            if (body.SelectOrGroup is SelectClauseSyntax select)
+            {
+                foreach (var origin in EnumerateCarrierOrigins(
+                             select.Expression, semanticModel, root, depth + 1))
+                {
+                    yield return origin;
+                }
+            }
+
+            yield break;
+        }
+
+        var yieldedElement = false;
+        foreach (var element in EnumerateContainerElementExpressions(sequence))
+        {
+            yieldedElement = true;
+            foreach (var origin in EnumerateCarrierOrigins(element, semanticModel, root, depth + 1))
+                yield return origin;
+        }
+
+        if (yieldedElement)
+            yield break;
+
+        var symbol = semanticModel.GetSymbolInfo(sequence).Symbol;
+        if (symbol != null &&
+            TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) &&
+            initializer != null)
+        {
+            foreach (var element in EnumerateSequenceElementOrigins(
+                         initializer, semanticModel, root, depth + 1))
+            {
+                yield return element;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Yields <paramref name="expression"/> itself plus, when it names a local or
+    /// range variable, the expressions that originally supplied that variable
+    /// (declarator initializer or iteration / query source).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateCarrierOrigins(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        int depth)
+    {
+        expression = UnwrapParenthesesAndNullForgiving(expression);
+        yield return expression;
+
+        if (depth > MaxCarrierOriginDepth || expression is not IdentifierNameSyntax)
+            yield break;
+
+        var symbol = semanticModel.GetSymbolInfo(expression).Symbol;
+        if (symbol is not (ILocalSymbol or IRangeVariableSymbol))
+            yield break;
+
+        if (TryFindSymbolInitializerExpression(symbol, root, semanticModel, out var initializer) &&
+            initializer != null)
+        {
+            foreach (var origin in EnumerateCarrierOrigins(initializer, semanticModel, root, depth + 1))
+                yield return origin;
+            yield break;
+        }
+
+        foreach (var origin in EnumerateIterationVariableOrigins(symbol, semanticModel, root, depth + 1))
+            yield return origin;
+    }
+
+    /// <summary>
+    /// Resolves the initializer of a tracked container element
+    /// (<c>boxes[0]</c> → <c>new { Value = point }</c>) so aggregate carrier
+    /// lookup can continue through the element. Constant indices only; nonconstant
+    /// indices are enumerated by <see cref="EnumerateAggregateCreations"/>.
+    /// </summary>
+    private static bool TryResolveContainerElementInitializer(
+        ElementAccessExpressionSyntax elementAccess,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        out ExpressionSyntax? elementInitializer)
+    {
+        elementInitializer = null;
+
+        if (!TryResolveContainerInitializer(
+                elementAccess.Expression, storages, semanticModel, root, out var containerInitializer) ||
+            containerInitializer == null)
+        {
+            return false;
+        }
+
+        return TryGetConstantIndexedElement(
+            containerInitializer, elementAccess, semanticModel, out elementInitializer);
+    }
+
+    /// <summary>
+    /// Resolves the expression that initialized a container receiver (tracked
+    /// symbol, nested carrier member, or another indexed container).
+    /// </summary>
+    private static bool TryResolveContainerInitializer(
+        ExpressionSyntax container,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        out ExpressionSyntax? initializer)
+    {
+        initializer = null;
+        container = UnwrapParenthesesAndNullForgiving(container);
+
+        var symbol = semanticModel.GetSymbolInfo(container).Symbol;
+        if (symbol != null && storages.Contains(symbol))
+            return TryFindSymbolInitializerExpression(symbol, root, semanticModel, out initializer);
+
+        if (container is MemberAccessExpressionSyntax nested &&
+            TryGetCarriedMemberInitializer(nested, storages, semanticModel, root, out initializer))
+        {
+            return initializer != null;
+        }
+
+        if (container is ElementAccessExpressionSyntax nestedElement &&
+            TryResolveContainerElementInitializer(
+                nestedElement, storages, semanticModel, root, out initializer))
+        {
+            return initializer != null;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Picks the element expression at a constant index from an array /
+    /// collection creation initializer.
+    /// </summary>
+    private static bool TryGetConstantIndexedElement(
+        ExpressionSyntax containerInitializer,
+        ElementAccessExpressionSyntax elementAccess,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? element)
+    {
+        element = null;
+        if (!TryGetConstantElementIndex(elementAccess, semanticModel, out var index))
+            return false;
+
+        return TryGetElementAtConstantIndex(containerInitializer, index, out element);
+    }
+
+    /// <summary>
+    /// Picks the element expression at <paramref name="index"/> from an array /
+    /// collection creation initializer.
+    /// </summary>
+    private static bool TryGetElementAtConstantIndex(
+        ExpressionSyntax containerInitializer,
+        int index,
+        out ExpressionSyntax? element)
+    {
+        element = null;
+        containerInitializer = UnwrapParenthesesAndNullForgiving(containerInitializer);
+
+        SeparatedSyntaxList<ExpressionSyntax>? expressions = containerInitializer switch
+        {
+            ImplicitArrayCreationExpressionSyntax implicitArray
+                when implicitArray.Initializer != null => implicitArray.Initializer.Expressions,
+            ArrayCreationExpressionSyntax arrayCreation
+                when arrayCreation.Initializer != null => arrayCreation.Initializer.Expressions,
+            ImplicitStackAllocArrayCreationExpressionSyntax implicitStackAlloc
+                when implicitStackAlloc.Initializer != null => implicitStackAlloc.Initializer.Expressions,
+            StackAllocArrayCreationExpressionSyntax stackAlloc
+                when stackAlloc.Initializer != null => stackAlloc.Initializer.Expressions,
+            _ => null
+        };
+
+        if (expressions != null)
+        {
+            if (index < 0 || index >= expressions.Value.Count)
+                return false;
+
+            element = expressions.Value[index];
+            return true;
+        }
+
+        if (containerInitializer is CollectionExpressionSyntax collection)
+        {
+            var seen = 0;
+            foreach (var collectionElement in collection.Elements)
+            {
+                if (collectionElement is not ExpressionElementSyntax expressionElement)
+                    continue;
+
+                if (seen == index)
+                {
+                    element = expressionElement.Expression;
+                    return true;
+                }
+
+                seen++;
+            }
+
+            return false;
+        }
+
+        // new List<T> { expr0, expr1 } / similar object-creation collection initializers.
+        if (containerInitializer is ObjectCreationExpressionSyntax objectCreation &&
+            objectCreation.Initializer != null)
+        {
+            var initExpressions = objectCreation.Initializer.Expressions;
+            if (index < 0 || index >= initExpressions.Count)
+                return false;
+
+            element = initExpressions[index];
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Enumerates element expressions from an array / collection creation
+    /// initializer (used for conservative nonconstant-index carrier resolution).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateContainerElementExpressions(
+        ExpressionSyntax containerInitializer)
+    {
+        containerInitializer = UnwrapParenthesesAndNullForgiving(containerInitializer);
+
+        SeparatedSyntaxList<ExpressionSyntax>? expressions = containerInitializer switch
+        {
+            ImplicitArrayCreationExpressionSyntax implicitArray
+                when implicitArray.Initializer != null => implicitArray.Initializer.Expressions,
+            ArrayCreationExpressionSyntax arrayCreation
+                when arrayCreation.Initializer != null => arrayCreation.Initializer.Expressions,
+            ImplicitStackAllocArrayCreationExpressionSyntax implicitStackAlloc
+                when implicitStackAlloc.Initializer != null => implicitStackAlloc.Initializer.Expressions,
+            StackAllocArrayCreationExpressionSyntax stackAlloc
+                when stackAlloc.Initializer != null => stackAlloc.Initializer.Expressions,
+            _ => null
+        };
+
+        if (expressions != null)
+        {
+            foreach (var expression in expressions.Value)
+                yield return expression;
+            yield break;
+        }
+
+        if (containerInitializer is CollectionExpressionSyntax collection)
+        {
+            foreach (var collectionElement in collection.Elements)
+            {
+                if (collectionElement is ExpressionElementSyntax expressionElement)
+                    yield return expressionElement.Expression;
+                else if (collectionElement is SpreadElementSyntax spreadElement)
+                    yield return spreadElement.Expression;
+            }
+
+            yield break;
+        }
+
+        if (containerInitializer is ObjectCreationExpressionSyntax objectCreation &&
+            objectCreation.Initializer != null)
+        {
+            foreach (var expression in objectCreation.Initializer.Expressions)
+                yield return expression;
+        }
+    }
+
+    private static bool TryGetConstantElementIndex(
+        ElementAccessExpressionSyntax elementAccess,
+        SemanticModel semanticModel,
+        out int index)
+    {
+        index = -1;
+        if (elementAccess.ArgumentList.Arguments.Count != 1)
+            return false;
+
+        var arg = elementAccess.ArgumentList.Arguments[0].Expression;
+        var constant = semanticModel.GetConstantValue(arg);
+        if (!constant.HasValue)
+            return false;
+
+        index = constant.Value switch
+        {
+            int i => i,
+            long l when l >= int.MinValue && l <= int.MaxValue => (int)l,
+            uint ui when ui <= int.MaxValue => (int)ui,
+            byte b => b,
+            sbyte sb => sb,
+            short s => s,
+            ushort us => us,
+            char c => c,
+            _ => -1
+        };
+
+        return index >= 0;
+    }
+
+    private static bool TryFindSymbolInitializerExpression(
+        ISymbol symbol,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? initializer)
+    {
+        initializer = null;
+        foreach (var node in root.DescendantNodes())
+        {
+            if (node is VariableDeclaratorSyntax declarator &&
+                SymbolEqualityComparer.Default.Equals(
                     semanticModel.GetDeclaredSymbol(declarator),
-                    aggregate) ||
-                declarator.Initializer?.Value is not TupleExpressionSyntax tuple)
+                    symbol) &&
+                declarator.Initializer?.Value is { } value)
+            {
+                initializer = value;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// For an invocation creation such as <c>Pair(point)</c> returning
+    /// <c>(T Value, int Other)</c>, yields argument expressions whose parameter
+    /// type matches the named return member's type so carrier lookup can treat
+    /// <c>wrapped.Value</c> as forwarding <c>point</c> (Codex P1 on #3441).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateInvocationForwardedMemberArguments(
+        ExpressionSyntax creation,
+        string memberName,
+        SemanticModel semanticModel)
+    {
+        creation = UnwrapParenthesesAndNullForgiving(creation);
+        if (creation is not InvocationExpressionSyntax invocation)
+            yield break;
+
+        if (semanticModel.GetSymbolInfo(invocation).Symbol is not IMethodSymbol method)
+            yield break;
+
+        if (!TryGetReturnMemberType(method.ReturnType, memberName, out var memberType) ||
+            memberType == null)
+        {
+            yield break;
+        }
+
+        var args = invocation.ArgumentList.Arguments;
+        for (var i = 0; i < args.Count; i++)
+        {
+            var arg = args[i];
+            var parameter = ResolveInvocationParameter(method, arg, i);
+            if (parameter == null)
+                continue;
+
+            if (!SymbolEqualityComparer.Default.Equals(parameter.Type, memberType) &&
+                !TypeContainsOrEquals(memberType, parameter.Type) &&
+                !TypeContainsOrEquals(parameter.Type, memberType))
             {
                 continue;
             }
 
+            // Generic wrappers (Box<T> Wrap<T>(T value)): constructed-type equality
+            // also matches fixed members such as Box<T>.Other declared as
+            // (int X, int Y). A method-type-parameter argument can only reach
+            // members whose original declared type mentions the containing-type
+            // parameter bound to it (Codex P2 on #3441, PRRT_kwDORD0nYs600gme).
+            if (!GenericParameterMayReachWrapperMember(method, parameter, memberName))
+                continue;
+
+            yield return arg.Expression;
+        }
+    }
+
+    /// <summary>
+    /// False only when <paramref name="parameter"/>'s original type is built from
+    /// method type parameters and the named field/property on the original return
+    /// type is declared without any containing-type parameter bound to them.
+    /// Refusal-leaning: concrete parameter types, tuple returns, and unresolved
+    /// shapes return true.
+    /// </summary>
+    private static bool GenericParameterMayReachWrapperMember(
+        IMethodSymbol method,
+        IParameterSymbol parameter,
+        string memberName)
+    {
+        var original = (method.ReducedFrom ?? method).OriginalDefinition;
+        var ordinal = parameter.Ordinal + (method.ReducedFrom != null ? 1 : 0);
+        if (ordinal < 0 || ordinal >= original.Parameters.Length)
+            return true;
+
+        var methodTypeParameters = original.TypeParameters
+            .Where(typeParameter => TypeContainsOrEquals(original.Parameters[ordinal].Type, typeParameter))
+            .ToList();
+        if (methodTypeParameters.Count == 0)
+            return true;
+
+        if (original.ReturnType is not INamedTypeSymbol { IsTupleType: false, IsAnonymousType: false } returnType)
+            return true;
+
+        ISymbol? member = returnType.GetMembers(memberName)
+            .FirstOrDefault(candidate => candidate is IFieldSymbol { IsStatic: false } or IPropertySymbol { IsStatic: false });
+        var memberOriginalType = member?.OriginalDefinition switch
+        {
+            IFieldSymbol field => field.Type,
+            IPropertySymbol property => property.Type,
+            _ => null
+        };
+        if (member == null || memberOriginalType == null)
+            return true;
+
+        for (var containing = member.ContainingType; containing != null; containing = containing.ContainingType)
+        {
+            var typeParameters = containing.OriginalDefinition.TypeParameters;
+            var typeArguments = containing.TypeArguments;
+            for (var i = 0; i < typeParameters.Length && i < typeArguments.Length; i++)
+            {
+                if (!TypeContainsOrEquals(memberOriginalType, typeParameters[i]))
+                    continue;
+
+                foreach (var methodTypeParameter in methodTypeParameters)
+                {
+                    if (TypeContainsOrEquals(typeArguments[i], methodTypeParameter))
+                        return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves the type of a named member / tuple element on
+    /// <paramref name="returnType"/> (constructed method return).
+    /// </summary>
+    private static bool TryGetReturnMemberType(
+        ITypeSymbol returnType,
+        string memberName,
+        out ITypeSymbol? memberType)
+    {
+        memberType = null;
+
+        if (returnType is INamedTypeSymbol { IsTupleType: true } tuple)
+        {
+            for (var i = 0; i < tuple.TupleElements.Length; i++)
+            {
+                var element = tuple.TupleElements[i];
+                if (string.Equals(element.Name, memberName, StringComparison.Ordinal) ||
+                    string.Equals(
+                        StripVerbatimPrefix(element.Name),
+                        StripVerbatimPrefix(memberName),
+                        StringComparison.Ordinal) ||
+                    string.Equals($"Item{i + 1}", memberName, StringComparison.Ordinal))
+                {
+                    memberType = element.Type;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (returnType is INamedTypeSymbol named)
+        {
+            foreach (var member in named.GetMembers(memberName))
+            {
+                switch (member)
+                {
+                    case IFieldSymbol field when !field.IsStatic:
+                        memberType = field.Type;
+                        return true;
+                    case IPropertySymbol property when !property.IsStatic:
+                        memberType = property.Type;
+                        return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryGetNamedMemberInitializer(
+        ExpressionSyntax aggregateCreation,
+        string memberName,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? initializer)
+    {
+        initializer = null;
+        aggregateCreation = UnwrapParenthesesAndNullForgiving(aggregateCreation);
+
+        if (aggregateCreation is TupleExpressionSyntax tuple)
+        {
             var tupleType = semanticModel.GetTypeInfo(tuple).Type as INamedTypeSymbol;
             for (var i = 0; i < tuple.Arguments.Count; i++)
             {
@@ -1031,17 +4983,51 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 if (!TupleAggregateArgumentMatchesMember(argument, i, memberName, tupleType))
                     continue;
 
-                if (ExpressionReferencesStorageAlias(
-                        argument.Expression,
-                        storages,
-                        semanticModel))
-                {
-                    return true;
-                }
+                initializer = argument.Expression;
+                return true;
             }
+
+            return false;
+        }
+
+        if (aggregateCreation is AnonymousObjectCreationExpressionSyntax anonymous)
+        {
+            foreach (var member in anonymous.Initializers)
+            {
+                if (!AnonymousAggregateMemberMatchesName(member, memberName))
+                    continue;
+
+                initializer = member.Expression;
+                return true;
+            }
+
+            return false;
         }
 
         return false;
+    }
+
+    private static bool AnonymousAggregateMemberMatchesName(
+        AnonymousObjectMemberDeclaratorSyntax member,
+        string memberName)
+    {
+        if (member.NameEquals != null)
+        {
+            return string.Equals(
+                member.NameEquals.Name.Identifier.ValueText,
+                memberName,
+                StringComparison.Ordinal);
+        }
+
+        var inferred = member.Expression switch
+        {
+            IdentifierNameSyntax id => id.Identifier.ValueText,
+            MemberAccessExpressionSyntax access => access.Name.Identifier.ValueText,
+            _ => null
+        };
+
+        return inferred != null &&
+               string.Equals(inferred, memberName, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -1072,6 +5058,523 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return false;
     }
 
+    internal static bool HasElementByRefUse(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        ISymbol storage,
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType = null) =>
+        HasElementByRefUse(
+            root,
+            semanticModel,
+            new HashSet<ISymbol>(SymbolEqualityComparer.Default) { storage },
+            memberNames,
+            tupleType);
+
+    /// <summary>
+    /// True when a converted storage alias has a tuple element used as a
+    /// <c>ref</c>/<c>out</c>/<c>in</c> argument, address-of operand, ref expression,
+    /// writable <c>this ref</c> extension receiver, pointer indirection through a
+    /// tracked address-of alias (<c>var p = &amp;point; Bump(ref p-&gt;X)</c> /
+    /// <c>Bump(ref (*p).X)</c>),
+    /// non-<c>readonly</c> mutable value-type instance-method receiver (including
+    /// positional <c>ItemN</c> aliases), a non-<c>readonly</c> property / indexer
+    /// getter on a mutable value-type element (e.g. <c>point.Counter.Next</c>),
+    /// or an assignment / increment / decrement
+    /// target that traverses a value-type converted element (for example
+    /// <c>point.Counter.Value++</c> — CS1612 on the property temporary).
+    /// Generated properties cannot accept those uses (CS0206 / silent copy / CS1612);
+    /// tuple fields can. Direct element writes such as <c>point.X = 3</c> /
+    /// <c>point.X++</c> are allowed under <c>asRecord: false</c> (setters work).
+    /// By-ref storage reached <em>through</em> a reference-type element
+    /// (for example <c>Bump(ref point.Values[0])</c>) or through a value-type
+    /// element that merely wraps reference storage (for example
+    /// <c>Bump(ref point.Box.Values[0])</c> where <c>Box</c> is a struct with an
+    /// <c>int[]</c> field) is allowed — copying the property still yields the same
+    /// reference — while passing the element property itself by reference, or
+    /// taking a ref to a value-typed location on that temporary copy, is refused.
+    /// Nested assignments that reach the same reference storage through a value-type
+    /// element follow the same allow/refuse rule via <see cref="ValueTypeElementByRefIsUnsafe"/>.
+    /// </summary>
+    internal static bool HasElementByRefUse(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        HashSet<ISymbol> storages,
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType = null)
+    {
+        foreach (var node in root.DescendantNodes())
+        {
+            ExpressionSyntax? byRefTarget = node switch
+            {
+                // Tuple fields accept address-of; generated properties do not.
+                PrefixUnaryExpressionSyntax addressOf when
+                    addressOf.IsKind(SyntaxKind.AddressOfExpression) => addressOf.Operand,
+                // Tuple fields accept ref/out/in; generated properties do not.
+                ArgumentSyntax argument when
+                    argument.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
+                    argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword) ||
+                    argument.RefOrOutKeyword.IsKind(SyntaxKind.InKeyword) => argument.Expression,
+                // ref int x = ref point.X; / ref returns
+                RefExpressionSyntax refExpression => refExpression.Expression,
+                // __makeref(point.X) requires a variable; generated properties are not (Codex P2).
+                MakeRefExpressionSyntax makeRef => makeRef.Expression,
+                // this-ref extension or mutating value-type instance-method receiver.
+                InvocationExpressionSyntax invocation when
+                    TryGetRefReceiverExpression(invocation, semanticModel, out var refReceiver)
+                    => refReceiver,
+                // Non-readonly property / indexer getter on a mutable value-type element
+                // (point.Counter.Next) — getter receives the element by ref (Codex P1).
+                MemberAccessExpressionSyntax memberAccess when
+                    TryGetMutatingPropertyOrIndexerReceiver(memberAccess, semanticModel, out var propReceiver)
+                    => propReceiver,
+                ElementAccessExpressionSyntax elementAccess when
+                    TryGetMutatingPropertyOrIndexerReceiver(elementAccess, semanticModel, out var indexReceiver)
+                    => indexReceiver,
+                // Nested field writes through a value-type element (Codex P1 CS1612):
+                // point.Counter.Value++ / point.Counter.Value = 1 mutate a property temporary.
+                AssignmentExpressionSyntax assignment => assignment.Left,
+                PrefixUnaryExpressionSyntax prefix when
+                    prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+                    prefix.IsKind(SyntaxKind.PreDecrementExpression) => prefix.Operand,
+                PostfixUnaryExpressionSyntax postfix when
+                    postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+                    postfix.IsKind(SyntaxKind.PostDecrementExpression) => postfix.Operand,
+                _ => null
+            };
+
+            if (byRefTarget == null)
+                continue;
+
+            // Direct element writes (point.X = 3 / point.X++) stay allowed for
+            // asRecord:false setters; only nested writes through a value-type
+            // element are refused (same ValueTypeElementByRefIsUnsafe rule).
+            var refuseDirectElementAccess = !IsAssignmentOrIncrementTarget(node);
+
+            if (HasConvertedElementByRefAccess(
+                    byRefTarget,
+                    storages,
+                    memberNames,
+                    tupleType,
+                    semanticModel,
+                    root,
+                    refuseDirectElementAccess))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="node"/> is an assignment or pre/post increment/decrement
+    /// (the nested-value-type CS1612 cases), not address-of or other prefix/postfix forms.
+    /// </summary>
+    private static bool IsAssignmentOrIncrementTarget(SyntaxNode node) =>
+        node is AssignmentExpressionSyntax
+        || (node is PrefixUnaryExpressionSyntax prefix &&
+            (prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+             prefix.IsKind(SyntaxKind.PreDecrementExpression)))
+        || (node is PostfixUnaryExpressionSyntax postfix &&
+            (postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+             postfix.IsKind(SyntaxKind.PostDecrementExpression)));
+
+    /// <summary>
+    /// True when <paramref name="invocation"/> uses its receiver by reference:
+    /// a reduced extension with writable <c>this ref</c>
+    /// (for example <c>point.X.Increment()</c> with <c>Increment(this ref int)</c>),
+    /// or a non-<c>readonly</c> instance method on a mutable value-type element
+    /// (for example <c>point.Counter.Increment()</c> on a mutable struct field —
+    /// tuple fields persist the mutation; generated properties mutate a temporary),
+    /// including when the element is a type parameter constrained to a value type
+    /// whose resolved method lives on an interface constraint
+    /// (for example <c>where T : struct, ICounter</c> — <c>ContainingType</c> is
+    /// <c>ICounter</c>, but the call still mutates the tuple field of type <c>T</c>).
+    /// Readonly <c>this in</c> / <c>ref readonly</c> receivers are allowed — a
+    /// generated property is a valid value receiver with the same readonly behavior
+    /// (Codex P2 on #3441).
+    /// </summary>
+    private static bool TryGetRefReceiverExpression(
+        InvocationExpressionSyntax invocation,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? receiver)
+    {
+        receiver = null;
+        if (invocation.Expression is not MemberAccessExpressionSyntax memberAccess)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(invocation).Symbol is not IMethodSymbol method)
+            return false;
+
+        // Reduced extension calls hide the `this` parameter; inspect ReducedFrom
+        // (or the unreduced extension declaration) for writable `this ref` only.
+        var extensionSource = method.ReducedFrom
+            ?? (method.IsExtensionMethod ? method : null);
+        if (extensionSource != null && !extensionSource.Parameters.IsDefaultOrEmpty)
+        {
+            var thisParameter = extensionSource.Parameters[0];
+            if (thisParameter.RefKind == RefKind.Ref)
+            {
+                receiver = memberAccess.Expression;
+                return true;
+            }
+        }
+
+        // Non-readonly instance method whose receiver is a mutable value type —
+        // either the method's containing type is that value type, or the receiver
+        // is a type parameter constrained to a value type whose method resolves
+        // on an interface constraint (Codex P1 constrained T : struct, ICounter).
+        if (!method.IsStatic &&
+            !method.IsReadOnly &&
+            (method.MethodKind is MethodKind.Ordinary or MethodKind.ExplicitInterfaceImplementation) &&
+            IsMutatingValueTypeReceiver(
+                method.ContainingType,
+                semanticModel.GetTypeInfo(memberAccess.Expression).Type))
+        {
+            receiver = memberAccess.Expression;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when an instance-method receiver is a mutable value type after conversion
+    /// would turn the element into a property temporary: the method is owned by a
+    /// mutable value type, or the receiver is a type parameter known to be a value
+    /// type (e.g. <c>where T : struct</c> / constrained to a struct) even when the
+    /// resolved method lives on an interface constraint.
+    /// </summary>
+    private static bool IsMutatingValueTypeReceiver(
+        INamedTypeSymbol? containingType,
+        ITypeSymbol? receiverType)
+    {
+        if (containingType is { IsValueType: true, IsReadOnly: false })
+            return true;
+
+        // Constrained type-parameter receivers: ContainingType is often an interface
+        // (ICounter), but T is a value type so the call mutates the tuple field.
+        return receiverType is ITypeParameterSymbol { IsValueType: true };
+    }
+
+    /// <summary>
+    /// True when <paramref name="expression"/> is a non-<c>readonly</c> property or
+    /// indexer getter whose receiver is a mutable value type — the getter receives
+    /// that receiver by reference (e.g. <c>point.Counter.Next</c> where <c>Next</c>
+    /// increments a field). After conversion the element is a property temporary, so
+    /// the getter mutates a copy (Codex P1 on #3441). Matches the mutating-method rule.
+    /// </summary>
+    private static bool TryGetMutatingPropertyOrIndexerReceiver(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? receiver)
+    {
+        receiver = null;
+
+        ExpressionSyntax? receiverExpression = expression switch
+        {
+            MemberAccessExpressionSyntax memberAccess => memberAccess.Expression,
+            ElementAccessExpressionSyntax elementAccess => elementAccess.Expression,
+            _ => null
+        };
+        if (receiverExpression == null)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(expression).Symbol is not IPropertySymbol property)
+            return false;
+
+        // IsReadOnly on IPropertySymbol means get-only (no setter) — unrelated.
+        // The getter's own IsReadOnly controls whether `this` is passed by ref.
+        if (property.GetMethod is not { IsReadOnly: false })
+            return false;
+
+        if (!IsMutatingValueTypeReceiver(
+                property.ContainingType,
+                semanticModel.GetTypeInfo(receiverExpression).Type))
+        {
+            return false;
+        }
+
+        receiver = receiverExpression;
+        return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="expression"/> reaches a converted tuple element
+    /// through converted storage (or a container member that carries it), not
+    /// through an unrelated same-named member of a larger aggregate that merely
+    /// embeds the converted value (Codex: <c>var wrapped = (point, X: 5); ref wrapped.X</c>).
+    /// </summary>
+    private static bool HasConvertedElementMemberAccess(
+        ExpressionSyntax expression,
+        HashSet<ISymbol> storages,
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType,
+        SemanticModel semanticModel,
+        SyntaxNode root)
+    {
+        foreach (var memberAccess in EnumerateAssignmentMemberAccesses(expression))
+        {
+            if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
+                continue;
+
+            // Direct storage, or carrier members (tuple / anonymous-object,
+            // including nested carriers) that embed converted storage.
+            if (ExpressionYieldsConvertedStorage(
+                    memberAccess.Expression,
+                    storages,
+                    tupleType,
+                    semanticModel,
+                    root))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="byRefTarget"/> is a converted tuple element used
+    /// in a way that breaks after conversion to properties: the element property
+    /// itself is the by-ref target, or a value-typed location on a temporary
+    /// property copy. False when the by-ref target is deeper storage reached
+    /// through a reference-type element (Codex: <c>Bump(ref point.Values[0])</c>)
+    /// or through a value-type element that merely wraps reference storage
+    /// (Codex P2: <c>Bump(ref point.Box.Values[0])</c>).
+    /// </summary>
+    private static bool HasConvertedElementByRefAccess(
+        ExpressionSyntax byRefTarget,
+        HashSet<ISymbol> storages,
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        bool refuseDirectElementAccess = true)
+    {
+        var coreTarget = UnwrapParenthesesAndNullForgiving(byRefTarget);
+
+        // Deconstruction assignment: (point.X, point.Y) = (3, 4) writes each
+        // destination like point.X = 3 (Codex P2 on #3441), including nested tuples.
+        var deconstructionDestinations = coreTarget is TupleExpressionSyntax tupleTarget
+            ? CollectDeconstructionDestinations(tupleTarget)
+            : null;
+
+        foreach (var memberAccess in EnumerateAssignmentMemberAccesses(byRefTarget))
+        {
+            if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
+                continue;
+
+            if (!ExpressionYieldsConvertedStorage(
+                    memberAccess.Expression,
+                    storages,
+                    tupleType,
+                    semanticModel,
+                    root))
+            {
+                continue;
+            }
+
+            // Direct by-ref / address-of on the element property itself — refuse.
+            // Assignment / ++/-- on the element itself are allowed (setters); only
+            // nested writes through a value-type element hit the path below.
+            if (coreTarget == memberAccess)
+                return refuseDirectElementAccess;
+
+            var effectiveTarget = coreTarget;
+            if (deconstructionDestinations != null)
+            {
+                if (deconstructionDestinations.Contains(memberAccess))
+                {
+                    if (refuseDirectElementAccess)
+                        return true;
+                    continue;
+                }
+
+                // Nested write inside one destination: evaluate against that destination.
+                effectiveTarget = FindContainingDeconstructionDestination(
+                    memberAccess, deconstructionDestinations) ?? coreTarget;
+            }
+
+            // Through the element: reference-type property returns the same
+            // reference — allow. Value-type property returns a copy — allow only
+            // when the remaining path reaches nested reference storage (array /
+            // class field) before the by-ref target; otherwise refuse.
+            var elementType = semanticModel.GetTypeInfo(memberAccess).Type;
+            if (elementType is { IsReferenceType: true })
+                continue;
+
+            if (elementType is { IsValueType: true } &&
+                !ValueTypeElementByRefIsUnsafe(memberAccess, effectiveTarget, semanticModel))
+            {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when by-ref through a value-type converted element still depends on
+    /// the temporary property copy (unsafe after conversion). False when the
+    /// remaining access path reaches reference storage first — copying the
+    /// value-type element preserves that shared reference
+    /// (<c>Bump(ref point.Box.Values[0])</c>).
+    /// </summary>
+    private static bool ValueTypeElementByRefIsUnsafe(
+        MemberAccessExpressionSyntax elementAccess,
+        ExpressionSyntax coreTarget,
+        SemanticModel semanticModel)
+    {
+        ExpressionSyntax current = elementAccess;
+        while (!ReferenceEquals(current, coreTarget))
+        {
+            var parent = current.Parent;
+
+            if (parent is ParenthesizedExpressionSyntax parenthesized)
+            {
+                current = parenthesized;
+                continue;
+            }
+
+            if (parent is PostfixUnaryExpressionSyntax postfix &&
+                postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression))
+            {
+                current = postfix;
+                continue;
+            }
+
+            if (parent is CheckedExpressionSyntax checkedExpression)
+            {
+                current = checkedExpression;
+                continue;
+            }
+
+            if (parent is MemberAccessExpressionSyntax memberAccess &&
+                memberAccess.Expression == current)
+            {
+                var memberType = semanticModel.GetTypeInfo(memberAccess).Type;
+                if (memberType is { IsReferenceType: true })
+                {
+                    // ref to the reference-typed member of a value-type temporary
+                    // (e.g. ref point.Box.Values) is unsafe; ref through it into
+                    // deeper storage (e.g. ref point.Box.Values[0]) is safe.
+                    return ReferenceEquals(memberAccess, coreTarget);
+                }
+
+                current = memberAccess;
+                continue;
+            }
+
+            if (parent is ElementAccessExpressionSyntax element &&
+                element.Expression == current)
+            {
+                var indexedType = semanticModel.GetTypeInfo(current).Type;
+                if (indexedType is { IsReferenceType: true })
+                    return false; // ref into shared array / indexer storage
+
+                current = element;
+                continue;
+            }
+
+            // Unknown shape — refuse to stay safe.
+            return true;
+        }
+
+        // Reached the by-ref target without finding nested reference storage.
+        return true;
+    }
+
+    /// <summary>
+    /// Collects the leaf destinations of a deconstruction assignment left-hand side
+    /// (<c>(point.X, (point.Y, other))</c>), unwrapping parentheses / null-forgiving.
+    /// </summary>
+    private static HashSet<ExpressionSyntax> CollectDeconstructionDestinations(TupleExpressionSyntax tuple)
+    {
+        var destinations = new HashSet<ExpressionSyntax>();
+        var pending = new Stack<TupleExpressionSyntax>();
+        pending.Push(tuple);
+        while (pending.Count > 0)
+        {
+            foreach (var argument in pending.Pop().Arguments)
+            {
+                var destination = UnwrapParenthesesAndNullForgiving(argument.Expression);
+                if (destination is TupleExpressionSyntax nested)
+                    pending.Push(nested);
+                else
+                    destinations.Add(destination);
+            }
+        }
+
+        return destinations;
+    }
+
+    private static ExpressionSyntax? FindContainingDeconstructionDestination(
+        SyntaxNode node,
+        HashSet<ExpressionSyntax> destinations)
+    {
+        foreach (var ancestor in node.AncestorsAndSelf())
+        {
+            if (ancestor is ExpressionSyntax expression && destinations.Contains(expression))
+                return expression;
+        }
+
+        return null;
+    }
+
+    private static ExpressionSyntax UnwrapParenthesesAndNullForgiving(ExpressionSyntax expression) =>
+        SkipTransparentWrappers(expression);
+
+    /// <summary>
+    /// True when <paramref name="receiver"/> is the converted tuple value (or a
+    /// value-alias / container element that yields that type), not a larger
+    /// aggregate that only embeds converted storage.
+    /// </summary>
+    private static bool ReceiverYieldsConvertedStorage(
+        ExpressionSyntax receiver,
+        HashSet<ISymbol> storages,
+        ITypeSymbol? tupleType,
+        SemanticModel semanticModel)
+    {
+        var receiverType = semanticModel.GetTypeInfo(receiver).Type;
+        if (tupleType != null && receiverType != null &&
+            !SymbolEqualityComparer.Default.Equals(receiverType, tupleType))
+        {
+            // Pointer aliases (var p = &point; Bump(ref p->X) / Bump(ref (*p).X)) —
+            // pointee matches the converted tuple type, so p->Element / (*p).Element
+            // is a by-ref use of storage (Codex P1 on #3441). Larger aggregates that
+            // merely embed storage still fall through to the refuse-on-mismatch path below.
+            if (receiverType is IPointerTypeSymbol pointer &&
+                SymbolEqualityComparer.Default.Equals(pointer.PointedAtType, tupleType))
+            {
+                // Fall through to symbol / alias checks.
+            }
+            // dynamic copy = point; Bump(ref copy.Item1) — type is dynamic, not the
+            // tuple, but the collector still tracks copy; consult the symbol before
+            // rejecting (Codex P1 on #3441).
+            else if (receiverType.TypeKind == TypeKind.Dynamic)
+            {
+                // Fall through to symbol / alias checks.
+            }
+            else
+            {
+                // Larger aggregate (e.g. wrapped in (point, X: 5)) — not the
+                // converted storage itself; element checks must use
+                // ExpressionYieldsConvertedStorage on the carrier member.
+                return false;
+            }
+        }
+
+        var target = semanticModel.GetSymbolInfo(receiver).Symbol;
+        if (target != null && storages.Contains(target))
+            return true;
+
+        return ExpressionReferencesStorageAlias(receiver, storages, semanticModel);
+    }
+
     internal static bool HasElementWrite(
         SyntaxNode root,
         SemanticModel semanticModel,
@@ -1090,7 +5593,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel semanticModel,
         HashSet<ISymbol> storages,
         HashSet<string> memberNames,
-        ITypeSymbol? _ = null)
+        ITypeSymbol? tupleType = null)
     {
         foreach (var node in root.DescendantNodes())
         {
@@ -1113,6 +5616,17 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     argument.RefOrOutKeyword.IsKind(SyntaxKind.InKeyword) => argument.Expression,
                 // ref int x = ref point.X; / ref returns
                 RefExpressionSyntax refExpression => refExpression.Expression,
+                // this-ref extension or mutating value-type instance-method receiver.
+                InvocationExpressionSyntax invocation when
+                    TryGetRefReceiverExpression(invocation, semanticModel, out var refReceiver)
+                    => refReceiver,
+                // Non-readonly property / indexer getter on a mutable value-type element (Codex P1).
+                MemberAccessExpressionSyntax memberAccess when
+                    TryGetMutatingPropertyOrIndexerReceiver(memberAccess, semanticModel, out var propReceiver)
+                    => propReceiver,
+                ElementAccessExpressionSyntax elementAccess when
+                    TryGetMutatingPropertyOrIndexerReceiver(elementAccess, semanticModel, out var indexReceiver)
+                    => indexReceiver,
                 _ => null
             };
 
@@ -1123,39 +5637,20 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // targets ((point.X, point.Y) = (3, 4)), chained mutable-value
             // writes (point.X.Value = 3), inferred-container writes
             // (points[0].X = 3), address-of (&point.X), ref/out/in arguments,
-            // and ref expressions all need rejection for init-only record
-            // struct properties / property-not-variable errors.
-            foreach (var memberAccess in EnumerateAssignmentMemberAccesses(writtenTarget))
+            // ref expressions, and this-ref extension receivers all need
+            // rejection for init-only record struct properties /
+            // property-not-variable errors. Gate receivers on the converted
+            // tuple type so unrelated same-named members of a larger
+            // aggregate (wrapped.X beside embedded point) are not false hits.
+            if (HasConvertedElementMemberAccess(
+                    writtenTarget,
+                    storages,
+                    memberNames,
+                    tupleType,
+                    semanticModel,
+                    root))
             {
-                if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
-                    continue;
-
-                var target = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
-                if (target != null && storages.Contains(target))
-                    return true;
-
-                // Element/indexer / nested field receivers (points[0],
-                // points.AsSpan()[0], wrapped.Value): reject when the receiver
-                // expression flows from converted storage.
-                if (ExpressionReferencesStorageAlias(
-                        memberAccess.Expression,
-                        storages,
-                        semanticModel))
-                {
-                    return true;
-                }
-
-                // wrapped.Value.X when wrapped embeds converted storage in Value
-                // (MemberAccess no longer aliases every aggregate member).
-                if (memberAccess.Expression is MemberAccessExpressionSyntax outerMember &&
-                    TupleAggregateMemberCarriesStorage(
-                        outerMember,
-                        storages,
-                        semanticModel,
-                        root))
-                {
-                    return true;
-                }
+                return true;
             }
         }
 
@@ -1271,6 +5766,23 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return SyntaxFactory.VerbatimIdentifier(default, bare, bare, default);
 
         return SyntaxFactory.Identifier(bare);
+    }
+
+    /// <summary>
+    /// Element names used by write / by-ref gates: each friendly name plus its
+    /// positional <c>ItemN</c> alias so <c>Bump(ref point.Item1)</c> on a named
+    /// tuple <c>(X: 1, Y: 2)</c> is still detected (Codex P1).
+    /// </summary>
+    internal static HashSet<string> BuildElementMemberNames(IReadOnlyList<TupleMember> members)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < members.Count; i++)
+        {
+            names.Add(StripVerbatimPrefix(members[i].Name));
+            names.Add($"Item{i + 1}");
+        }
+
+        return names;
     }
 
     /// <summary>

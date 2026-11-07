@@ -972,6 +972,2574 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains("point.X = 3", text, StringComparison.Ordinal);
     }
 
+    // #3347: asRecord:false must refuse by-ref element uses (properties cannot be ref/out).
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_RefOutAndRefLocalElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Bump(ref point.X);
+                    ref int ry = ref point.Y;
+                    ry = 40;
+                    int.TryParse("7", out point.Y);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_OutElementAlone_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    int.TryParse("5", out point.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_RefArgumentAlone_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Bump(ref point.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_RefLocalAlone_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    ref int value = ref point.X;
+                    value = 3;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: this-ref extension receivers have no explicit ref keyword.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_RefExtensionReceiver_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public static class IntExtensions
+            {
+                public static void Increment(this ref int value) => value++;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    point.X.Increment();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: pointer aliases of converted storage participate in the by-ref gate.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_PointerAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public unsafe class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var p = &point;
+                    Bump(ref p->X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: (*p).X pointer-indirection form (not only p->X).
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_PointerIndirectionRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public unsafe class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var p = &point;
+                    Bump(ref (*p).X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: pointer aliases derived through arithmetic / casts / ++/--.
+    [SkippableTheory]
+    [InlineData(false, "var p = &point; var q = p + 0; Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = p + 0; Bump(ref q->X);")]
+    [InlineData(false, "var p = &point; var q = p - 0; Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = p - 0; Bump(ref q->X);")]
+    [InlineData(false, "var p = &point; var q = ((int X, int Y)*)p; Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = ((int X, int Y)*)p; Bump(ref q->X);")]
+    [InlineData(false, "var p = &point; var q = ++p; Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = ++p; Bump(ref q->X);")]
+    [InlineData(false, "var p = &point; var q = p++; Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = p++; Bump(ref q->X);")]
+    [InlineData(false, "var p = &point; var q = (p += 0); Bump(ref q->X);")]
+    [InlineData(true, "var p = &point; var q = (p += 0); Bump(ref q->X);")]
+    public async Task ConvertTupleToStruct_PointerArithmeticAliasRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public unsafe class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: nested convertible creations inside dynamic/array/collection
+    // containers must resolve the enclosing storage (TryGetAssignedStorageSymbol used to
+    // return null when the tuple's parent was an initializer, skipping validation).
+    // e.g. dynamic[] points = { (1, 2) }; Bump(ref points[0].Item1);
+    [SkippableTheory]
+    [InlineData(false, "dynamic[] points = { (1, 2) }; Bump(ref points[0].Item1);")]
+    [InlineData(true, "dynamic[] points = { (1, 2) }; Bump(ref points[0].Item1);")]
+    [InlineData(false, "dynamic[] points = [(1, 2)]; Bump(ref points[0].Item1);")]
+    [InlineData(true, "dynamic[] points = [(1, 2)]; Bump(ref points[0].Item1);")]
+    [InlineData(false, "var bag = new List<dynamic> { (1, 2) }; Bump(ref bag[0].Item1);")]
+    [InlineData(true, "var bag = new List<dynamic> { (1, 2) }; Bump(ref bag[0].Item1);")]
+    public async Task ConvertTupleToStruct_NestedCreationEnclosingStorageRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string statements)
+    {
+        var source = $$"""
+            using System.Collections.Generic;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    {{statements}}
+                    return 0;
+                }
+            }
+            """;
+
+        // Matches Codex evidence: these sites are accepted by the compiler as dynamic
+        // binding targets in the workspace even when ref-dynamic→ref-int is invalid;
+        // conversion must still refuse before rewriting (same stance as DynamicAliasRefElement).
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: dynamic aliases of converted storage must refuse by-ref element uses
+    // (type-mismatch must not short-circuit before consulting the tracked symbol).
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_DynamicAliasRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (1, 2);
+                    dynamic copy = point;
+                    Bump(ref copy.Item1);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: built-in identity/boxing casts must be unwrapped when collecting
+    // aliases (dynamic copy = (dynamic)point; also (object)point in a boxing chain) —
+    // user-defined conversions are not followed.
+    [SkippableTheory]
+    [InlineData(false, "dynamic copy = (dynamic)point;")]
+    [InlineData(false, "object boxed = (object)point; dynamic copy = boxed;")]
+    [InlineData(true, "dynamic copy = (dynamic)point;")]
+    [InlineData(true, "object boxed = (object)point; dynamic copy = boxed;")]
+    public async Task ConvertTupleToStruct_ValuePreservingCastAliasRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string aliasStatements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (1, 2);
+                    {{aliasStatements}}
+                    Bump(ref copy.Item1);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs602M2j): built-in identity/boxing `as` expressions
+    // must unwrap like parenthesized casts (object boxed = point as object).
+    [SkippableTheory]
+    [InlineData(false, "object boxed = point as object; dynamic copy = boxed;")]
+    [InlineData(true, "object boxed = point as object; dynamic copy = boxed;")]
+    [InlineData(false, "dynamic copy = point as dynamic;")]
+    [InlineData(true, "dynamic copy = point as dynamic;")]
+    public async Task ConvertTupleToStruct_BoxingAsExpressionAliasRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string aliasStatements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (1, 2);
+                    {{aliasStatements}}
+                    Bump(ref copy.Item1);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs602M2n): null-conditional member/element bindings
+    // must follow the same wrapper-member / container provenance as ordinary access
+    // (var maybe = box?.Value; var copy = maybe.Value).
+    [SkippableTheory]
+    [InlineData(false, "var box = Wrap(point); var maybe = box?.Value; var copy = maybe.Value; Bump(ref copy.X);")]
+    [InlineData(true, "var box = Wrap(point); var maybe = box?.Value; var copy = maybe.Value; Bump(ref copy.X);")]
+    [InlineData(false, "var box = Wrap(point); var copy = (box?.Value).Value; Bump(ref copy.X);")]
+    [InlineData(true, "var box = Wrap(point); var copy = (box?.Value).Value; Bump(ref copy.X);")]
+    [InlineData(false, "var points = new[] { point }; var maybe = points?[0]; var copy = maybe.Value; Bump(ref copy.X);")]
+    [InlineData(true, "var points = new[] { point }; var maybe = points?[0]; var copy = maybe.Value; Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Value = point }; var maybe = box?.Value; var copy = maybe.Value; Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Value = point }; var maybe = box?.Value; var copy = maybe.Value; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_ConditionalAccessStorageRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string statements)
+    {
+        var source = $$"""
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+
+                static Box<T> Wrap<T>(T value) => new Box<T>(value);
+            }
+
+            public sealed class Box<T>
+            {
+                public Box(T value) => Value = value;
+                public T Value;
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs602baw): with-expression copies must track the
+    // receiver as a storage source (var copy = point with { Y = 3 }; Bump(ref copy.X)).
+    [SkippableTheory]
+    [InlineData(false, "var copy = point with { Y = 3 }; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = point with { Y = 3 }; Bump(ref copy.X);")]
+    [InlineData(false, "var copy = (point with { Y = 3 }); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = (point with { Y = 3 }); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = point! with { Y = 3 }; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = point! with { Y = 3 }; Bump(ref copy.X);")]
+    [InlineData(false, "var copy = flag ? point with { Y = 3 } : point with { Y = 4 }; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = flag ? point with { Y = 3 } : point with { Y = 4 }; Bump(ref copy.X);")]
+    [InlineData(false, "var points = new[] { point }; var copies = points.Select(x => x with { Y = 3 }).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var points = new[] { point }; var copies = points.Select(x => x with { Y = 3 }).ToArray(); Bump(ref copies[0].X);")]
+    public async Task ConvertTupleToStruct_WithExpressionCopyRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Proactive gap fold on #3441: assignment-as-value yields the RHS storage
+    // (var copy = (tmp = point); Bump(ref copy.X)).
+    [SkippableTheory]
+    [InlineData(false, "(int X, int Y) tmp = default; var copy = (tmp = point); Bump(ref copy.X);")]
+    [InlineData(true, "(int X, int Y) tmp = default; var copy = (tmp = point); Bump(ref copy.X);")]
+    [InlineData(false, "(int X, int Y) tmp = default; var copy = flag ? (tmp = point) : point; Bump(ref copy.X);")]
+    [InlineData(true, "(int X, int Y) tmp = default; var copy = flag ? (tmp = point) : point; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_AssignmentExpressionValueRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: non-local field/property storage used from another partial-class
+    // document must still refuse by-ref element uses (scan project documents).
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_CrossDocumentPartialFieldRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string primary = """
+            namespace TestApp;
+
+            public partial class Worker
+            {
+                public dynamic point;
+
+                public object Create()
+                {
+                    point = (1, 2);
+                    return point;
+                }
+            }
+            """;
+        const string secondary = """
+            namespace TestApp;
+
+            public partial class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public void Mutate()
+                {
+                    Bump(ref point.Item1);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Worker.cs", primary),
+            ("Worker.Partial.cs", secondary));
+        var primaryPath = workspace.SourcePath;
+        var secondaryPath = Path.Combine(workspace.DirectoryPath, "Worker.Partial.cs");
+        var originalPrimary = await File.ReadAllTextAsync(primaryPath);
+        var originalSecondary = await File.ReadAllTextAsync(secondaryPath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = primaryPath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(originalPrimary, await File.ReadAllTextAsync(primaryPath));
+        Assert.Equal(originalSecondary, await File.ReadAllTextAsync(secondaryPath));
+    }
+
+    // Codex P1 on #3441: collection-expression spread elements must be traversed when
+    // collecting collection aliases (var points = new[] { point }; dynamic[] copies = [.. points]).
+    // Matches Codex evidence / DynamicAliasRefElement: skip AssertTupleContainerCompiles —
+    // ref-dynamic→ref-int is invalid for emit but the workspace still sees a by-ref use.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_CollectionExpressionSpreadCarrierRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    dynamic[] copies = [.. points];
+                    Bump(ref copies[0].X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: non-local field/property storage used from a referencing/
+    // dependent project must be scanned (public dynamic field in A, Bump(ref …) in B).
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_DependentProjectFieldRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        await using var workspace = await TempWorkspace.CreateDependentProjectFieldRefAsync();
+        var originalOrigin = await File.ReadAllTextAsync(workspace.SourcePath);
+        var originalConsumer = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(originalOrigin, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(originalConsumer, await File.ReadAllTextAsync(workspace.SecondarySourcePath));
+    }
+
+    // Codex P1 on #3441: stackalloc initializers must be tracked as storage carriers
+    // (implicit stackalloc[] { point } and explicit stackalloc T[n] { point }).
+    [SkippableTheory]
+    [InlineData(false, "var points = stackalloc[] { point }; Bump(ref points[0].X);")]
+    [InlineData(true, "var points = stackalloc[] { point }; Bump(ref points[0].X);")]
+    [InlineData(false, "var points = stackalloc (int X, int Y)[1] { point }; Bump(ref points[0].X);")]
+    [InlineData(true, "var points = stackalloc (int X, int Y)[1] { point }; Bump(ref points[0].X);")]
+    public async Task ConvertTupleToStruct_StackallocInitializerCarrierRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public unsafe class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: __makeref(point.X) requires a variable; properties are not.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_MakeRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var handle = __makeref(point.X);
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var error = await Record.ExceptionAsync(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        AssertTupleContainerCompiles(after);
+        var ex = Assert.IsType<RefactoringException>(error);
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal("3020", ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, after);
+    }
+
+    // Codex P1 on #3441: generic wrapper fields (Box<T>.Value) yield converted storage.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_GenericWrapperFieldRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Box<T>
+            {
+                public T Value;
+            }
+
+            public class Worker
+            {
+                static Box<T> Wrap<T>(T value) => new Box<T> { Value = value };
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var box = Wrap(point);
+                    Bump(ref box.Value.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 15,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: ordinary foreach iteration variables are tracked as aliases.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_OrdinaryForeachAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    foreach (var copy in points)
+                        Bump(ref copy.X);
+                    return points;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: deconstructing foreach designations are tracked as aliases.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_DeconstructingForeachAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    foreach (var (copy, _) in new[] { (point, 0) })
+                        Bump(ref copy.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: generic wrapper members whose type nests T (T[]) forward storage.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_GenericWrapperNestedArrayRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Box<T>
+            {
+                public T[] Values;
+            }
+
+            public class Worker
+            {
+                static Box<T> Wrap<T>(T value) => new Box<T> { Values = new[] { value } };
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var box = Wrap(point);
+                    Bump(ref box.Values[0].X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 15,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: multi-arg generic returns that embed T (not Arity:1) forward storage.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_MultiArgGenericReturnRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static (T Value, int Other) Pair<T>(T value) => (value, 0);
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var wrapped = Pair(point);
+                    Bump(ref wrapped.Value.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 10,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: query expression results propagate converted storage to aliases.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_QueryResultAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var query = from x in new[] { point } select x;
+                    foreach (var copy in query)
+                        Bump(ref copy.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: inferred delegate returns propagate converted storage to invocation aliases.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_InferredDelegateReturnAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var get = () => point;
+                    var copy = get();
+                    Bump(ref copy.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: readonly this-in extension receivers remain valid on generated properties.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_InExtensionReceiverOnElement_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public static class IntExtensions
+            {
+                public static int Inspect(this in int value) => value;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    _ = point.X.Inspect();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("point.X.Inspect()", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 on #3441: unrelated same-named member on a container aggregate must still convert.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_UnrelatedAggregateRefMember_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var wrapped = (point, X: 5);
+                    Bump(ref wrapped.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 9,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref wrapped.X)", text, StringComparison.Ordinal);
+    }
+
+    // Carrier member still refuses when the by-ref use is on the converted element.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_AggregateCarrierRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var wrapped = (point, X: 5);
+                    Bump(ref wrapped.point.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: named-tuple ItemN aliases are still by-ref element uses.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_NamedTupleItemNRefAlias_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Bump(ref point.Item1);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: nested field ++ through a value-type element is CS1612 after conversion.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_NestedValueTypeElementFieldWrite_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Counter
+            {
+                public int Value;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Counter: new Counter(), Y: 2);
+                    point.Counter.Value++;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: nested field assignment through a value-type element is CS1612 after conversion.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_NestedValueTypeElementFieldAssignment_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Counter
+            {
+                public int Value;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Counter: new Counter(), Y: 2);
+                    point.Counter.Value = 1;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: direct element ++ under asRecord:false still converts (setters work).
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_DirectElementIncrement_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    point.X++;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 7,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public int X { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("point.X++", text, StringComparison.Ordinal);
+    }
+
+    // Codex P1 on #3441: nested write through value-type element into reference storage still converts.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_NestedValueTypeElementReferenceStorageWrite_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Box
+            {
+                public int[] Values;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Box: new Box { Values = new[] { 1 } }, Y: 2);
+                    point.Box.Values[0]++;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public TestApp.Box Box { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("point.Box.Values[0]++", text, StringComparison.Ordinal);
+    }
+
+    // Codex P1 on #3441: mutating struct instance-method receivers persist via tuple fields.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_MutatingStructInstanceMethodReceiver_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Counter
+            {
+                public int Value;
+                public void Increment() => Value++;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Counter: new Counter(), Y: 2);
+                    point.Counter.Increment();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 13,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: non-readonly property/indexer getters on mutable value-type elements
+    // receive the element by ref (point.Counter.Next mutates); refuse like mutating methods.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_MutatingStructPropertyGetterReceiver_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Counter
+            {
+                public int Value;
+                public int Next => Value++;
+                public int this[int _] => Value++;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Counter: new Counter(), Y: 2);
+                    var viaProperty = point.Counter.Next;
+                    var viaIndexer = point.Counter[0];
+                    return (viaProperty, viaIndexer, point);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 14,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: constrained T : struct, ICounter — ContainingType is the interface.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_ConstrainedValueTypeInterfaceMethodReceiver_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface ICounter
+            {
+                void Increment();
+            }
+
+            public struct Counter : ICounter
+            {
+                public int Value;
+                public void Increment() => Value++;
+            }
+
+            public class Worker<T> where T : struct, ICounter
+            {
+                public object Create(T counter)
+                {
+                    var point = (Counter: counter, Y: 2);
+                    point.Counter.Increment();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 18,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: by-ref through a reference-type element remains valid after conversion.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_RefThroughReferenceTypeElement_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (Values: new[] { 1 }, Y: 2);
+                    Bump(ref point.Values[0]);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 9,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public int[] Values { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref point.Values[0])", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 on #3441: passing the reference-type element property itself by ref still refuses.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_RefOnReferenceTypeElementItself_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Retarget(ref int[] values) => values = new[] { 9 };
+
+                public object Create()
+                {
+                    var point = (Values: new[] { 1 }, Y: 2);
+                    Retarget(ref point.Values);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: anonymous-object carriers must track converted storage for by-ref.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_AnonymousObjectCarrierRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var box = new { Value = point };
+                    Bump(ref box.Value.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: by-ref through a value-type element into nested reference storage remains valid.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_RefThroughValueTypeElementToReferenceStorage_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Box
+            {
+                public int[] Values;
+            }
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (Box: new Box { Values = new[] { 1 } }, Y: 2);
+                    Bump(ref point.Box.Values[0]);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 14,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public TestApp.Box Box { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref point.Box.Values[0])", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 on #3441: by-ref to a value field of a value-type element still refuses (temporary copy).
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_RefOnValueTypeElementField_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Box
+            {
+                public int Count;
+            }
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (Box: new Box { Count = 1 }, Y: 2);
+                    Bump(ref point.Box.Count);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 14,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: deconstruction destinations that receive converted storage must be tracked.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_DeconstructionAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var (copy, _) = (point, 0);
+                    Bump(ref copy.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: anonymous carriers reached through container elements must resolve.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_ArrayElementAnonymousCarrierRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var boxes = new[] { new { Value = point } };
+                    Bump(ref boxes[0].Value.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: declaration-pattern copies of converted storage must be tracked.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_DeclarationPatternAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    if (point is var copy)
+                        Bump(ref copy.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: nonconstant container indices must resolve carriers conservatively.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_NonConstantIndexAnonymousCarrierRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(int i)
+                {
+                    var point = (X: 1, Y: 2);
+                    var boxes = new[] { new { Value = point } };
+                    Bump(ref boxes[i].Value.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+
+    // Codex P1 on #3441: deconstruction from a tuple-valued expression (not only literal RHS).
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_TupleValuedExpressionDeconstructionAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var wrapped = (point, 0);
+                    var (copy, _) = wrapped;
+                    Bump(ref copy.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: nested recursive-pattern designations must be traversed.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_NestedRecursivePatternAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    if (new { Value = point } is { Value: var copy })
+                        Bump(ref copy.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: inferred lambda parameters receiving converted element storage.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_LambdaParameterAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    System.Array.ForEach(new[] { point }, copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: map Zip-style multi-param callbacks to the storage-carrying input.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_CallbackNonFirstParamRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    var other = new[] { 0 };
+                    _ = other.Zip(points, (n, copy) => { Bump(ref copy.X); return n; }).ToArray();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: do not alias unrelated sibling callback params that keep the tuple type.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_UnrelatedCallbackParam_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static void Run<T>(T value, System.Action<(int X, int Y)> action)
+                {
+                    _ = value;
+                    action(default);
+                }
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Run(point, other => Bump(ref other.X));
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 15,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref other.X)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P1 on #3441: List<T>.ForEach instance receiver must map containing-type T.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_GenericInstanceReceiverCallbackRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point }.ToList();
+                    points.ForEach(copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(original, after);
+        AssertTupleContainerCompiles(after);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_ExplicitTupleContainerForEachRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            using System.Collections.Generic;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var list = new List<(int X, int Y)> { point };
+                    list.ForEach(copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var error = await Record.ExceptionAsync(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        // Compile the actual file even if the tool incorrectly reported success.
+        AssertTupleContainerCompiles(after);
+        var ex = Assert.IsType<RefactoringException>(error);
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal("3020", ex.ErrorCode);
+        Assert.Equal(original, after);
+    }
+
+    [SkippableTheory]
+    [InlineData(false, "{ point }")]
+    [InlineData(true, "{ point }")]
+    [InlineData(false, "new (int X, int Y)[] { point }")]
+    [InlineData(true, "new (int X, int Y)[] { point }")]
+    [InlineData(false, "[point]")]
+    [InlineData(true, "[point]")]
+    public async Task ConvertTupleToStruct_ExplicitTupleArrayForEachRefElement_ThrowsAndWritesNothing(bool asRecord, string initializer)
+    {
+        var source = $$"""
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    (int X, int Y)[] arr = {{initializer}};
+                    Array.ForEach(arr, copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var error = await Record.ExceptionAsync(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        // Compile the actual file even if the tool incorrectly reported success.
+        AssertTupleContainerCompiles(after);
+        var ex = Assert.IsType<RefactoringException>(error);
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal("3020", ex.ErrorCode);
+        Assert.Equal(original, after);
+    }
+
+    private static void AssertTupleContainerCompiles(string source)
+    {
+        var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator)
+            .Select(path => MetadataReference.CreateFromFile(path));
+        var compilation = CSharpCompilation.Create(
+            "TupleContainerRegression",
+            [CSharpSyntaxTree.ParseText(source)],
+            references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        using var output = new MemoryStream();
+        var result = compilation.Emit(output);
+        Assert.True(result.Success, string.Join(Environment.NewLine, result.Diagnostics));
+    }
+
+    // Codex P1 on #3441: query range variables must be tracked as storage aliases.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_QueryRangeVariableRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static int Read(ref int v) => v;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    _ = (from copy in new[] { point } select Read(ref copy.X)).ToArray();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: inferred out var receiving converted generic type must be tracked.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_OutVarAliasRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static void Copy<T>(T value, out T copy) => copy = value;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Copy(point, out var copy);
+                    Bump(ref copy.X);
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(original, after);
+        AssertTupleContainerCompiles(after);
+    }
+
+    // Codex P1 on #3441: deconstruction sources returned by generic calls must
+    // resolve to the forwarded storage (no variable initializer to walk).
+    [SkippableTheory]
+    [InlineData(false, "var (copy, _) = Wrap(point); Bump(ref copy.X);")]
+    [InlineData(true, "var (copy, _) = Wrap(point); Bump(ref copy.X);")]
+    [InlineData(false, "(var copy, var other) = Wrap(point); Bump(ref copy.X);")]
+    [InlineData(true, "(var copy, var other) = Wrap(point); Bump(ref copy.X);")]
+    [InlineData(false, "var wrapped = Wrap(point); var (copy, _) = wrapped; Bump(ref copy.X);")]
+    [InlineData(true, "var wrapped = Wrap(point); var (copy, _) = wrapped; Bump(ref copy.X);")]
+    [InlineData(false, "if (Wrap(point) is (var copy, _)) Bump(ref copy.X);")]
+    [InlineData(true, "if (Wrap(point) is (var copy, _)) Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_DeconstructionFromGenericCallRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+                static (T Value, int Other) Wrap<T>(T value) => (value, 0);
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 10,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: iteration variables over query projections / container
+    // literals must recover the anonymous-object carrier that supplies them.
+    [SkippableTheory]
+    [InlineData(false, "var query = from n in new[] { 0 } select new { Value = point }; foreach (var box in query) Bump(ref box.Value.X);")]
+    [InlineData(true, "var query = from n in new[] { 0 } select new { Value = point }; foreach (var box in query) Bump(ref box.Value.X);")]
+    [InlineData(false, "foreach (var box in from n in new[] { 0 } select new { Value = point }) Bump(ref box.Value.X);")]
+    [InlineData(true, "foreach (var box in from n in new[] { 0 } select new { Value = point }) Bump(ref box.Value.X);")]
+    [InlineData(false, "var query = from n in new[] { 0 } let b = new { Value = point } select b; foreach (var box in query) Bump(ref box.Value.X);")]
+    [InlineData(true, "var query = from n in new[] { 0 } let b = new { Value = point } select b; foreach (var box in query) Bump(ref box.Value.X);")]
+    [InlineData(false, "foreach (var box in new[] { new { Value = point } }) Bump(ref box.Value.X);")]
+    [InlineData(true, "foreach (var box in new[] { new { Value = point } }) Bump(ref box.Value.X);")]
+    public async Task ConvertTupleToStruct_QueryAnonymousProjectionCarrierRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: list-pattern element designations must be traversed.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_ListPatternAliasRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    if (points is [var copy])
+                        Bump(ref copy.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordDeconstructionAssignment_ThrowsAndWritesNothing()
     {
@@ -3144,6 +5712,105 @@ public class ConvertTupleToStructOperationTests
             };
         }
 
+        /// <summary>
+        /// Project A exposes a public dynamic field initialized from a convertible
+        /// tuple; project B references A and passes an element by ref. Used for the
+        /// dependent-project storage scan regression (Codex P1 on #3441).
+        /// </summary>
+        public static async Task<TempWorkspace> CreateDependentProjectFieldRefAsync()
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertTupleDep_" + Guid.NewGuid().ToString("N"));
+            var appDir = Path.Combine(directory, "App");
+            var otherDir = Path.Combine(directory, "Other");
+            Directory.CreateDirectory(appDir);
+            Directory.CreateDirectory(otherDir);
+
+            var appProject = Path.Combine(appDir, "App.csproj");
+            var otherProject = Path.Combine(otherDir, "Other.csproj");
+            var appSource = Path.Combine(appDir, "Worker.cs");
+            var otherSource = Path.Combine(otherDir, "Client.cs");
+
+            await File.WriteAllTextAsync(appProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(otherProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\App\App.csproj" />
+                  </ItemGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(appSource, """
+                namespace TestApp;
+
+                public class Worker
+                {
+                    public dynamic point;
+
+                    public object Create()
+                    {
+                        point = (1, 2);
+                        return point;
+                    }
+                }
+                """);
+            await File.WriteAllTextAsync(otherSource, """
+                namespace OtherApp;
+
+                public class Client
+                {
+                    static void Bump(ref int v) => v++;
+
+                    public void Mutate(TestApp.Worker worker)
+                    {
+                        Bump(ref worker.point.Item1);
+                    }
+                }
+                """);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Other", "Other\Other.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            var workspace = await LoadAsync(directory, solutionPath, appSource);
+            return new TempWorkspace
+            {
+                DirectoryPath = workspace.DirectoryPath,
+                ProjectPath = workspace.ProjectPath,
+                SourcePath = workspace.SourcePath,
+                Context = workspace.Context,
+                SecondarySourcePath = otherSource
+            };
+        }
+
         public static async Task<TempWorkspace> CreateSiblingProjectsAsync()
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
@@ -3278,4 +5945,1193 @@ public class ConvertTupleToStructOperationTests
     }
 
     #endregion
+
+    // Codex P1 on #3441: selectors that conditionally forward the element
+    // (?:, casts, switch arms, block returns) still alias converted storage.
+    [SkippableTheory]
+    [InlineData(false, "var copies = points.Select(x => flag ? x : x).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => flag ? x : x).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => (flag ? (x) : x)).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => (flag ? (x) : x)).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => ((int X, int Y))x).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => ((int X, int Y))x).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => flag switch { true => x, _ => x }).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => flag switch { true => x, _ => x }).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => { if (flag) return x; return x; }).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => { if (flag) return x; return x; }).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select((x, i) => i > 0 ? x : x).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select((x, i) => i > 0 ? x : x).ToArray(); Bump(ref copies[0].X);")]
+    public async Task ConvertTupleToStruct_ConditionalForwardingSelectorRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: element members that are direct deconstruction
+    // destinations are setter writes (like point.X = 3) under asRecord:false.
+    [SkippableTheory]
+    [InlineData("(point.X, point.Y) = (3, 4);")]
+    [InlineData("((point.X), point.Y) = (3, 4);")]
+    [InlineData("(point.X, (point.Y, other)) = (3, (4, 5));")]
+    [InlineData("(point.X, other) = (3, 5);")]
+    public async Task ConvertTupleToStruct_AsRecordFalse_DeconstructionAssignmentDirectElementWrite_Succeeds(string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var other = 0;
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 7,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public int X { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains(statements, text, StringComparison.Ordinal);
+        AssertTupleContainerCompiles(text);
+    }
+
+    // Codex P2 on #3441: under asRecord:true deconstruction destinations keep the
+    // existing direct element-assignment rejection (init-only properties).
+    [SkippableTheory]
+    [InlineData("(point.X, point.Y) = (3, 4);")]
+    [InlineData("((point.X), point.Y) = (3, 4);")]
+    [InlineData("(point.X, (point.Y, other)) = (3, (4, 5));")]
+    [InlineData("(point.X, other) = (3, 5);")]
+    public async Task ConvertTupleToStruct_AsRecordTrue_DeconstructionAssignmentDirectElementWrite_ThrowsAndWritesNothing(string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var other = 0;
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("element assignments", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: extended property-pattern paths ({ Inner.Value: var copy }) and
+    // nested property/positional/list combos must resolve every member component.
+    [SkippableTheory]
+    [InlineData(false, "var box = new { Inner = new { Value = point } }; if (box is { Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Inner = new { Value = point } }; if (box is { Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(false, "if (new { Inner = new { Value = point } } is { Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(true, "if (new { Inner = new { Value = point } } is { Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer.Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer.Inner.Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer.Inner: { Value: var copy } }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer.Inner: { Value: var copy } }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer: { Inner.Value: var copy } }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Outer = new { Inner = new { Value = point } } }; if (box is { Outer: { Inner.Value: var copy } }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Inner = new { Value = point } }; if (box is { Inner.Value: { } copy }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Inner = new { Value = point } }; if (box is { Inner.Value: { } copy }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Inner = new { Pair = (point, 0) } }; if (box is { Inner.Pair: (var copy, _) }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Inner = new { Pair = (point, 0) } }; if (box is { Inner.Pair: (var copy, _) }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Pair = (point, 0) }; if (box is { Pair: (var copy, _) }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Pair = (point, 0) }; if (box is { Pair: (var copy, _) }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Items = new[] { point } }; if (box is { Items: [var copy] }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Items = new[] { point } }; if (box is { Items: [var copy] }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Inner = new { Items = new[] { point } } }; if (box is { Inner.Items: [var copy] }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Inner = new { Items = new[] { point } } }; if (box is { Inner.Items: [var copy] }) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Inner = new { Value = point } }; switch (box) { case { Inner.Value: var copy }: Bump(ref copy.X); break; }")]
+    [InlineData(true, "var box = new { Inner = new { Value = point } }; switch (box) { case { Inner.Value: var copy }: Bump(ref copy.X); break; }")]
+    public async Task ConvertTupleToStruct_ExtendedPropertyPatternRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: null-forgiving (and checked/unchecked) wrappers around converted
+    // storage are transparent for by-ref element access and aliasing; aggregate member
+    // reads (box.Value, (point, 0).Item1) alias the embedded storage.
+    [SkippableTheory]
+    [InlineData(false, "Bump(ref point!.X);")]
+    [InlineData(true, "Bump(ref point!.X);")]
+    [InlineData(false, "Bump(ref (point!).X);")]
+    [InlineData(true, "Bump(ref (point!).X);")]
+    [InlineData(false, "Bump(ref point!.X!);")]
+    [InlineData(true, "Bump(ref point!.X!);")]
+    [InlineData(false, "var copy = point!; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = point!; Bump(ref copy.X);")]
+    [InlineData(false, "var copy = (point!); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = (point!); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = checked(point); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = checked(point); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = unchecked(point!); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = unchecked(point!); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = flag ? point! : point; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = flag ? point! : point; Bump(ref copy.X);")]
+    [InlineData(false, "ref var alias = ref point!; Bump(ref alias.X);")]
+    [InlineData(true, "ref var alias = ref point!; Bump(ref alias.X);")]
+    [InlineData(false, "var copies = points.Select(x => x!).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => x!).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => checked(x)).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => checked(x)).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "if (point! is var copy) Bump(ref copy.X);")]
+    [InlineData(true, "if (point! is var copy) Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Value = point! }; if (box is { Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Value = point! }; if (box is { Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(false, "var copies = points!; Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points!; Bump(ref copies[0].X);")]
+    [InlineData(false, "Bump(ref points![0].X);")]
+    [InlineData(true, "Bump(ref points![0].X);")]
+    [InlineData(false, "Bump(ref points[0]!.X);")]
+    [InlineData(true, "Bump(ref points[0]!.X);")]
+    [InlineData(false, "var copies = new[] { point! }; Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = new[] { point! }; Bump(ref copies[0].X);")]
+    [InlineData(false, "ref var r = ref points![0]; Bump(ref r.X);")]
+    [InlineData(true, "ref var r = ref points![0]; Bump(ref r.X);")]
+    [InlineData(false, "var copies = points!.ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points!.ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => x).ToArray()!; Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => x).ToArray()!; Bump(ref copies[0].X);")]
+    [InlineData(false, "var copy = checked(points[0]); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = checked(points[0]); Bump(ref copy.X);")]
+    [InlineData(false, "var (copy, _) = (point!, 0); Bump(ref copy.X);")]
+    [InlineData(true, "var (copy, _) = (point!, 0); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = (point!, 0).Item1; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = (point!, 0).Item1; Bump(ref copy.X);")]
+    [InlineData(false, "var copy = points![0]!; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = points![0]!; Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Value = point }; var copy = box!.Value; Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Value = point }; var copy = box!.Value; Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Value = point }; if (box! is { Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Value = point }; if (box! is { Value: var copy }) Bump(ref copy.X);")]
+    [InlineData(false, "var copy = (point, 0).Item1; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = (point, 0).Item1; Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Value = point }; var copy = box.Value; Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Value = point }; var copy = box.Value; Bump(ref copy.X);")]
+    [InlineData(false, "var box = new { Inner = new { Value = point } }; var copy = box!.Inner.Value; Bump(ref copy.X);")]
+    [InlineData(true, "var box = new { Inner = new { Value = point } }; var copy = box!.Inner.Value; Bump(ref copy.X);")]
+    [InlineData(false, "var wrapped = (point, 0); var copy = wrapped.Item1!; Bump(ref copy.X);")]
+    [InlineData(true, "var wrapped = (point, 0); var copy = wrapped.Item1!; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_NullForgivingStorageRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // #3347: tuples placed into collections (initializer / Add / collection expression)
+    // and read back via ToArray/ToList/indexer/foreach must stay gated.
+    [SkippableTheory]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point }; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point }; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point! }; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point! }; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point }; var arr = list!.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point }; var arr = list!.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point }; var copy = list[0]; Bump(ref copy.X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point }; var copy = list[0]; Bump(ref copy.X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point }; foreach (var copy in list) { var c = copy; Bump(ref c.X); }")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point }; foreach (var copy in list) { var c = copy; Bump(ref c.X); }")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { point }; var copies = list.ToList(); var c = copies[0]; Bump(ref c.X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { point }; var copies = list.ToList(); var c = copies[0]; Bump(ref c.X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)>(); list.Add(point); var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)>(); list.Add(point); var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)>(); list.Add(point!); var copy = list[0]; Bump(ref copy.X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)>(); list.Add(point!); var copy = list[0]; Bump(ref copy.X);")]
+    [InlineData(false, "List<(int X, int Y)> list = [point]; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "List<(int X, int Y)> list = [point]; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "(int X, int Y)[] arr = [point]; Bump(ref arr[0].X);")]
+    [InlineData(true, "(int X, int Y)[] arr = [point]; Bump(ref arr[0].X);")]
+    [InlineData(false, "(int X, int Y)[] arr = [point!]; var copy = arr[0]; Bump(ref copy.X);")]
+    [InlineData(true, "(int X, int Y)[] arr = [point!]; var copy = arr[0]; Bump(ref copy.X);")]
+    [InlineData(false, "var arr = new (int X, int Y)[] { point }; Bump(ref arr[0].X);")]
+    [InlineData(true, "var arr = new (int X, int Y)[] { point }; Bump(ref arr[0].X);")]
+    [InlineData(false, "var map = new Dictionary<int, (int X, int Y)> { [0] = point }; var copy = map[0]; Bump(ref copy.X);")]
+    [InlineData(true, "var map = new Dictionary<int, (int X, int Y)> { [0] = point }; var copy = map[0]; Bump(ref copy.X);")]
+    [InlineData(false, "var map = new Dictionary<int, (int X, int Y)> { { 0, point } }; var copy = map[0]; Bump(ref copy.X);")]
+    [InlineData(true, "var map = new Dictionary<int, (int X, int Y)> { { 0, point } }; var copy = map[0]; Bump(ref copy.X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)>(); list.Insert(0, point); var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)>(); list.Insert(0, point); var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var list = new List<(int X, int Y)> { (0, 0) }; list[0] = point; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var list = new List<(int X, int Y)> { (0, 0) }; list[0] = point; var arr = list.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(false, "var queue = new Queue<(int X, int Y)>(); queue.Enqueue(point); var arr = queue.ToArray(); Bump(ref arr[0].X);")]
+    [InlineData(true, "var queue = new Queue<(int X, int Y)>(); queue.Enqueue(point); var arr = queue.ToArray(); Bump(ref arr[0].X);")]
+    public async Task ConvertTupleToStruct_CollectionInitializerCarrierRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: Select/ConvertAll selectors that return storage-returning
+    // delegates (x => () => x) must alias through the produced sequence so
+    // getters[0]() is gated like a directly assigned delegate.
+    [SkippableTheory]
+    [InlineData(false, "var getters = points.Select(x => (Func<(int X, int Y)>)(() => x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select(x => (Func<(int X, int Y)>)(() => x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => { return () => x; }).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => { return () => x; }).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => flag ? () => x : () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => flag ? () => x : () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<Func<(int X, int Y)>>>(x => () => () => x).ToArray(); var copy = getters[0]()(); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<Func<(int X, int Y)>>>(x => () => () => x).ToArray(); var copy = getters[0]()(); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>((x, i) => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>((x, i) => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var getters = list.ConvertAll<Func<(int X, int Y)>>(x => () => x); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var getters = list.ConvertAll<Func<(int X, int Y)>>(x => () => x); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = System.Linq.Enumerable.Select<(int X, int Y), Func<(int X, int Y)>>(points, x => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = System.Linq.Enumerable.Select<(int X, int Y), Func<(int X, int Y)>>(points, x => () => x).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); var copy = getters[0].Invoke(); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); var copy = getters[0].Invoke(); Bump(ref copy.X);")]
+    [InlineData(false, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); foreach (var get in getters) { var copy = get(); Bump(ref copy.X); }")]
+    [InlineData(true, "var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => () => x).ToArray(); foreach (var get in getters) { var copy = get(); Bump(ref copy.X); }")]
+
+    public async Task ConvertTupleToStruct_SelectorReturnedDelegateRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: selectors whose leaf is an opaque delegate-returning call
+    // (x => MakeGetter(x)), not an inline lambda, must still gate the produced sequence.
+    [SkippableTheory]
+    [InlineData(false, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select(x => MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select(x => MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<(int X, int Y)> MakeGetter((int X, int Y) value) => () => value; var getters = points.Select(x => MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<(int X, int Y)> MakeGetter((int X, int Y) value) => () => value; var getters = points.Select(x => MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => { return MakeGetter(x); }).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => { return MakeGetter(x); }).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => flag ? MakeGetter(x) : MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => flag ? MakeGetter(x) : MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<Func<T>> MakeNested<T>(T value) => () => () => value; var getters = points.Select<(int X, int Y), Func<Func<(int X, int Y)>>>(x => MakeNested(x)).ToArray(); var copy = getters[0]()(); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<Func<T>> MakeNested<T>(T value) => () => () => value; var getters = points.Select<(int X, int Y), Func<Func<(int X, int Y)>>>(x => MakeNested(x)).ToArray(); var copy = getters[0]()(); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<T> MakeGetter<T>(T value) => () => value; var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var getters = list.ConvertAll(x => MakeGetter(x)); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<T> MakeGetter<T>(T value) => () => value; var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var getters = list.ConvertAll(x => MakeGetter(x)); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<T> MakeGetter<T>(T value) => () => value; var get = MakeGetter(point); var copy = get(); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<T> MakeGetter<T>(T value) => () => value; var get = MakeGetter(point); var copy = get(); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<(int X, int Y)> MakeGetter((int X, int Y) value) => () => value; var get = MakeGetter(point); var copy = get(); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<(int X, int Y)> MakeGetter((int X, int Y) value) => () => value; var get = MakeGetter(point); var copy = get(); Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_OpaqueDelegateReturningCallRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: nested lambda/local-function returns must not taint the
+    // outer delegate's return analysis (false positive on unrelated outer result).
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_NestedFunctionReturnDoesNotTaintOuterDelegate_Succeeds(bool asRecord)
+    {
+        var source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Func<(int A, int B, int C)> get = () =>
+                    {
+                        Func<(int X, int Y)> nested = () =>
+                        {
+                            return point;
+                        };
+                        _ = nested;
+                        return (A: 9, B: 9, C: 9);
+                    };
+                    var copy = get();
+                    Bump(ref copy.A);
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 11,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref copy.A)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P1 on #3441: converted storage flowing through ?? / ??= must alias
+    // both coalesce operands (and related ?: nesting).
+    [SkippableTheory]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? point; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? point; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = ((int X, int Y)?)point ?? maybe ?? point; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = ((int X, int Y)?)point ?? maybe ?? point; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? (flag ? point : point); Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? (flag ? point : point); Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = (maybe ?? point)!; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = (maybe ?? point)!; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? point!; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = maybe ?? point!; Bump(ref copy.X);")]
+    [InlineData(false, "(int X, int Y)? maybe = null; maybe ??= point; var copy = maybe.Value; Bump(ref copy.X);")]
+    [InlineData(true, "(int X, int Y)? maybe = null; maybe ??= point; var copy = maybe.Value; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); (int X, int Y)? holder = null; holder ??= maybe ?? point; var copy = holder.Value; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); (int X, int Y)? holder = null; holder ??= maybe ?? point; var copy = holder.Value; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var a = Maybe(point); var b = Maybe(point); var copy = a ?? b ?? point; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var a = Maybe(point); var b = Maybe(point); var copy = a ?? b ?? point; Bump(ref copy.X);")]
+    [InlineData(false, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = flag ? (maybe ?? point) : point; Bump(ref copy.X);")]
+    [InlineData(true, "static T? Maybe<T>(T value) where T : struct => value; var maybe = Maybe(point); var copy = flag ? (maybe ?? point) : point; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_NullCoalescingStorageRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            #nullable enable
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+
+    // Codex P2 on #3441: Dictionary<object, tuple>.Add(point, …) must not taint
+    // the receiver via the unrelated object key — value reads stay tuples.
+    [SkippableTheory]
+    [InlineData(false, "dict.Add(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(true, "dict.Add(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(false, "dict.Add(point, (X: 3, Y: 4)); var copy = dict.Values.First(); Bump(ref copy.X);")]
+    [InlineData(true, "dict.Add(point, (X: 3, Y: 4)); var copy = dict.Values.First(); Bump(ref copy.X);")]
+    [InlineData(false, "dict.TryAdd(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(true, "dict.TryAdd(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_DictionaryObjectKeyInsertion_DoesNotTaintValues_Succeeds(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Dictionary<object, (int X, int Y)> dict = new();
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref copy.X)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 on #3441 (PRRT_kwDORD0nYs600gmf): collection-initializer entries
+    // bind to Add parameters — { point, value } only puts point in the object key,
+    // so refs into dictionary values stay tuples. (Codex's literal ref dict[point].X
+    // is CS1612 — indexer values are not variables — so read a copy first.)
+    [SkippableTheory]
+    [InlineData(false, "Dictionary<object, (int X, int Y)> dict = new() { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(true, "Dictionary<object, (int X, int Y)> dict = new() { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(false, "var dict = new Dictionary<object, (int X, int Y)> { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
+    [InlineData(true, "var dict = new Dictionary<object, (int X, int Y)> { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_DictionaryInitializerObjectKey_DoesNotTaintValues_Succeeds(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains(".X)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 on #3441: still refuse when the converted tuple is the dictionary value.
+    [SkippableTheory]
+    [InlineData(false, "dict.Add(0, point); var copy = dict[0]; Bump(ref copy.X);")]
+    [InlineData(true, "dict.Add(0, point); var copy = dict[0]; Bump(ref copy.X);")]
+    [InlineData(false, "dict.TryAdd(0, point); var copy = dict[0]; Bump(ref copy.X);")]
+    [InlineData(true, "dict.TryAdd(0, point); var copy = dict[0]; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_DictionaryValueInsertionRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Dictionary<object, (int X, int Y)> dict = new();
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: Runner<T,(int X,int Y)> Make<T>(T) — callback bound to the
+    // second (original tuple) type argument must not be treated as storage.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_ContainingTypeCallbackUnrelatedTypeArg_Succeeds(bool asRecord)
+    {
+        var source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Runner<T, TCallback>
+            {
+                public void Run(Action<TCallback> action) => action(default!);
+            }
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static Runner<T, (int X, int Y)> Make<T>(T value)
+                {
+                    _ = value;
+                    return new Runner<T, (int X, int Y)>();
+                }
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var runner = Make(point);
+                    runner.Run(copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 22,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref copy.X)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 on #3441: still refuse when the callback binds the storage-sourced type arg.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_ContainingTypeCallbackStorageTypeArg_ThrowsAndWritesNothing(bool asRecord)
+    {
+        var source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Runner<T, TOther>
+            {
+                public void Run(Action<T> action) => action(default!);
+            }
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static Runner<T, (int A, int B)> Make<T>(T value)
+                {
+                    _ = value;
+                    return new Runner<T, (int A, int B)>();
+                }
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var runner = Make(point);
+                    runner.Run(copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 22,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs600BT9): storage nested in a generic
+    // wrapper parameter (Box<T>) and extracted by the return type (T) —
+    // Unwrap(Wrap(point)) — must alias the extracted copy.
+    [SkippableTheory]
+    [InlineData(false, "var box = Wrap(point); var copy = Unwrap(box); Bump(ref copy.X);")]
+    [InlineData(true, "var box = Wrap(point); var copy = Unwrap(box); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = Unwrap(Wrap(point)); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = Unwrap(Wrap(point)); Bump(ref copy.X);")]
+    [InlineData(false, "var box = Wrap(point); var all = UnwrapAll(box); Bump(ref all[0].X);")]
+    [InlineData(true, "var box = Wrap(point); var all = UnwrapAll(box); Bump(ref all[0].X);")]
+    [InlineData(false, "var pair = MakePair(0, point); var copy = Second(pair); Bump(ref copy.X);")]
+    [InlineData(true, "var pair = MakePair(0, point); var copy = Second(pair); Bump(ref copy.X);")]
+    [InlineData(false, "var box = Wrap(point); var copy = box.Unwrap(); Bump(ref copy.X);")]
+    [InlineData(true, "var box = Wrap(point); var copy = box.Unwrap(); Bump(ref copy.X);")]
+    [InlineData(false, "var box = 5.With(point); var copy = Unwrap(box); Bump(ref copy.X);")]
+    [InlineData(true, "var box = 5.With(point); var copy = Unwrap(box); Bump(ref copy.X);")]
+    [InlineData(false, "var box = Wrap(point); var copy = box.Get(); Bump(ref copy.X);")]
+    [InlineData(true, "var box = Wrap(point); var copy = box.Get(); Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_GenericWrapperExtractionRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+
+                static Box<T> Wrap<T>(T value) => new Box<T>(value);
+                static T Unwrap<T>(Box<T> box) => box.Value;
+                static T[] UnwrapAll<T>(Box<T> box) => new[] { box.Value };
+                static Pair<TKey, TValue> MakePair<TKey, TValue>(TKey key, TValue value) => new Pair<TKey, TValue>(key, value);
+                static TValue Second<TKey, TValue>(Pair<TKey, TValue> pair) => pair.Value;
+            }
+
+            public sealed class Box<T>
+            {
+                public Box(T value) => Value = value;
+                public T Value;
+                public T Get() => Value;
+            }
+
+            public sealed class Pair<TKey, TValue>
+            {
+                public Pair(TKey key, TValue value) { Key = key; Value = value; }
+                public TKey Key;
+                public TValue Value;
+            }
+
+            public static class BoxExtensions
+            {
+                public static T Unwrap<T>(this Box<T> box) => box.Value;
+                public static Box<T> With<T>(this int seed, T value) => new Box<T>(value);
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs600BT9) over-refusal guard: extracting the
+    // unrelated wrapper type argument (TKey bound to a different tuple) must not
+    // alias the converted storage.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_GenericWrapperUnrelatedExtraction_Succeeds(bool asRecord)
+    {
+        var source = """
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var pair = MakePair((A: 3, B: 4), point); var other = First(pair); Bump(ref other.A);
+                    return point;
+                }
+
+                static Pair<TKey, TValue> MakePair<TKey, TValue>(TKey key, TValue value) => new Pair<TKey, TValue>(key, value);
+                static TKey First<TKey, TValue>(Pair<TKey, TValue> pair) => pair.Key;
+            }
+
+            public sealed class Pair<TKey, TValue>
+            {
+                public Pair(TKey key, TValue value) { Key = key; Value = value; }
+                public TKey Key;
+                public TValue Value;
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref other.A)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 on #3441 (PRRT_kwDORD0nYs600gme): only wrapper members whose
+    // original declared type mentions the bound type parameter forward storage.
+    // Box<T>.Other is a fixed tuple field that merely shares the constructed shape.
+    [SkippableTheory]
+    [InlineData(false, "var box = Wrap(point); Bump(ref box.Other.X);")]
+    [InlineData(true, "var box = Wrap(point); Bump(ref box.Other.X);")]
+    [InlineData(false, "var box = Wrap(point); var other = box.Other; Bump(ref other.X);")]
+    [InlineData(true, "var box = Wrap(point); var other = box.Other; Bump(ref other.X);")]
+    [InlineData(false, "var box = Wrap(point); var others = box.Others; Bump(ref others[0].X);")]
+    [InlineData(true, "var box = Wrap(point); var others = box.Others; Bump(ref others[0].X);")]
+    public async Task ConvertTupleToStruct_GenericWrapperFixedTupleMember_Succeeds(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+
+                static Box<T> Wrap<T>(T value) => new Box<T>(value);
+            }
+
+            public sealed class Box<T>
+            {
+                public Box(T value) => Value = value;
+                public T Value;
+                public (int X, int Y) Other;
+                public (int X, int Y)[] Others = new (int X, int Y)[1];
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains(".X)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs600BUC): selectors passed as method
+    // groups (points.Select(Echo)) must be analyzed like lambda selectors.
+    [SkippableTheory]
+    [InlineData(false, "var copies = points.Select(Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = System.Linq.Enumerable.Select(points, Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = System.Linq.Enumerable.Select(points, Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = Array.ConvertAll(points, Echo); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = Array.ConvertAll(points, Echo); Bump(ref copies[0].X);")]
+    [InlineData(false, "var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var copies = list.ConvertAll(Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var copies = list.ConvertAll(Echo).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(EchoIndexed).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(EchoIndexed).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "foreach (var copy in points.Select(Echo)) { var c = copy; Bump(ref c.X); }")]
+    [InlineData(true, "foreach (var copy in points.Select(Echo)) { var c = copy; Bump(ref c.X); }")]
+    [InlineData(false, "var getters = points.Select(MakeGetter).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "var getters = points.Select(MakeGetter).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_MethodGroupSelectorRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+
+                static T Echo<T>(T x) => x;
+                static T EchoIndexed<T>(T x, int index) => x;
+                static Func<T> MakeGetter<T>(T value) => () => value;
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs600BUC) over-refusal guard: a method-group
+    // selector that synthesizes a fresh value of an unrelated type does not alias.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_MethodGroupProjectionSelector_Succeeds(bool asRecord)
+    {
+        var source = """
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    var copies = points.Select(Project).ToArray(); Bump(ref copies[0].A);
+                    return point;
+                }
+
+                static (int A, int B) Project<T>(T value) => (1, 2);
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 12,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref copies[0].A)", text, StringComparison.Ordinal);
+    }
 }
