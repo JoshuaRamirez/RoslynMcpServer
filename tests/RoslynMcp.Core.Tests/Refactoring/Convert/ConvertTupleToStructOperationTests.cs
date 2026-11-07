@@ -1241,8 +1241,10 @@ public class ConvertTupleToStructOperationTests
     }
 
     // Codex P2 on #3441: __makeref(point.X) requires a variable; properties are not.
-    [SkippableFact]
-    public async Task ConvertTupleToStruct_AsRecordFalse_MakeRefElement_ThrowsAndWritesNothing()
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_MakeRefElement_ThrowsAndWritesNothing(bool asRecord)
     {
         const string source = """
             namespace TestApp;
@@ -1258,22 +1260,27 @@ public class ConvertTupleToStructOperationTests
             }
             """;
 
+        AssertTupleContainerCompiles(source);
         await using var workspace = await TempWorkspace.CreateAsync(source);
         var original = await File.ReadAllTextAsync(workspace.SourcePath);
         var operation = new ConvertTupleToStructOperation(workspace.Context);
 
-        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+        var error = await Record.ExceptionAsync(() =>
             operation.ExecuteAsync(new ConvertTupleToStructParams
             {
                 SourceFile = workspace.SourcePath,
                 Line = 7,
                 NewTypeName = "Point",
-                AsRecord = false
+                AsRecord = asRecord
             }));
 
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        AssertTupleContainerCompiles(after);
+        var ex = Assert.IsType<RefactoringException>(error);
         Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal("3020", ex.ErrorCode);
         Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
-        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(original, after);
     }
 
     // Codex P1 on #3441: generic wrapper fields (Box<T>.Value) yield converted storage.
@@ -2556,6 +2563,57 @@ public class ConvertTupleToStructOperationTests
                     var point = (X: 1, Y: 2);
                     var list = new List<(int X, int Y)> { point };
                     list.ForEach(copy => Bump(ref copy.X));
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var error = await Record.ExceptionAsync(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        // Compile the actual file even if the tool incorrectly reported success.
+        AssertTupleContainerCompiles(after);
+        var ex = Assert.IsType<RefactoringException>(error);
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal("3020", ex.ErrorCode);
+        Assert.Equal(original, after);
+    }
+
+    [SkippableTheory]
+    [InlineData(false, "{ point }")]
+    [InlineData(true, "{ point }")]
+    [InlineData(false, "new (int X, int Y)[] { point }")]
+    [InlineData(true, "new (int X, int Y)[] { point }")]
+    [InlineData(false, "[point]")]
+    [InlineData(true, "[point]")]
+    public async Task ConvertTupleToStruct_ExplicitTupleArrayForEachRefElement_ThrowsAndWritesNothing(bool asRecord, string initializer)
+    {
+        var source = $$"""
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    (int X, int Y)[] arr = {{initializer}};
+                    Array.ForEach(arr, copy => Bump(ref copy.X));
                     return point;
                 }
             }

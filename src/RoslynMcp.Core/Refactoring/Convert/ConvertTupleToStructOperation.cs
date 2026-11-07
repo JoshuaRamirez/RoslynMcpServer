@@ -107,8 +107,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // mutating call rather than only for "type parameter not available" (#3347).
         if (@params.AsRecord)
             await ValidateNoInitBreakingElementWritesAsync(creations, members, tupleType, cancellationToken);
-        else
-            await ValidateNoByRefElementUsesAsync(creations, members, tupleType, cancellationToken);
+        // Both generated kinds expose properties, so neither supports __makeref
+        // or other field-only uses. Keep the record write gate first for init diagnostics.
+        await ValidateNoByRefElementUsesAsync(creations, members, tupleType, cancellationToken);
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
         var typeDeclaration = CreateNamedStruct(
             lookupName,
@@ -1871,6 +1872,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             arrayCreation.Initializer != null)
         {
             foreach (var element in arrayCreation.Initializer.Expressions)
+            {
+                if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
+        }
+
+        // A declaration such as (int X, int Y)[] points = { point } has a
+        // bare array initializer, not an ArrayCreationExpressionSyntax. Track
+        // its elements just like explicit new T[] and inferred new[] arrays.
+        if (expression is InitializerExpressionSyntax arrayInitializer &&
+            arrayInitializer.IsKind(SyntaxKind.ArrayInitializerExpression))
+        {
+            foreach (var element in arrayInitializer.Expressions)
             {
                 if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
                     return true;
