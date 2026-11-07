@@ -525,10 +525,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     alias = semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
                     source = assignment.Right;
                 }
-                else if (node is ForEachStatementSyntax forEach &&
-                         forEach.Type is RefTypeSyntax)
+                else if (node is ForEachStatementSyntax forEach)
                 {
                     // foreach (ref var p in points.AsSpan()) p.X = 3;
+                    // foreach (var copy in points) Bump(ref copy.X); (Codex P1)
                     alias = semanticModel.GetDeclaredSymbol(forEach, cancellationToken);
                     source = forEach.Expression;
                 }
@@ -1796,8 +1796,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 elementAccess.Expression, aliases, semanticModel, cancellationToken);
         }
 
-        // Forwarding properties only (memory.Span). Do not treat every member
-        // of an alias-containing aggregate as an alias (wrapped.Fresh) — Codex P2.
+        // Forwarding members only. Do not treat every member of an
+        // alias-containing aggregate as an alias (wrapped.Fresh) — Codex P2.
         if (expression is MemberAccessExpressionSyntax nestedAccess)
         {
             var memberName = nestedAccess.Name.Identifier.ValueText;
@@ -1806,6 +1806,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 return ExpressionReferencesStorageAlias(
                     nestedAccess.Expression, aliases, semanticModel, cancellationToken);
+            }
+
+            // Generic wrapper unwrap: Box<T>.Value where T matches tracked storage
+            // (Codex P1 on #3441). Tuples/anonymous carriers use the creation walk.
+            if (MemberAccessUnwrapsStorageTypeArgument(
+                    nestedAccess, aliases, semanticModel, cancellationToken) &&
+                ExpressionReferencesStorageAlias(
+                    nestedAccess.Expression, aliases, semanticModel, cancellationToken))
+            {
+                return true;
             }
         }
 
@@ -1885,6 +1895,38 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // (Select) that happens to construct to the same tuple shape (Codex P2).
         // Identity Select(x => x) is handled separately via IsIdentitySelectInvocation.
         return OriginalReturnElementSharesSourceElementTypeParameter(method);
+    }
+
+    /// <summary>
+    /// True when <paramref name="memberAccess"/> yields a constructed type argument
+    /// of its receiver that matches tracked storage (e.g. <c>Box&lt;T&gt;.Value</c>
+    /// where <c>T</c> is the converted tuple). Skips tuple/anonymous carriers, which
+    /// use the aggregate-creation walk instead.
+    /// </summary>
+    private static bool MemberAccessUnwrapsStorageTypeArgument(
+        MemberAccessExpressionSyntax memberAccess,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var memberType = semanticModel.GetTypeInfo(memberAccess, cancellationToken).Type;
+        if (memberType == null || !TypeInvolvesStorageAliasType(memberType, aliases))
+            return false;
+
+        var receiverType = semanticModel.GetTypeInfo(memberAccess.Expression, cancellationToken).Type;
+        if (receiverType is not INamedTypeSymbol { IsTupleType: false, IsAnonymousType: false } named ||
+            named.TypeArguments.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var argument in named.TypeArguments)
+        {
+            if (SymbolEqualityComparer.Default.Equals(argument, memberType))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
