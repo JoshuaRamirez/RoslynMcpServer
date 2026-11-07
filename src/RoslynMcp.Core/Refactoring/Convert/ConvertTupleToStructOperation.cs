@@ -639,6 +639,20 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         _ => null
                     };
                 }
+                else if (node is LocalFunctionStatementSyntax localFunction)
+                {
+                    // (int X, int Y) Get() => point; var copy = Get(); (Codex P1 on #3441)
+                    var localSymbol = semanticModel.GetDeclaredSymbol(localFunction, cancellationToken);
+                    if (localSymbol != null &&
+                        !aliases.Contains(localSymbol) &&
+                        LocalFunctionReturnsConvertedStorage(
+                            localFunction, aliases, semanticModel, cancellationToken))
+                    {
+                        aliases.Add(localSymbol);
+                        changed = true;
+                        continue;
+                    }
+                }
                 else if (node is InvocationExpressionSyntax invocation)
                 {
                     // Array.ForEach / List<T>.ForEach / Copy(point, out var copy) (Codex P1)
@@ -1854,6 +1868,27 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         return true;
                 }
             }
+
+            // Invoking a tracked delegate / local function that returns converted storage
+            // (var get = () => point; var copy = get();) (Codex P1 on #3441).
+            if (!method.ReturnsVoid &&
+                ExpressionReferencesStorageAlias(
+                    invocation.Expression, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
+
+            // Explicit .Invoke on a tracked delegate: get.Invoke() (Codex P1 on #3441).
+            if (!method.ReturnsVoid &&
+                invocation.Expression is MemberAccessExpressionSyntax
+                {
+                    Name.Identifier.ValueText: "Invoke"
+                } invokeAccess &&
+                ExpressionReferencesStorageAlias(
+                    invokeAccess.Expression, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
         }
 
         // Array / collection creations that embed an alias so
@@ -1983,6 +2018,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         {
             return QueryProjectionYieldsConvertedStorage(
                 queryExpression, aliases, semanticModel, cancellationToken);
+        }
+
+        // Inferred delegates whose return yields converted storage:
+        // var get = () => point; (Codex P1 on #3441).
+        if (expression is AnonymousFunctionExpressionSyntax anonymousFunction)
+        {
+            return AnonymousFunctionReturnsConvertedStorage(
+                anonymousFunction, aliases, semanticModel, cancellationToken);
         }
 
         return false;
@@ -2283,6 +2326,71 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True when an anonymous function / lambda returns converted storage
+    /// (<c>() =&gt; point</c> / <c>() =&gt; { return point; }</c>) so the assigned
+    /// delegate becomes a tracked carrier (Codex P1 on #3441).
+    /// </summary>
+    private static bool AnonymousFunctionReturnsConvertedStorage(
+        AnonymousFunctionExpressionSyntax anonymousFunction,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var returned in EnumerateFunctionReturnExpressions(
+                     anonymousFunction.ExpressionBody, anonymousFunction.Block))
+        {
+            if (ExpressionReferencesStorageAlias(
+                    returned, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when a local function returns converted storage
+    /// (<c>(int X, int Y) Get() =&gt; point;</c>) so invocations alias (Codex P1 on #3441).
+    /// </summary>
+    private static bool LocalFunctionReturnsConvertedStorage(
+        LocalFunctionStatementSyntax localFunction,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var returned in EnumerateFunctionReturnExpressions(
+                     localFunction.ExpressionBody?.Expression,
+                     localFunction.Body))
+        {
+            if (ExpressionReferencesStorageAlias(
+                    returned, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<ExpressionSyntax> EnumerateFunctionReturnExpressions(
+        ExpressionSyntax? expressionBody,
+        BlockSyntax? block)
+    {
+        if (expressionBody != null)
+            yield return expressionBody;
+
+        if (block == null)
+            yield break;
+
+        foreach (var statement in block.DescendantNodes().OfType<ReturnStatementSyntax>())
+        {
+            if (statement.Expression != null)
+                yield return statement.Expression;
+        }
     }
 
     private static ITypeSymbol? TryGetSequenceElementType(ITypeSymbol type)
