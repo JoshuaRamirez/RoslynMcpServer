@@ -397,8 +397,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (storage == null)
                 continue;
 
-            var storages = CollectStorageAliases(root, model, storage, cancellationToken);
-            if (HasElementWrite(root, model, storages, memberNames, tupleType))
+            if (await HasStorageElementWriteAsync(
+                    target.Document, root, model, storage, memberNames, tupleType, cancellationToken))
             {
                 throw new RefactoringException(
                     ErrorCodes.CannotConvert,
@@ -448,14 +448,124 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (storage == null)
                 continue;
 
-            var storages = CollectStorageAliases(root, model, storage, cancellationToken);
-            if (HasElementByRefUse(root, model, storages, memberNames, tupleType))
+            if (await HasStorageElementByRefUseAsync(
+                    target.Document, root, model, storage, memberNames, tupleType, cancellationToken))
             {
                 throw new RefactoringException(
                     ErrorCodes.CannotConvert,
                     $"Cannot convert because '{storage.Name}' has an element passed by reference; the generated struct exposes properties, not fields.");
             }
         }
+    }
+
+    /// <summary>
+    /// Fields / properties (and other non-local storage) may be used from another
+    /// document of a partial type; scan the whole project for aliases and by-ref uses
+    /// (Codex P1 on #3441). Locals / parameters / range variables stay document-scoped.
+    /// </summary>
+    private static bool RequiresCrossDocumentStorageScan(ISymbol storage) =>
+        storage is IFieldSymbol or IPropertySymbol;
+
+    private static async Task<bool> HasStorageElementByRefUseAsync(
+        Document originatingDocument,
+        SyntaxNode originatingRoot,
+        SemanticModel originatingModel,
+        ISymbol storage,
+        HashSet<string> memberNames,
+        ITypeSymbol tupleType,
+        CancellationToken cancellationToken)
+    {
+        if (!RequiresCrossDocumentStorageScan(storage))
+        {
+            var storages = CollectStorageAliases(
+                originatingRoot, originatingModel, storage, cancellationToken);
+            return HasElementByRefUse(
+                originatingRoot, originatingModel, storages, memberNames, tupleType);
+        }
+
+        var (aliases, documents) = await CollectCrossDocumentStorageAliasesAsync(
+            originatingDocument, storage, cancellationToken);
+        foreach (var (root, model) in documents)
+        {
+            if (HasElementByRefUse(root, model, aliases, memberNames, tupleType))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static async Task<bool> HasStorageElementWriteAsync(
+        Document originatingDocument,
+        SyntaxNode originatingRoot,
+        SemanticModel originatingModel,
+        ISymbol storage,
+        HashSet<string> memberNames,
+        ITypeSymbol tupleType,
+        CancellationToken cancellationToken)
+    {
+        if (!RequiresCrossDocumentStorageScan(storage))
+        {
+            var storages = CollectStorageAliases(
+                originatingRoot, originatingModel, storage, cancellationToken);
+            return HasElementWrite(
+                originatingRoot, originatingModel, storages, memberNames, tupleType);
+        }
+
+        var (aliases, documents) = await CollectCrossDocumentStorageAliasesAsync(
+            originatingDocument, storage, cancellationToken);
+        foreach (var (root, model) in documents)
+        {
+            if (HasElementWrite(root, model, aliases, memberNames, tupleType))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Fixpoint-collects aliases of <paramref name="storage"/> across every document
+    /// in the originating project (partial types / sibling files), then returns the
+    /// loaded roots+models for by-ref / write checks (Codex P1 on #3441).
+    /// </summary>
+    private static async Task<(HashSet<ISymbol> Aliases, List<(SyntaxNode Root, SemanticModel Model)> Documents)>
+        CollectCrossDocumentStorageAliasesAsync(
+            Document originatingDocument,
+            ISymbol storage,
+            CancellationToken cancellationToken)
+    {
+        var aliases = new HashSet<ISymbol>(SymbolEqualityComparer.Default) { storage };
+        var documents = new List<(SyntaxNode Root, SemanticModel Model)>();
+        var loaded = new List<(SyntaxNode Root, SemanticModel Model)>();
+
+        foreach (var document in originatingDocument.Project.Documents)
+        {
+            var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+            if (root == null || model == null)
+                continue;
+            loaded.Add((root, model));
+        }
+
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            var seed = aliases.ToArray();
+            foreach (var (root, model) in loaded)
+            {
+                foreach (var symbol in seed)
+                {
+                    foreach (var alias in CollectStorageAliases(root, model, symbol, cancellationToken))
+                    {
+                        if (aliases.Add(alias))
+                            changed = true;
+                    }
+                }
+            }
+        }
+
+        documents.AddRange(loaded);
+        return (aliases, documents);
     }
 
     /// <summary>
@@ -811,6 +921,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     // (T*)p / (p += 0) (Codex P1 on #3441).
                     else if (TryUnwrapPointerDerivedSource(source, semanticModel, out var pointerOperand))
                         source = pointerOperand;
+                    // Built-in identity/boxing casts: dynamic copy = (dynamic)point (Codex P1).
+                    else if (TryUnwrapValuePreservingCast(
+                                 source, semanticModel, cancellationToken, out var castOperand))
+                        source = castOperand;
                     else
                         break;
                 }
@@ -2329,6 +2443,29 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// Unwraps one built-in identity or boxing cast (e.g. <c>(dynamic)point</c> /
+    /// <c>(object)point</c>). User-defined conversions are not followed so a custom
+    /// conversion cannot invent a false alias (Codex P1 on #3441).
+    /// </summary>
+    private static bool TryUnwrapValuePreservingCast(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out ExpressionSyntax operand)
+    {
+        operand = expression;
+        if (expression is not CastExpressionSyntax cast)
+            return false;
+
+        var conversion = semanticModel.GetConversion(cast, cancellationToken);
+        if (!conversion.IsIdentity && !conversion.IsBoxing)
+            return false;
+
+        operand = cast.Expression;
+        return true;
+    }
+
+    /// <summary>
     /// Unwraps one pointer-derived alias source to its pointer operand:
     /// <c>p + 0</c> / <c>p - 0</c>, <c>++p</c> / <c>p++</c> / <c>--p</c> / <c>p--</c>,
     /// pointer casts <c>(T*)p</c>, and compound <c>p += n</c> / <c>p -= n</c>
@@ -2469,6 +2606,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 expression = addressOf.Operand;
             else if (TryUnwrapPointerDerivedSource(expression, semanticModel, out var pointerOperand))
                 expression = pointerOperand;
+            // Built-in identity/boxing casts: (dynamic)point / (object)point (Codex P1).
+            else if (TryUnwrapValuePreservingCast(
+                         expression, semanticModel, cancellationToken, out var castOperand))
+                expression = castOperand;
             else
                 break;
         }
@@ -4631,7 +4772,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// tracked address-of alias (<c>var p = &amp;point; Bump(ref p-&gt;X)</c> /
     /// <c>Bump(ref (*p).X)</c>),
     /// non-<c>readonly</c> mutable value-type instance-method receiver (including
-    /// positional <c>ItemN</c> aliases), or an assignment / increment / decrement
+    /// positional <c>ItemN</c> aliases), a non-<c>readonly</c> property / indexer
+    /// getter on a mutable value-type element (e.g. <c>point.Counter.Next</c>),
+    /// or an assignment / increment / decrement
     /// target that traverses a value-type converted element (for example
     /// <c>point.Counter.Value++</c> — CS1612 on the property temporary).
     /// Generated properties cannot accept those uses (CS0206 / silent copy / CS1612);
@@ -4674,6 +4817,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 InvocationExpressionSyntax invocation when
                     TryGetRefReceiverExpression(invocation, semanticModel, out var refReceiver)
                     => refReceiver,
+                // Non-readonly property / indexer getter on a mutable value-type element
+                // (point.Counter.Next) — getter receives the element by ref (Codex P1).
+                MemberAccessExpressionSyntax memberAccess when
+                    TryGetMutatingPropertyOrIndexerReceiver(memberAccess, semanticModel, out var propReceiver)
+                    => propReceiver,
+                ElementAccessExpressionSyntax elementAccess when
+                    TryGetMutatingPropertyOrIndexerReceiver(elementAccess, semanticModel, out var indexReceiver)
+                    => indexReceiver,
                 // Nested field writes through a value-type element (Codex P1 CS1612):
                 // point.Counter.Value++ / point.Counter.Value = 1 mutate a property temporary.
                 AssignmentExpressionSyntax assignment => assignment.Left,
@@ -4799,6 +4950,48 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // Constrained type-parameter receivers: ContainingType is often an interface
         // (ICounter), but T is a value type so the call mutates the tuple field.
         return receiverType is ITypeParameterSymbol { IsValueType: true };
+    }
+
+    /// <summary>
+    /// True when <paramref name="expression"/> is a non-<c>readonly</c> property or
+    /// indexer getter whose receiver is a mutable value type — the getter receives
+    /// that receiver by reference (e.g. <c>point.Counter.Next</c> where <c>Next</c>
+    /// increments a field). After conversion the element is a property temporary, so
+    /// the getter mutates a copy (Codex P1 on #3441). Matches the mutating-method rule.
+    /// </summary>
+    private static bool TryGetMutatingPropertyOrIndexerReceiver(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? receiver)
+    {
+        receiver = null;
+
+        ExpressionSyntax? receiverExpression = expression switch
+        {
+            MemberAccessExpressionSyntax memberAccess => memberAccess.Expression,
+            ElementAccessExpressionSyntax elementAccess => elementAccess.Expression,
+            _ => null
+        };
+        if (receiverExpression == null)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(expression).Symbol is not IPropertySymbol property)
+            return false;
+
+        // IsReadOnly on IPropertySymbol means get-only (no setter) — unrelated.
+        // The getter's own IsReadOnly controls whether `this` is passed by ref.
+        if (property.GetMethod is not { IsReadOnly: false })
+            return false;
+
+        if (!IsMutatingValueTypeReceiver(
+                property.ContainingType,
+                semanticModel.GetTypeInfo(receiverExpression).Type))
+        {
+            return false;
+        }
+
+        receiver = receiverExpression;
+        return true;
     }
 
     /// <summary>
@@ -5121,6 +5314,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 InvocationExpressionSyntax invocation when
                     TryGetRefReceiverExpression(invocation, semanticModel, out var refReceiver)
                     => refReceiver,
+                // Non-readonly property / indexer getter on a mutable value-type element (Codex P1).
+                MemberAccessExpressionSyntax memberAccess when
+                    TryGetMutatingPropertyOrIndexerReceiver(memberAccess, semanticModel, out var propReceiver)
+                    => propReceiver,
+                ElementAccessExpressionSyntax elementAccess when
+                    TryGetMutatingPropertyOrIndexerReceiver(elementAccess, semanticModel, out var indexReceiver)
+                    => indexReceiver,
                 _ => null
             };
 

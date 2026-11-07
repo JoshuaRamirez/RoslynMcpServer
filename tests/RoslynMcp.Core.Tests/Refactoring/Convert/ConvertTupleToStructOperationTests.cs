@@ -1387,6 +1387,112 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441: built-in identity/boxing casts must be unwrapped when collecting
+    // aliases (dynamic copy = (dynamic)point; also (object)point in a boxing chain) —
+    // user-defined conversions are not followed.
+    [SkippableTheory]
+    [InlineData(false, "dynamic copy = (dynamic)point;")]
+    [InlineData(false, "object boxed = (object)point; dynamic copy = boxed;")]
+    [InlineData(true, "dynamic copy = (dynamic)point;")]
+    [InlineData(true, "object boxed = (object)point; dynamic copy = boxed;")]
+    public async Task ConvertTupleToStruct_ValuePreservingCastAliasRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string aliasStatements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (1, 2);
+                    {{aliasStatements}}
+                    Bump(ref copy.Item1);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: non-local field/property storage used from another partial-class
+    // document must still refuse by-ref element uses (scan project documents).
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_CrossDocumentPartialFieldRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string primary = """
+            namespace TestApp;
+
+            public partial class Worker
+            {
+                public dynamic point;
+
+                public object Create()
+                {
+                    point = (1, 2);
+                    return point;
+                }
+            }
+            """;
+        const string secondary = """
+            namespace TestApp;
+
+            public partial class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public void Mutate()
+                {
+                    Bump(ref point.Item1);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Worker.cs", primary),
+            ("Worker.Partial.cs", secondary));
+        var primaryPath = workspace.SourcePath;
+        var secondaryPath = Path.Combine(workspace.DirectoryPath, "Worker.Partial.cs");
+        var originalPrimary = await File.ReadAllTextAsync(primaryPath);
+        var originalSecondary = await File.ReadAllTextAsync(secondaryPath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = primaryPath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(originalPrimary, await File.ReadAllTextAsync(primaryPath));
+        Assert.Equal(originalSecondary, await File.ReadAllTextAsync(secondaryPath));
+    }
+
     // Codex P1 on #3441: stackalloc initializers must be tracked as storage carriers
     // (implicit stackalloc[] { point } and explicit stackalloc T[n] { point }).
     [SkippableTheory]
@@ -2113,6 +2219,51 @@ public class ConvertTupleToStructOperationTests
             {
                 SourceFile = workspace.SourcePath,
                 Line = 13,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: non-readonly property/indexer getters on mutable value-type elements
+    // receive the element by ref (point.Counter.Next mutates); refuse like mutating methods.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_MutatingStructPropertyGetterReceiver_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Counter
+            {
+                public int Value;
+                public int Next => Value++;
+                public int this[int _] => Value++;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Counter: new Counter(), Y: 2);
+                    var viaProperty = point.Counter.Next;
+                    var viaIndexer = point.Counter[0];
+                    return (viaProperty, viaIndexer, point);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 14,
                 NewTypeName = "Point",
                 AsRecord = false
             }));
