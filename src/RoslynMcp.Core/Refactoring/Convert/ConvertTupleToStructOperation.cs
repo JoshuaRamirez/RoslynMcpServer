@@ -405,8 +405,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// <summary>
     /// Named structs emit <c>{ get; set; }</c> properties; reject when a converted
     /// creation's storage (or alias) later passes a tuple element by <c>ref</c>/<c>out</c>/<c>in</c>,
-    /// takes its address, or binds it to a ref local/return (CS0206). Plain assignments and
-    /// increments remain allowed for non-record structs.
+    /// takes its address, binds it to a ref local/return (CS0206), or assigns / increments
+    /// a nested location through a value-type element (CS1612 — the property returns a
+    /// temporary). Direct element assignments and increments remain allowed for non-record
+    /// structs (setters work).
     /// </summary>
     private static async Task ValidateNoByRefElementUsesAsync(
         IReadOnlyList<CreationTarget> creations,
@@ -2820,10 +2822,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// True when a converted storage alias has a tuple element used as a
     /// <c>ref</c>/<c>out</c>/<c>in</c> argument, address-of operand, ref expression,
     /// writable <c>this ref</c> extension receiver, pointer indirection through a
-    /// tracked address-of alias (<c>var p = &amp;point; Bump(ref p-&gt;X)</c>), or
+    /// tracked address-of alias (<c>var p = &amp;point; Bump(ref p-&gt;X)</c>),
     /// non-<c>readonly</c> mutable value-type instance-method receiver (including
-    /// positional <c>ItemN</c> aliases).
-    /// Generated properties cannot accept those uses (CS0206 / silent copy); tuple fields can.
+    /// positional <c>ItemN</c> aliases), or an assignment / increment / decrement
+    /// target that traverses a value-type converted element (for example
+    /// <c>point.Counter.Value++</c> — CS1612 on the property temporary).
+    /// Generated properties cannot accept those uses (CS0206 / silent copy / CS1612);
+    /// tuple fields can. Direct element writes such as <c>point.X = 3</c> /
+    /// <c>point.X++</c> are allowed under <c>asRecord: false</c> (setters work).
     /// By-ref storage reached <em>through</em> a reference-type element
     /// (for example <c>Bump(ref point.Values[0])</c>) or through a value-type
     /// element that merely wraps reference storage (for example
@@ -2831,6 +2837,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// <c>int[]</c> field) is allowed — copying the property still yields the same
     /// reference — while passing the element property itself by reference, or
     /// taking a ref to a value-typed location on that temporary copy, is refused.
+    /// Nested assignments that reach the same reference storage through a value-type
+    /// element follow the same allow/refuse rule via <see cref="ValueTypeElementByRefIsUnsafe"/>.
     /// </summary>
     internal static bool HasElementByRefUse(
         SyntaxNode root,
@@ -2857,11 +2865,25 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 InvocationExpressionSyntax invocation when
                     TryGetRefReceiverExpression(invocation, semanticModel, out var refReceiver)
                     => refReceiver,
+                // Nested field writes through a value-type element (Codex P1 CS1612):
+                // point.Counter.Value++ / point.Counter.Value = 1 mutate a property temporary.
+                AssignmentExpressionSyntax assignment => assignment.Left,
+                PrefixUnaryExpressionSyntax prefix when
+                    prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+                    prefix.IsKind(SyntaxKind.PreDecrementExpression) => prefix.Operand,
+                PostfixUnaryExpressionSyntax postfix when
+                    postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+                    postfix.IsKind(SyntaxKind.PostDecrementExpression) => postfix.Operand,
                 _ => null
             };
 
             if (byRefTarget == null)
                 continue;
+
+            // Direct element writes (point.X = 3 / point.X++) stay allowed for
+            // asRecord:false setters; only nested writes through a value-type
+            // element are refused (same ValueTypeElementByRefIsUnsafe rule).
+            var refuseDirectElementAccess = !IsAssignmentOrIncrementTarget(node);
 
             if (HasConvertedElementByRefAccess(
                     byRefTarget,
@@ -2869,7 +2891,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     memberNames,
                     tupleType,
                     semanticModel,
-                    root))
+                    root,
+                    refuseDirectElementAccess))
             {
                 return true;
             }
@@ -2877,6 +2900,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         return false;
     }
+
+    /// <summary>
+    /// True when <paramref name="node"/> is an assignment or pre/post increment/decrement
+    /// (the nested-value-type CS1612 cases), not address-of or other prefix/postfix forms.
+    /// </summary>
+    private static bool IsAssignmentOrIncrementTarget(SyntaxNode node) =>
+        node is AssignmentExpressionSyntax
+        || (node is PrefixUnaryExpressionSyntax prefix &&
+            (prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+             prefix.IsKind(SyntaxKind.PreDecrementExpression)))
+        || (node is PostfixUnaryExpressionSyntax postfix &&
+            (postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+             postfix.IsKind(SyntaxKind.PostDecrementExpression)));
 
     /// <summary>
     /// True when <paramref name="invocation"/> uses its receiver by reference:
@@ -2979,7 +3015,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         HashSet<string> memberNames,
         ITypeSymbol? tupleType,
         SemanticModel semanticModel,
-        SyntaxNode root)
+        SyntaxNode root,
+        bool refuseDirectElementAccess = true)
     {
         var coreTarget = UnwrapParenthesesAndNullForgiving(byRefTarget);
 
@@ -2999,8 +3036,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
 
             // Direct by-ref / address-of on the element property itself — refuse.
+            // Assignment / ++/-- on the element itself are allowed (setters); only
+            // nested writes through a value-type element hit the path below.
             if (coreTarget == memberAccess)
-                return true;
+                return refuseDirectElementAccess;
 
             // Through the element: reference-type property returns the same
             // reference — allow. Value-type property returns a copy — allow only
