@@ -1493,6 +1493,78 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(originalSecondary, await File.ReadAllTextAsync(secondaryPath));
     }
 
+    // Codex P1 on #3441: collection-expression spread elements must be traversed when
+    // collecting collection aliases (var points = new[] { point }; dynamic[] copies = [.. points]).
+    // Matches Codex evidence / DynamicAliasRefElement: skip AssertTupleContainerCompiles —
+    // ref-dynamic→ref-int is invalid for emit but the workspace still sees a by-ref use.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_CollectionExpressionSpreadCarrierRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    dynamic[] copies = [.. points];
+                    Bump(ref copies[0].X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: non-local field/property storage used from a referencing/
+    // dependent project must be scanned (public dynamic field in A, Bump(ref …) in B).
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_DependentProjectFieldRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        await using var workspace = await TempWorkspace.CreateDependentProjectFieldRefAsync();
+        var originalOrigin = await File.ReadAllTextAsync(workspace.SourcePath);
+        var originalConsumer = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(originalOrigin, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(originalConsumer, await File.ReadAllTextAsync(workspace.SecondarySourcePath));
+    }
+
     // Codex P1 on #3441: stackalloc initializers must be tracked as storage carriers
     // (implicit stackalloc[] { point } and explicit stackalloc T[n] { point }).
     [SkippableTheory]
@@ -5400,6 +5472,105 @@ public class ConvertTupleToStructOperationTests
                     public object Create()
                     {
                         return (X: 3, Y: 4);
+                    }
+                }
+                """);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Other", "Other\Other.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            var workspace = await LoadAsync(directory, solutionPath, appSource);
+            return new TempWorkspace
+            {
+                DirectoryPath = workspace.DirectoryPath,
+                ProjectPath = workspace.ProjectPath,
+                SourcePath = workspace.SourcePath,
+                Context = workspace.Context,
+                SecondarySourcePath = otherSource
+            };
+        }
+
+        /// <summary>
+        /// Project A exposes a public dynamic field initialized from a convertible
+        /// tuple; project B references A and passes an element by ref. Used for the
+        /// dependent-project storage scan regression (Codex P1 on #3441).
+        /// </summary>
+        public static async Task<TempWorkspace> CreateDependentProjectFieldRefAsync()
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertTupleDep_" + Guid.NewGuid().ToString("N"));
+            var appDir = Path.Combine(directory, "App");
+            var otherDir = Path.Combine(directory, "Other");
+            Directory.CreateDirectory(appDir);
+            Directory.CreateDirectory(otherDir);
+
+            var appProject = Path.Combine(appDir, "App.csproj");
+            var otherProject = Path.Combine(otherDir, "Other.csproj");
+            var appSource = Path.Combine(appDir, "Worker.cs");
+            var otherSource = Path.Combine(otherDir, "Client.cs");
+
+            await File.WriteAllTextAsync(appProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(otherProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\App\App.csproj" />
+                  </ItemGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(appSource, """
+                namespace TestApp;
+
+                public class Worker
+                {
+                    public dynamic point;
+
+                    public object Create()
+                    {
+                        point = (1, 2);
+                        return point;
+                    }
+                }
+                """);
+            await File.WriteAllTextAsync(otherSource, """
+                namespace OtherApp;
+
+                public class Client
+                {
+                    static void Bump(ref int v) => v++;
+
+                    public void Mutate(TestApp.Worker worker)
+                    {
+                        Bump(ref worker.point.Item1);
                     }
                 }
                 """);

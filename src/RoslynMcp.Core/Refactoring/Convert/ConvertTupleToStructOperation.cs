@@ -460,7 +460,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// Fields / properties (and other non-local storage) may be used from another
-    /// document of a partial type; scan the whole project for aliases and by-ref uses
+    /// document of a partial type or from a referencing/dependent project; scan the
+    /// originating project and every project that can already see it (same set as
+    /// <see cref="CollectSameShapeCreationsAsync"/>) for aliases and by-ref uses
     /// (Codex P1 on #3441). Locals / parameters / range variables stay document-scoped.
     /// </summary>
     private static bool RequiresCrossDocumentStorageScan(ISymbol storage) =>
@@ -524,8 +526,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// Fixpoint-collects aliases of <paramref name="storage"/> across every document
-    /// in the originating project (partial types / sibling files), then returns the
-    /// loaded roots+models for by-ref / write checks (Codex P1 on #3441).
+    /// in the originating project (partial types / sibling files) and in referencing
+    /// / dependent projects the refactoring already rewrites
+    /// (<see cref="ProjectCanReference"/>), then returns the loaded roots+models for
+    /// by-ref / write checks (Codex P1 on #3441).
     /// </summary>
     private static async Task<(HashSet<ISymbol> Aliases, List<(SyntaxNode Root, SemanticModel Model)> Documents)>
         CollectCrossDocumentStorageAliasesAsync(
@@ -536,14 +540,21 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var aliases = new HashSet<ISymbol>(SymbolEqualityComparer.Default) { storage };
         var documents = new List<(SyntaxNode Root, SemanticModel Model)>();
         var loaded = new List<(SyntaxNode Root, SemanticModel Model)>();
+        var originatingProject = originatingDocument.Project;
 
-        foreach (var document in originatingDocument.Project.Documents)
+        foreach (var project in originatingProject.Solution.Projects)
         {
-            var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-            var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-            if (root == null || model == null)
+            if (!ProjectCanReference(project, originatingProject))
                 continue;
-            loaded.Add((root, model));
+
+            foreach (var document in project.Documents)
+            {
+                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+                var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                if (root == null || model == null)
+                    continue;
+                loaded.Add((root, model));
+            }
         }
 
         var changed = true;
@@ -667,6 +678,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (parent is ExpressionElementSyntax { Parent: CollectionExpressionSyntax collection })
         {
             container = collection;
+            return true;
+        }
+
+        // Spread elements: [.. points] / [.. new[] { (1, 2) }] (Codex P1 on #3441).
+        if (parent is SpreadElementSyntax { Parent: CollectionExpressionSyntax spreadCollection })
+        {
+            container = spreadCollection;
             return true;
         }
 
@@ -2825,10 +2843,22 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         if (expression is CollectionExpressionSyntax collection)
         {
-            foreach (var element in collection.Elements.OfType<ExpressionElementSyntax>())
+            foreach (var element in collection.Elements)
             {
-                if (ExpressionReferencesStorageAlias(element.Expression, aliases, semanticModel, cancellationToken))
+                // Expression elements: [point] / [point, other]
+                // Spread elements: [.. points] — otherwise copies = [.. points] skips
+                // the carrier and later dynamic ref bindings miss the gate (Codex P1).
+                ExpressionSyntax? elementExpression = element switch
+                {
+                    ExpressionElementSyntax expressionElement => expressionElement.Expression,
+                    SpreadElementSyntax spreadElement => spreadElement.Expression,
+                    _ => null
+                };
+                if (elementExpression != null &&
+                    ExpressionReferencesStorageAlias(elementExpression, aliases, semanticModel, cancellationToken))
+                {
                     return true;
+                }
             }
         }
 
@@ -4433,6 +4463,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 if (collectionElement is ExpressionElementSyntax expressionElement)
                     yield return expressionElement.Expression;
+                else if (collectionElement is SpreadElementSyntax spreadElement)
+                    yield return spreadElement.Expression;
             }
 
             yield break;
