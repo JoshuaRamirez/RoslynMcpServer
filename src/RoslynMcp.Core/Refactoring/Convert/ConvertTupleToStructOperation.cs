@@ -2140,7 +2140,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     {
                         if (IsIdentitySelectInvocation(invocation, method) ||
                             IsIdentityConvertAllInvocation(invocation, method) ||
-                            IsStorageReturningDelegateSelectorInvocation(invocation, method))
+                            IsStorageReturningDelegateSelectorInvocation(invocation, method, semanticModel, cancellationToken))
                             return true;
                         continue;
                     }
@@ -2165,6 +2165,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 // Task.FromResult(point) / similar: argument is T, return is G<T>.
                 if (MethodReturnWrapsElementAsConstructedGeneric(method, parameter))
                     return true;
+
+                // Opaque MakeGetter(point) / factory(point) whose return is a
+                // storage-returning delegate (Func<T> / nested Func<Func<T>>) —
+                // including non-generic signatures MethodReturnWrapsElementAsConstructedGeneric
+                // misses (Codex P1 on #3441).
+                if (MethodReturnWrapsElementAsStorageReturningDelegate(method, parameter))
+                    return true;
             }
 
             if (invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
@@ -2177,7 +2184,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                      method,
                      semanticModel.GetTypeInfo(memberAccess.Expression, cancellationToken).Type) ||
                  IsIdentitySelectInvocation(invocation, method) ||
-                 IsStorageReturningDelegateSelectorInvocation(invocation, method)))
+                 IsStorageReturningDelegateSelectorInvocation(invocation, method, semanticModel, cancellationToken)))
             {
                 return true;
             }
@@ -2186,7 +2193,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // Also points.Select(x => () => x) — selector returns a storage-returning
             // delegate carrier (Codex P1 on #3441).
             if (IsIdentitySelectInvocation(invocation, method) ||
-                IsStorageReturningDelegateSelectorInvocation(invocation, method))
+                IsStorageReturningDelegateSelectorInvocation(invocation, method, semanticModel, cancellationToken))
             {
                 if (invocation.Expression is MemberAccessExpressionSyntax receiverAccess &&
                     ExpressionReferencesStorageAlias(
@@ -2672,7 +2679,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// </summary>
     private static bool IsStorageReturningDelegateSelectorInvocation(
         InvocationExpressionSyntax invocation,
-        IMethodSymbol method)
+        IMethodSymbol method,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
         if (name is not ("Select" or "SelectMany" or "ConvertAll"))
@@ -2686,7 +2695,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 LambdaReturnsStorageReturningDelegate(
                     simple.ExpressionBody,
                     simple.Block,
-                    simple.Parameter.Identifier.ValueText))
+                    simple.Parameter.Identifier.ValueText,
+                    semanticModel,
+                    cancellationToken))
             {
                 return true;
             }
@@ -2696,7 +2707,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 var first = paren.ParameterList.Parameters[0].Identifier.ValueText;
                 if (LambdaReturnsStorageReturningDelegate(
-                        paren.ExpressionBody, paren.Block, first))
+                        paren.ExpressionBody,
+                        paren.Block,
+                        first,
+                        semanticModel,
+                        cancellationToken))
                 {
                     return true;
                 }
@@ -2707,7 +2722,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 {
                     var last = paren.ParameterList.Parameters[^1].Identifier.ValueText;
                     if (LambdaReturnsStorageReturningDelegate(
-                            paren.ExpressionBody, paren.Block, last))
+                            paren.ExpressionBody,
+                            paren.Block,
+                            last,
+                            semanticModel,
+                            cancellationToken))
                     {
                         return true;
                     }
@@ -2719,19 +2738,29 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// True when a selector body yields an anonymous function whose return forwards
-    /// <paramref name="parameterName"/> (directly or through further delegate wrappers /
-    /// <c>?:</c> / <c>??</c> / switch arms).
+    /// True when a selector body yields a storage-returning delegate that forwards
+    /// <paramref name="parameterName"/> — either an inline anonymous function
+    /// (<c>x =&gt; () =&gt; x</c>) or an opaque call whose return is such a delegate
+    /// (<c>x =&gt; MakeGetter(x)</c>) (Codex P1 on #3441).
     /// </summary>
     private static bool LambdaReturnsStorageReturningDelegate(
         ExpressionSyntax? expressionBody,
         BlockSyntax? block,
-        string parameterName)
+        string parameterName,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         foreach (var returned in EnumerateSelectorReturnExpressions(expressionBody, block))
         {
             foreach (var leaf in EnumerateForwardedValueLeaves(returned))
             {
+                if (leaf is InvocationExpressionSyntax invocation &&
+                    InvocationReturnsStorageReturningDelegateCarrier(
+                        invocation, parameterName, semanticModel, cancellationToken))
+                {
+                    return true;
+                }
+
                 if (leaf is not AnonymousFunctionExpressionSyntax nested)
                     continue;
 
@@ -2743,7 +2772,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
                 // x => () => () => x — nested storage-returning delegate carriers.
                 if (LambdaReturnsStorageReturningDelegate(
-                        nested.ExpressionBody, nested.Block, parameterName))
+                        nested.ExpressionBody,
+                        nested.Block,
+                        parameterName,
+                        semanticModel,
+                        cancellationToken))
                 {
                     return true;
                 }
@@ -2752,6 +2785,111 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         return false;
     }
+
+    /// <summary>
+    /// True when <paramref name="invocation"/> receives <paramref name="parameterName"/>
+    /// (as an argument or extension/instance receiver) and its return type is a
+    /// (possibly nested) delegate that yields that parameter's storage type —
+    /// e.g. <c>MakeGetter(x)</c> with <c>Func&lt;T&gt; MakeGetter&lt;T&gt;(T value)</c>
+    /// (Codex P1 on #3441).
+    /// </summary>
+    private static bool InvocationReturnsStorageReturningDelegateCarrier(
+        InvocationExpressionSyntax invocation,
+        string parameterName,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        ITypeSymbol? storageType = null;
+
+        foreach (var argument in invocation.ArgumentList.Arguments)
+        {
+            if (TryGetNamedStorageType(
+                    argument.Expression, parameterName, semanticModel, cancellationToken, out storageType))
+            {
+                break;
+            }
+        }
+
+        if (storageType == null &&
+            invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+        {
+            TryGetNamedStorageType(
+                memberAccess.Expression, parameterName, semanticModel, cancellationToken, out storageType);
+        }
+
+        if (storageType == null)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method ||
+            method.ReturnsVoid)
+        {
+            return false;
+        }
+
+        return IsStorageReturningDelegateType(method.ReturnType, storageType);
+    }
+
+    private static bool TryGetNamedStorageType(
+        ExpressionSyntax expression,
+        string parameterName,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out ITypeSymbol? storageType)
+    {
+        storageType = null;
+        foreach (var leaf in EnumerateForwardedValueLeaves(expression))
+        {
+            if (leaf is IdentifierNameSyntax id &&
+                id.Identifier.ValueText == parameterName)
+            {
+                storageType = semanticModel.GetTypeInfo(leaf, cancellationToken).Type;
+                return storageType != null;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="type"/> is a delegate (possibly nested
+    /// <c>Func&lt;Func&lt;T&gt;&gt;</c>) whose ultimate invoke return embeds
+    /// <paramref name="storageType"/>.
+    /// </summary>
+    private static bool IsStorageReturningDelegateType(ITypeSymbol? type, ITypeSymbol storageType)
+    {
+        var current = type;
+        while (current is INamedTypeSymbol { DelegateInvokeMethod: { } invoke })
+        {
+            if (invoke.ReturnsVoid)
+                return false;
+
+            var returnType = invoke.ReturnType;
+            if (TypeContainsOrEquals(returnType, storageType))
+                return true;
+
+            // Nested storage-returning delegate: Func<Func<T>>.
+            if (returnType is INamedTypeSymbol { DelegateInvokeMethod: not null })
+            {
+                current = returnType;
+                continue;
+            }
+
+            return false;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> returns a (possibly nested) delegate
+    /// that yields <paramref name="parameter"/>'s type — covering opaque
+    /// <c>MakeGetter(point)</c> carriers, including non-generic signatures
+    /// (Codex P1 on #3441).
+    /// </summary>
+    private static bool MethodReturnWrapsElementAsStorageReturningDelegate(
+        IMethodSymbol method,
+        IParameterSymbol parameter) =>
+        IsStorageReturningDelegateType(method.ReturnType, parameter.Type);
 
     private static bool IsIdentityLambdaBody(
         ExpressionSyntax? expressionBody,
@@ -2782,22 +2920,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// </summary>
     private static IEnumerable<ExpressionSyntax> EnumerateSelectorReturnExpressions(
         ExpressionSyntax? expressionBody,
-        BlockSyntax? block)
-    {
-        if (expressionBody != null)
-            yield return expressionBody;
-
-        if (block == null)
-            yield break;
-
-        foreach (var statement in block
-                     .DescendantNodes(n => n is not (AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))
-                     .OfType<ReturnStatementSyntax>())
-        {
-            if (statement.Expression != null)
-                yield return statement.Expression;
-        }
-    }
+        BlockSyntax? block) =>
+        EnumerateFunctionReturnExpressions(expressionBody, block);
 
     /// <summary>
     /// Value leaves an expression may evaluate to: unwraps parentheses, casts,
@@ -2906,7 +3030,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (block == null)
             yield break;
 
-        foreach (var statement in block.DescendantNodes().OfType<ReturnStatementSyntax>())
+        // Skip nested lambdas / local functions so their returns are not
+        // attributed to the outer function (Codex P2 on #3441).
+        foreach (var statement in block
+                     .DescendantNodes(n => n is not (AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))
+                     .OfType<ReturnStatementSyntax>())
         {
             if (statement.Expression != null)
                 yield return statement.Expression;

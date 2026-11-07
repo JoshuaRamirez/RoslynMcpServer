@@ -5681,6 +5681,119 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441: selectors whose leaf is an opaque delegate-returning call
+    // (x => MakeGetter(x)), not an inline lambda, must still gate the produced sequence.
+    [SkippableTheory]
+    [InlineData(false, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select(x => MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select(x => MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<(int X, int Y)> MakeGetter((int X, int Y) value) => () => value; var getters = points.Select(x => MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<(int X, int Y)> MakeGetter((int X, int Y) value) => () => value; var getters = points.Select(x => MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => { return MakeGetter(x); }).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => { return MakeGetter(x); }).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => flag ? MakeGetter(x) : MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<T> MakeGetter<T>(T value) => () => value; var getters = points.Select<(int X, int Y), Func<(int X, int Y)>>(x => flag ? MakeGetter(x) : MakeGetter(x)).ToArray(); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<Func<T>> MakeNested<T>(T value) => () => () => value; var getters = points.Select<(int X, int Y), Func<Func<(int X, int Y)>>>(x => MakeNested(x)).ToArray(); var copy = getters[0]()(); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<Func<T>> MakeNested<T>(T value) => () => () => value; var getters = points.Select<(int X, int Y), Func<Func<(int X, int Y)>>>(x => MakeNested(x)).ToArray(); var copy = getters[0]()(); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<T> MakeGetter<T>(T value) => () => value; var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var getters = list.ConvertAll(x => MakeGetter(x)); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<T> MakeGetter<T>(T value) => () => value; var list = new System.Collections.Generic.List<(int X, int Y)> { point }; var getters = list.ConvertAll(x => MakeGetter(x)); var copy = getters[0](); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<T> MakeGetter<T>(T value) => () => value; var get = MakeGetter(point); var copy = get(); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<T> MakeGetter<T>(T value) => () => value; var get = MakeGetter(point); var copy = get(); Bump(ref copy.X);")]
+    [InlineData(false, "static Func<(int X, int Y)> MakeGetter((int X, int Y) value) => () => value; var get = MakeGetter(point); var copy = get(); Bump(ref copy.X);")]
+    [InlineData(true, "static Func<(int X, int Y)> MakeGetter((int X, int Y) value) => () => value; var get = MakeGetter(point); var copy = get(); Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_OpaqueDelegateReturningCallRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: nested lambda/local-function returns must not taint the
+    // outer delegate's return analysis (false positive on unrelated outer result).
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_NestedFunctionReturnDoesNotTaintOuterDelegate_Succeeds(bool asRecord)
+    {
+        var source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Func<(int A, int B, int C)> get = () =>
+                    {
+                        Func<(int X, int Y)> nested = () =>
+                        {
+                            return point;
+                        };
+                        _ = nested;
+                        return (A: 9, B: 9, C: 9);
+                    };
+                    var copy = get();
+                    Bump(ref copy.A);
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 11,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref copy.A)", text, StringComparison.Ordinal);
+    }
+
     // Codex P1 on #3441: converted storage flowing through ?? / ??= must alias
     // both coalesce operands (and related ?: nesting).
     [SkippableTheory]
