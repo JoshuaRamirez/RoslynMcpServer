@@ -8357,4 +8357,133 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
         Assert.Contains("new Point", text, StringComparison.Ordinal);
     }
+
+    // Codex P1s on #3441 (PRRT_kwDORD0nYs605__Q / …605__Y / …605__c): a selected
+    // creation used directly (no alias) must go through the same escape /
+    // propagation routine as aliases — setter / init / indexer value parameters,
+    // unresolved dispatch (interface / virtual / abstract / extension receiver /
+    // reassigned delegate / params expansion), user-defined operators and
+    // conversions, collection inserts, generic wrappers, method groups, lambdas
+    // and fields. The selected creation is on the USE line (14).
+    [SkippableTheory]
+    [InlineData(false, "sealed class Holder { public object Value { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); holder.Value = (1, 2);")]
+    [InlineData(true, "sealed class Holder { public object Value { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); holder.Value = (1, 2);")]
+    [InlineData(false, "sealed class Holder { public dynamic Value { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); holder.Value = (1, 2);")]
+    [InlineData(true, "sealed class Holder { public dynamic Value { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); holder.Value = (1, 2);")]
+    [InlineData(false, "sealed class Holder { public object Value { init { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder { Value = (1, 2) };")]
+    [InlineData(true, "sealed class Holder { public object Value { init { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder { Value = (1, 2) };")]
+    [InlineData(false, "sealed class Holder { public object this[int i] { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); holder[0] = (1, 2);")]
+    [InlineData(true, "sealed class Holder { public object this[int i] { set { dynamic copy = value; Bump(ref copy.Item1); } } }", "var holder = new Holder(); holder[0] = (1, 2);")]
+    [InlineData(false, "sealed class Holder { public int this[object key] { get { dynamic copy = key; Bump(ref copy.Item1); return 0; } } }", "var holder = new Holder(); Console.WriteLine(holder[(1, 2)]);")]
+    [InlineData(true, "sealed class Holder { public int this[object key] { get { dynamic copy = key; Bump(ref copy.Item1); return 0; } } }", "var holder = new Holder(); Console.WriteLine(holder[(1, 2)]);")]
+    [InlineData(false, "class Holder { public virtual object Value { get; set; } }", "Holder holder = new Holder(); holder.Value = (1, 2);")]
+    [InlineData(true, "class Holder { public virtual object Value { get; set; } }", "Holder holder = new Holder(); holder.Value = (1, 2);")]
+    [InlineData(false, "abstract class Holder { public abstract object Value { set; } }", "Holder holder = null!; holder.Value = (1, 2);")]
+    [InlineData(true, "abstract class Holder { public abstract object Value { set; } }", "Holder holder = null!; holder.Value = (1, 2);")]
+    [InlineData(false, "interface IHolder { object Value { set; } }", "IHolder holder = null!; holder.Value = (1, 2);")]
+    [InlineData(true, "interface IHolder { object Value { set; } }", "IHolder holder = null!; holder.Value = (1, 2);")]
+    [InlineData(false, "interface IConsumer { void Use(object boxed); } sealed class Consumer : IConsumer { public void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); } }", "IConsumer consumer = new Consumer(); consumer.Use((1, 2));")]
+    [InlineData(true, "interface IConsumer { void Use(object boxed); } sealed class Consumer : IConsumer { public void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); } }", "IConsumer consumer = new Consumer(); consumer.Use((1, 2));")]
+    [InlineData(false, "class Consumer { public virtual void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); } }", "var consumer = new Consumer(); consumer.Use((1, 2));")]
+    [InlineData(true, "class Consumer { public virtual void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); } }", "var consumer = new Consumer(); consumer.Use((1, 2));")]
+    [InlineData(false, "abstract class Consumer { public abstract void Use(object boxed); } sealed class Impl : Consumer { public override void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); } }", "Consumer consumer = new Impl(); consumer.Use((1, 2));")]
+    [InlineData(true, "abstract class Consumer { public abstract void Use(object boxed); } sealed class Impl : Consumer { public override void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); } }", "Consumer consumer = new Impl(); consumer.Use((1, 2));")]
+    [InlineData(false, "static void Use(this object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); }", "(1, 2).Use();")]
+    [InlineData(true, "static void Use(this object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); }", "(1, 2).Use();")]
+    [InlineData(false, "static void Use(int n, params dynamic[] copies) { Bump(ref copies[1].Item1); }", "Use(0, \"skip\", (1, 2));")]
+    [InlineData(true, "static void Use(int n, params dynamic[] copies) { Bump(ref copies[1].Item1); }", "Use(0, \"skip\", (1, 2));")]
+    [InlineData(false, "static void Unused() { }", "Action<dynamic> use = _ => { }; use = copy => Bump(ref copy.Item1); use((1, 2));")]
+    [InlineData(true, "static void Unused() { }", "Action<dynamic> use = _ => { }; use = copy => Bump(ref copy.Item1); use((1, 2));")]
+    [InlineData(false, "static void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); }", "Action<object> use = Use; use((1, 2));")]
+    [InlineData(true, "static void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); }", "Action<object> use = Use; use((1, 2));")]
+    [InlineData(false, "static void Unused() { }", "Action<dynamic> use = copy => Bump(ref copy.Item1); use((1, 2));")]
+    [InlineData(true, "static void Unused() { }", "Action<dynamic> use = copy => Bump(ref copy.Item1); use((1, 2));")]
+    [InlineData(false, "static void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); }", "Use((1, 2));")]
+    [InlineData(true, "static void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); }", "Use((1, 2));")]
+    [InlineData(false, "sealed class Holder { public Holder(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); } }", "var holder = new Holder((1, 2));")]
+    [InlineData(true, "sealed class Holder { public Holder(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); } }", "var holder = new Holder((1, 2));")]
+    [InlineData(false, "interface IConsumer { void Use(object boxed); }", "Func<IConsumer> make = null!; make().Use((1, 2));")]
+    [InlineData(true, "interface IConsumer { void Use(object boxed); }", "Func<IConsumer> make = null!; make().Use((1, 2));")]
+    [InlineData(false, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new Consumer(); var result = consumer + (1, 2);")]
+    [InlineData(true, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new Consumer(); var result = consumer + (1, 2);")]
+    [InlineData(false, "sealed class Consumer { public static Consumer operator +(object boxed, Consumer c) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new Consumer(); var result = (1, 2) + consumer;")]
+    [InlineData(true, "sealed class Consumer { public static Consumer operator +(object boxed, Consumer c) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new Consumer(); var result = (1, 2) + consumer;")]
+    [InlineData(false, "sealed class Accumulator { public static Accumulator operator +(Accumulator c, object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new Accumulator(); consumer += (1, 2);")]
+    [InlineData(true, "sealed class Accumulator { public static Accumulator operator +(Accumulator c, object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return c; } }", "var consumer = new Accumulator(); consumer += (1, 2);")]
+    [InlineData(false, "sealed class Wrapper { public static implicit operator Wrapper((int, int) boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return new Wrapper(); } }", "Wrapper wrapper = (1, 2);")]
+    [InlineData(true, "sealed class Wrapper { public static implicit operator Wrapper((int, int) boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return new Wrapper(); } }", "Wrapper wrapper = (1, 2);")]
+    [InlineData(false, "sealed class Wrapper { public static explicit operator Wrapper((int, int) boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return new Wrapper(); } }", "var wrapper = (Wrapper)(1, 2);")]
+    [InlineData(true, "sealed class Wrapper { public static explicit operator Wrapper((int, int) boxed) { dynamic copy = boxed; Bump(ref copy.Item1); return new Wrapper(); } }", "var wrapper = (Wrapper)(1, 2);")]
+    [InlineData(false, "static void Unused() { }", "var list = new List<object>(); list.Add((1, 2)); dynamic copy = list[0]; Bump(ref copy.Item1);")]
+    [InlineData(true, "static void Unused() { }", "var list = new List<object>(); list.Add((1, 2)); dynamic copy = list[0]; Bump(ref copy.Item1);")]
+    [InlineData(false, "sealed class Box<T> { public T Value; public Box(T value) { Value = value; } }", "var box = new Box<object>((1, 2)); dynamic copy = box.Value; Bump(ref copy.Item1);")]
+    [InlineData(true, "sealed class Box<T> { public T Value; public Box(T value) { Value = value; } }", "var box = new Box<object>((1, 2)); dynamic copy = box.Value; Bump(ref copy.Item1);")]
+    [InlineData(false, "static T Echo<T>(T value) => value;", "dynamic copy = Echo<object>((1, 2)); Bump(ref copy.Item1);")]
+    [InlineData(true, "static T Echo<T>(T value) => value;", "dynamic copy = Echo<object>((1, 2)); Bump(ref copy.Item1);")]
+    [InlineData(false, "static object field;", "field = (1, 2); dynamic copy = field; Bump(ref copy.Item1);")]
+    [InlineData(true, "static object field;", "field = (1, 2); dynamic copy = field; Bump(ref copy.Item1);")]
+    [InlineData(false, "static void Unused() { }", "dynamic[] items = { (1, 2) }; Bump(ref items[0].Item1);")]
+    [InlineData(true, "static void Unused() { }", "dynamic[] items = { (1, 2) }; Bump(ref items[0].Item1);")]
+    public async Task ConvertTupleToStruct_DirectCreationEscapeRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string declaration,
+        string use)
+    {
+        var source = CalleeFlowTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 14,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Companion to PRRT_kwDORD0nYs605__Q / …605__Y / …605__c: direct creations
+    // flowing into concrete, read-only setters / callees / operators still convert.
+    [SkippableTheory]
+    [InlineData(false, "sealed class Holder { public object Value { set { Console.WriteLine(value); } } }", "var holder = new Holder(); holder.Value = (1, 2);")]
+    [InlineData(true, "sealed class Holder { public object Value { set { Console.WriteLine(value); } } }", "var holder = new Holder(); holder.Value = (1, 2);")]
+    [InlineData(false, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); holder.Value = (1, 2); Console.WriteLine(holder.Value);")]
+    [InlineData(true, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); holder.Value = (1, 2); Console.WriteLine(holder.Value);")]
+    [InlineData(false, "sealed class Consumer { public void Use(object boxed) => Console.WriteLine(boxed); }", "var consumer = new Consumer(); consumer.Use((1, 2));")]
+    [InlineData(true, "sealed class Consumer { public void Use(object boxed) => Console.WriteLine(boxed); }", "var consumer = new Consumer(); consumer.Use((1, 2));")]
+    [InlineData(false, "static void Use(object boxed) => Console.WriteLine(boxed);", "Use((1, 2));")]
+    [InlineData(true, "static void Use(object boxed) => Console.WriteLine(boxed);", "Use((1, 2));")]
+    [InlineData(false, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed); return c; } }", "var consumer = new Consumer(); var result = consumer + (1, 2);")]
+    [InlineData(true, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed); return c; } }", "var consumer = new Consumer(); var result = consumer + (1, 2);")]
+    [InlineData(false, "static void Unused() { }", "var list = new List<object>(); list.Add((1, 2)); Console.WriteLine(list[0]);")]
+    [InlineData(true, "static void Unused() { }", "var list = new List<object>(); list.Add((1, 2)); Console.WriteLine(list[0]);")]
+    public async Task ConvertTupleToStruct_DirectCreationNoRefUse_Succeeds(
+        bool asRecord,
+        string declaration,
+        string use)
+    {
+        var source = CalleeFlowTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 14,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("new Point", text, StringComparison.Ordinal);
+    }
 }

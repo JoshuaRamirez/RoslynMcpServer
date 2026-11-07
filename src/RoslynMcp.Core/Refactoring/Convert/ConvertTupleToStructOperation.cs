@@ -394,37 +394,25 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (creation == null)
                 continue;
 
-            var storage = TryGetAssignedStorageSymbol(creation, model, cancellationToken);
-            if (storage == null)
-            {
-                // Returned directly from an object / dynamic function: follow call
-                // sites (Codex P1 on #3441, PRRT_kwDORD0nYs605DwK).
-                var returningFunction = await FindUnsafeOpaqueReturnFlowAsync(
-                    target.Document,
-                    root,
-                    model,
-                    creation,
-                    memberNames,
-                    includeWrites: true,
-                    (doc, docRoot, docModel, flowStorage) => HasStorageElementWriteAsync(
-                        doc, docRoot, docModel, flowStorage, memberNames, tupleType, cancellationToken),
-                    cancellationToken).ConfigureAwait(false);
-                if (returningFunction != null)
-                {
-                    throw new RefactoringException(
-                        ErrorCodes.CannotConvert,
-                        $"Cannot convert to a record struct because the tuple returned from '{returningFunction}' reaches element assignments that require settable properties.");
-                }
-
-                continue;
-            }
-
-            if (await HasStorageElementWriteAsync(
-                    target.Document, root, model, storage, memberNames, tupleType, cancellationToken))
+            // One shared escape / propagation routine for the selected creation
+            // itself, its assigned storage, and every opaque-return call-site
+            // result (Codex P1s on #3441, PRRT_kwDORD0nYs605__Q / …605__Y / …605__c).
+            var subject = await FindUnsafeOpaqueReturnFlowAsync(
+                target.Document,
+                root,
+                model,
+                creation,
+                memberNames,
+                includeWrites: true,
+                (doc, docRoot, docModel, seedValue, flowStorage) => SeedValueHasUnsafeEscapeAsync(
+                    doc, docRoot, docModel, seedValue, flowStorage, memberNames, tupleType,
+                    includeWrites: true, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+            if (subject != null)
             {
                 throw new RefactoringException(
                     ErrorCodes.CannotConvert,
-                    $"Cannot convert to a record struct because '{storage.Name}' has element assignments that require settable properties.");
+                    $"Cannot convert to a record struct because {subject} has element assignments that require settable properties.");
             }
         }
     }
@@ -466,37 +454,23 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (creation == null)
                 continue;
 
-            var storage = TryGetAssignedStorageSymbol(creation, model, cancellationToken);
-            if (storage == null)
-            {
-                // Returned directly from an object / dynamic function: follow call
-                // sites (Codex P1 on #3441, PRRT_kwDORD0nYs605DwK).
-                var returningFunction = await FindUnsafeOpaqueReturnFlowAsync(
-                    target.Document,
-                    root,
-                    model,
-                    creation,
-                    memberNames,
-                    includeWrites: false,
-                    (doc, docRoot, docModel, flowStorage) => HasStorageElementByRefUseAsync(
-                        doc, docRoot, docModel, flowStorage, memberNames, tupleType, cancellationToken),
-                    cancellationToken).ConfigureAwait(false);
-                if (returningFunction != null)
-                {
-                    throw new RefactoringException(
-                        ErrorCodes.CannotConvert,
-                        $"Cannot convert because the tuple returned from '{returningFunction}' has an element passed by reference; the generated struct exposes properties, not fields.");
-                }
-
-                continue;
-            }
-
-            if (await HasStorageElementByRefUseAsync(
-                    target.Document, root, model, storage, memberNames, tupleType, cancellationToken))
+            // Shared escape / propagation routine (see the init-write gate above).
+            var subject = await FindUnsafeOpaqueReturnFlowAsync(
+                target.Document,
+                root,
+                model,
+                creation,
+                memberNames,
+                includeWrites: false,
+                (doc, docRoot, docModel, seedValue, flowStorage) => SeedValueHasUnsafeEscapeAsync(
+                    doc, docRoot, docModel, seedValue, flowStorage, memberNames, tupleType,
+                    includeWrites: false, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+            if (subject != null)
             {
                 throw new RefactoringException(
                     ErrorCodes.CannotConvert,
-                    $"Cannot convert because '{storage.Name}' has an element passed by reference; the generated struct exposes properties, not fields.");
+                    $"Cannot convert because {subject} has an element passed by reference; the generated struct exposes properties, not fields.");
             }
         }
     }
@@ -512,7 +486,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// conservatively refuses method-group / escaping-delegate uses, overridable or
     /// interface-implementing functions, and lambdas whose delegate is not a
     /// source-declared local / field / property (Codex P1 on #3441,
-    /// PRRT_kwDORD0nYs605DwK). Returns the offending function name, or null.
+    /// PRRT_kwDORD0nYs605DwK). Every visited value — the selected creation itself
+    /// and each call-site result — is handed to <paramref name="seedCheck"/> as an
+    /// alias-like seed together with its assigned storage (if any), so direct uses
+    /// and alias uses share one escape classifier (Codex P1s on #3441,
+    /// PRRT_kwDORD0nYs605__Q / …605__Y / …605__c). Returns a description of the
+    /// offending value for the diagnostic, or null.
     /// </summary>
     private static async Task<string?> FindUnsafeOpaqueReturnFlowAsync(
         Document document,
@@ -521,7 +500,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         ExpressionSyntax creation,
         HashSet<string> memberNames,
         bool includeWrites,
-        Func<Document, SyntaxNode, SemanticModel, ISymbol, Task<bool>> storageCheck,
+        Func<Document, SyntaxNode, SemanticModel, ExpressionSyntax, ISymbol?, Task<bool>> seedCheck,
         CancellationToken cancellationToken)
     {
         var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
@@ -538,21 +517,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             ISymbol? storage = null;
             while (true)
             {
-                if (!ReferenceEquals(top, creation))
+                storage = TryGetAssignedStorageSymbol(top, currentModel, cancellationToken);
+                if (storage != null)
+                    break;
+
+                // foreach (dynamic copy in Get()) over an iterator / container
+                // result: the iteration variable holds the boxed tuple (Codex P1
+                // on #3441, PRRT_kwDORD0nYs605hQG).
+                if (top.Parent is ForEachStatementSyntax forEach && forEach.Expression == top)
                 {
-                    storage = TryGetAssignedStorageSymbol(top, currentModel, cancellationToken);
+                    storage = currentModel.GetDeclaredSymbol(forEach, cancellationToken);
                     if (storage != null)
                         break;
-
-                    // foreach (dynamic copy in Get()) over an iterator / container
-                    // result: the iteration variable holds the boxed tuple (Codex P1
-                    // on #3441, PRRT_kwDORD0nYs605hQG).
-                    if (top.Parent is ForEachStatementSyntax forEach && forEach.Expression == top)
-                    {
-                        storage = currentModel.GetDeclaredSymbol(forEach, cancellationToken);
-                        if (storage != null)
-                            break;
-                    }
                 }
 
                 if (!TryClimbOpaqueReturnFlow(top, out var next))
@@ -560,15 +536,24 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 top = next;
             }
 
-            if (storage != null)
+            // The value itself is an alias-like seed: every use site (setter /
+            // init / indexer value, callee argument, extension receiver, operator /
+            // conversion operand, collection insert, …) is classified by the same
+            // routine as storage aliases, whether or not storage was found.
+            if (await seedCheck(currentDocument, currentRoot, currentModel, value, storage).ConfigureAwait(false))
             {
-                if (await storageCheck(currentDocument, currentRoot, currentModel, storage).ConfigureAwait(false))
-                    return function ?? storage.Name;
-                continue;
+                return function != null
+                    ? $"the tuple returned from '{function}'"
+                    : storage != null
+                        ? $"'{storage.Name}'"
+                        : "the converted tuple creation";
             }
 
+            if (storage != null)
+                continue;
+
             if (function != null && DirectElementUseIsUnsafe(top, memberNames, includeWrites))
-                return function;
+                return $"the tuple returned from '{function}'";
 
             if (!TryGetOpaqueReturningFunction(
                     top, currentModel, cancellationToken, out var functionSymbol, out var lambda, out var isIterator))
@@ -579,7 +564,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 // unless the result is simply discarded (Codex P1 on #3441,
                 // PRRT_kwDORD0nYs605hQG).
                 if (sequence && function != null && top.Parent is not ExpressionStatementSyntax)
-                    return function;
+                    return $"the tuple returned from '{function}'";
 
                 continue;
             }
@@ -602,14 +587,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 if (delegateStorage is not (ILocalSymbol or IFieldSymbol or IPropertySymbol) ||
                     delegateStorage.DeclaringSyntaxReferences.IsDefaultOrEmpty)
                 {
-                    return functionName;
+                    return $"the tuple returned from '{functionName}'";
                 }
 
                 referenceTarget = delegateStorage;
             }
             else if (IsOverridableOrInterfaceMember(functionSymbol))
             {
-                return functionName;
+                return $"the tuple returned from '{functionName}'";
             }
 
             var references = await SymbolFinder.FindReferencesAsync(
@@ -619,17 +604,17 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 foreach (var location in referenced.Locations)
                 {
                     if (location.IsImplicit || location.IsCandidateLocation)
-                        return functionName;
+                        return $"the tuple returned from '{functionName}'";
 
                     var siteDocument = location.Document;
                     var siteRoot = await siteDocument.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
                     var siteModel = await siteDocument.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
                     if (siteRoot == null || siteModel == null)
-                        return functionName;
+                        return $"the tuple returned from '{functionName}'";
 
                     var siteNode = siteRoot.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
                     if (siteNode is not ExpressionSyntax siteExpression)
-                        return functionName;
+                        return $"the tuple returned from '{functionName}'";
 
                     if (!TryGetCallSiteResult(
                             siteExpression,
@@ -638,7 +623,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                             out var result,
                             out var ignore))
                     {
-                        return functionName;
+                        return $"the tuple returned from '{functionName}'";
                     }
 
                     if (ignore)
@@ -977,62 +962,58 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     private static bool RequiresCrossDocumentStorageScan(ISymbol storage) =>
         storage is IFieldSymbol or IPropertySymbol;
 
-    private static async Task<bool> HasStorageElementByRefUseAsync(
+    /// <summary>
+    /// The single escape / propagation routine shared by the record-init and by-ref
+    /// gates. <paramref name="seedValue"/> (the selected creation, or an opaque-return
+    /// call-site result) is registered as an alias-like value next to its assigned
+    /// <paramref name="storage"/>, so <see cref="ExpressionReferencesStorageAlias"/>
+    /// recognizes the value at its own use site. Every alias-propagation rule
+    /// (setter / init / indexer value parameters, callee / constructor / stored-delegate
+    /// / method-group / lambda parameters, user-defined operator and conversion
+    /// parameters, collection inserts, generic wrappers, fields, …) and every
+    /// conservative unresolved-callee refusal (extension receivers, interface /
+    /// abstract / open-virtual dispatch, reassigned delegates, expanded
+    /// <c>params</c>, dynamic binding) therefore applies identically to direct uses
+    /// and alias uses (Codex P1s on #3441, PRRT_kwDORD0nYs605__Q / …605__Y /
+    /// …605__c).
+    /// </summary>
+    private static async Task<bool> SeedValueHasUnsafeEscapeAsync(
         Document originatingDocument,
         SyntaxNode originatingRoot,
         SemanticModel originatingModel,
-        ISymbol storage,
+        ExpressionSyntax seedValue,
+        ISymbol? storage,
         HashSet<string> memberNames,
         ITypeSymbol tupleType,
+        bool includeWrites,
         CancellationToken cancellationToken)
     {
-        var (aliases, documents) = RequiresCrossDocumentStorageScan(storage)
+        var aliases = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        if (storage != null)
+            aliases.Add(storage);
+        RegisterSeedValue(aliases, seedValue);
+
+        var documents = storage != null && RequiresCrossDocumentStorageScan(storage)
             ? await CollectCrossDocumentStorageAliasesAsync(
-                originatingDocument, storage, cancellationToken).ConfigureAwait(false)
+                originatingDocument, aliases, cancellationToken).ConfigureAwait(false)
             : await CollectPropagatedAliasDocumentsAsync(
-                originatingDocument, originatingRoot, originatingModel, storage, cancellationToken)
+                originatingDocument, originatingRoot, originatingModel, aliases, cancellationToken)
                 .ConfigureAwait(false);
 
         foreach (var (root, model) in documents)
         {
-            if (HasElementByRefUse(root, model, aliases, memberNames, tupleType))
+            if (includeWrites
+                    ? HasElementWrite(root, model, aliases, memberNames, tupleType)
+                    : HasElementByRefUse(root, model, aliases, memberNames, tupleType))
+            {
                 return true;
+            }
 
-            // Conservative escape: storage flowing into a callee we cannot map to a
-            // single concrete analyzable target is treated like a by-ref use (Codex
-            // P1s on #3441 — reduced extension receivers, virtual/interface
-            // dispatch, reassigned delegates, params expansion, unknown callees).
-            if (HasUnresolvedCalleeEscape(root, model, aliases, cancellationToken))
-                return true;
-        }
-
-        return false;
-    }
-
-    private static async Task<bool> HasStorageElementWriteAsync(
-        Document originatingDocument,
-        SyntaxNode originatingRoot,
-        SemanticModel originatingModel,
-        ISymbol storage,
-        HashSet<string> memberNames,
-        ITypeSymbol tupleType,
-        CancellationToken cancellationToken)
-    {
-        var (aliases, documents) = RequiresCrossDocumentStorageScan(storage)
-            ? await CollectCrossDocumentStorageAliasesAsync(
-                originatingDocument, storage, cancellationToken).ConfigureAwait(false)
-            : await CollectPropagatedAliasDocumentsAsync(
-                originatingDocument, originatingRoot, originatingModel, storage, cancellationToken)
-                .ConfigureAwait(false);
-
-        foreach (var (root, model) in documents)
-        {
-            if (HasElementWrite(root, model, aliases, memberNames, tupleType))
-                return true;
-
-            // Same conservative unresolved-callee escape as the by-ref gate so
-            // asRecord init-breaking diagnostics keep the "element assignments"
-            // message style (Codex P1s on #3441).
+            // Conservative escape: converted values flowing into a callee we cannot
+            // map to a single concrete analyzable target are treated like a by-ref
+            // use / element write (Codex P1s on #3441 — reduced extension receivers,
+            // virtual/interface dispatch, reassigned delegates, params expansion,
+            // unknown callees, accessors, operators).
             if (HasUnresolvedCalleeEscape(root, model, aliases, cancellationToken))
                 return true;
         }
@@ -1041,23 +1022,50 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// For document-scoped storage (locals / parameters / range variables), collects
-    /// aliases in the originating document and then continues into every syntax tree
-    /// that declares a collected alias — e.g. a callee / constructor parameter whose
-    /// body lives in another partial file or project. Local functions cannot be
-    /// cross-file; ordinary methods, constructors, and method-group targets can
-    /// (Codex P1 on #3441, PRRT_kwDORD0nYs604Ela).
+    /// Alias-like seed values (selected creations / opaque-return call-site results)
+    /// attached to a specific alias set. Keyed by tree + span + kind rather than node
+    /// identity so lookups survive red-node re-materialization.
     /// </summary>
-    private static async Task<(HashSet<ISymbol> Aliases, List<(SyntaxNode Root, SemanticModel Model)> Documents)>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<HashSet<ISymbol>, List<(SyntaxTree Tree, TextSpan Span, int Kind)>>
+        SeedValues = new();
+
+    private static void RegisterSeedValue(HashSet<ISymbol> aliases, ExpressionSyntax seedValue)
+    {
+        var unwrapped = SkipTransparentWrappers(seedValue);
+        SeedValues.GetOrCreateValue(aliases).Add((unwrapped.SyntaxTree, unwrapped.Span, unwrapped.RawKind));
+    }
+
+    private static bool IsSeedValue(HashSet<ISymbol> aliases, ExpressionSyntax expression)
+    {
+        if (!SeedValues.TryGetValue(aliases, out var seeds) || seeds.Count == 0)
+            return false;
+
+        foreach (var (tree, span, kind) in seeds)
+        {
+            if (expression.RawKind == kind && expression.Span == span && expression.SyntaxTree == tree)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// For document-scoped storage (locals / parameters / range variables / bare
+    /// seed values), propagates aliases in the originating document and then
+    /// continues into every syntax tree that declares a collected alias — e.g. a
+    /// callee / constructor / accessor / operator parameter whose body lives in
+    /// another partial file or project (Codex P1 on #3441, PRRT_kwDORD0nYs604Ela).
+    /// Mutates <paramref name="aliases"/> in place so seed values stay attached.
+    /// </summary>
+    private static async Task<List<(SyntaxNode Root, SemanticModel Model)>>
         CollectPropagatedAliasDocumentsAsync(
             Document originatingDocument,
             SyntaxNode originatingRoot,
             SemanticModel originatingModel,
-            ISymbol storage,
+            HashSet<ISymbol> aliases,
             CancellationToken cancellationToken)
     {
-        var aliases = CollectStorageAliases(
-            originatingRoot, originatingModel, storage, cancellationToken);
+        PropagateStorageAliases(originatingRoot, originatingModel, aliases, cancellationToken);
         var documents = new List<(SyntaxNode Root, SemanticModel Model)>
         {
             (originatingRoot, originatingModel)
@@ -1068,9 +1076,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         while (changed)
         {
             changed = false;
-            var seed = aliases.ToArray();
 
-            foreach (var symbol in seed)
+            foreach (var symbol in aliases.ToArray())
             {
                 foreach (var reference in symbol.DeclaringSyntaxReferences)
                 {
@@ -1092,39 +1099,33 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 }
             }
 
-            // Re-seed each loaded document so copies inside newly discovered callee
-            // bodies (and further callees they invoke) join the alias set.
+            // Re-propagate each loaded document so copies inside newly discovered
+            // callee bodies (and further callees they invoke) join the alias set.
             foreach (var (root, model) in documents)
             {
-                foreach (var symbol in seed)
-                {
-                    foreach (var alias in CollectStorageAliases(root, model, symbol, cancellationToken))
-                    {
-                        if (aliases.Add(alias))
-                            changed = true;
-                    }
-                }
+                var before = aliases.Count;
+                PropagateStorageAliases(root, model, aliases, cancellationToken);
+                if (aliases.Count != before)
+                    changed = true;
             }
         }
 
-        return (aliases, documents);
+        return documents;
     }
 
     /// <summary>
-    /// Fixpoint-collects aliases of <paramref name="storage"/> across every document
-    /// in the originating project (partial types / sibling files) and in referencing
-    /// / dependent projects the refactoring already rewrites
+    /// Fixpoint-propagates <paramref name="aliases"/> across every document in the
+    /// originating project (partial types / sibling files) and in referencing /
+    /// dependent projects the refactoring already rewrites
     /// (<see cref="ProjectCanReference"/>), then returns the loaded roots+models for
     /// by-ref / write checks (Codex P1 on #3441).
     /// </summary>
-    private static async Task<(HashSet<ISymbol> Aliases, List<(SyntaxNode Root, SemanticModel Model)> Documents)>
+    private static async Task<List<(SyntaxNode Root, SemanticModel Model)>>
         CollectCrossDocumentStorageAliasesAsync(
             Document originatingDocument,
-            ISymbol storage,
+            HashSet<ISymbol> aliases,
             CancellationToken cancellationToken)
     {
-        var aliases = new HashSet<ISymbol>(SymbolEqualityComparer.Default) { storage };
-        var documents = new List<(SyntaxNode Root, SemanticModel Model)>();
         var loaded = new List<(SyntaxNode Root, SemanticModel Model)>();
         var originatingProject = originatingDocument.Project;
 
@@ -1147,22 +1148,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         while (changed)
         {
             changed = false;
-            var seed = aliases.ToArray();
             foreach (var (root, model) in loaded)
             {
-                foreach (var symbol in seed)
-                {
-                    foreach (var alias in CollectStorageAliases(root, model, symbol, cancellationToken))
-                    {
-                        if (aliases.Add(alias))
-                            changed = true;
-                    }
-                }
+                var before = aliases.Count;
+                PropagateStorageAliases(root, model, aliases, cancellationToken);
+                if (aliases.Count != before)
+                    changed = true;
             }
         }
 
-        documents.AddRange(loaded);
-        return (aliases, documents);
+        return loaded;
     }
 
     /// <summary>
@@ -1386,6 +1381,22 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         CancellationToken cancellationToken = default)
     {
         var aliases = new HashSet<ISymbol>(SymbolEqualityComparer.Default) { storage };
+        PropagateStorageAliases(root, semanticModel, aliases, cancellationToken);
+        return aliases;
+    }
+
+    /// <summary>
+    /// In-place alias propagation over one document. Shared by symbol-seeded
+    /// storage and alias-like seed values (<see cref="RegisterSeedValue"/>), so a
+    /// selected creation used directly flows through exactly the same rules as a
+    /// named alias (Codex P1s on #3441, PRRT_kwDORD0nYs605__Q / …605__Y / …605__c).
+    /// </summary>
+    private static void PropagateStorageAliases(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        HashSet<ISymbol> aliases,
+        CancellationToken cancellationToken)
+    {
         var changed = true;
         while (changed)
         {
@@ -1649,7 +1660,6 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
-        return aliases;
     }
 
     /// <summary>
@@ -1688,8 +1698,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // Only taint when the argument flows into a parameter whose type
             // embeds converted storage. Dictionary<object, (int X, int Y)>.Add(point, …)
             // must not mark the receiver via the unrelated object key (Codex P2 on #3441).
-            if (!TypeInvolvesStorageAliasType(parameter.Type, aliases))
+            // Opaque element collections (List<object> / ArrayList / Queue<dynamic>)
+            // box the converted value and hand it back as object / dynamic, so
+            // they are carriers too (Codex P1s on #3441, PRRT_kwDORD0nYs605__Y audit:
+            // list.Add((1, 2)); dynamic copy = list[0]; Bump(ref copy.Item1);).
+            if (!TypeInvolvesStorageAliasType(parameter.Type, aliases) &&
+                !(IsOpaqueCarrierType(parameter.Type) &&
+                  ReceiverElementTypesAreOpaque(memberAccess.Expression, semanticModel, cancellationToken)))
+            {
                 continue;
+            }
 
             if (TryAddContainerReceiverAlias(
                     memberAccess.Expression,
@@ -1704,6 +1722,23 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         return false;
     }
+
+    private static bool IsOpaqueCarrierType(ITypeSymbol type) =>
+        type.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType ||
+        type.TypeKind is TypeKind.Dynamic or TypeKind.Interface;
+
+    /// <summary>
+    /// True when every type argument of the receiver's collection type is opaque
+    /// (<c>List&lt;object&gt;</c>, <c>Dictionary&lt;object, dynamic&gt;</c>) or the
+    /// collection is non-generic (<c>ArrayList</c>), so values read back are the boxed
+    /// converted instances rather than an unrelated element type.
+    /// </summary>
+    private static bool ReceiverElementTypesAreOpaque(
+        ExpressionSyntax receiver,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        semanticModel.GetTypeInfo(receiver, cancellationToken).Type is INamedTypeSymbol named &&
+        named.TypeArguments.All(IsOpaqueCarrierType);
 
     /// <summary>
     /// Adds the symbol behind <paramref name="container"/> as an alias when
@@ -4378,6 +4413,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             else
                 break;
         }
+
+        // Alias-like seed value (the selected creation / an opaque-return call-site
+        // result) used directly at this site (Codex P1s on #3441,
+        // PRRT_kwDORD0nYs605__Q / …605__Y / …605__c).
+        if (IsSeedValue(aliases, expression))
+            return true;
 
         var symbol = semanticModel.GetSymbolInfo(expression, cancellationToken).Symbol;
         if (symbol != null && aliases.Contains(symbol))
