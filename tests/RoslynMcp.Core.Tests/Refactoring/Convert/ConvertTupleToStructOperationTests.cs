@@ -7782,5 +7782,248 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
     }
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs604ZeC): reduced extension receiver point.Use()
+    // never appears in ArgumentList — refuse rather than miss the this parameter.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_ReducedExtensionReceiverRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        var source = """
+            using System;
+
+            namespace TestApp;
+
+            public static class PointExtensions
+            {
+                public static void Use(this object boxed)
+                {
+                    dynamic copy = boxed;
+                    Bump(ref copy.Item1);
+                }
+
+                static void Bump(ref int v) => v++;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    point.Use();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 20,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs604ZeE): interface / virtual dispatch maps to
+    // the declaration parameter, not the implementing body — refuse.
+    [SkippableTheory]
+    [InlineData(false, "interface")]
+    [InlineData(true, "interface")]
+    [InlineData(false, "virtual")]
+    [InlineData(true, "virtual")]
+    public async Task ConvertTupleToStruct_InterfaceOrVirtualDispatchRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string dispatch)
+    {
+        string source;
+        int line;
+        if (dispatch == "interface")
+        {
+            source = """
+                using System;
+
+                namespace TestApp;
+
+                public interface IConsumer
+                {
+                    void Use(object boxed);
+                }
+
+                public sealed class Consumer : IConsumer
+                {
+                    public void Use(object boxed)
+                    {
+                        dynamic copy = boxed;
+                        Bump(ref copy.Item1);
+                    }
+
+                    static void Bump(ref int v) => v++;
+                }
+
+                public class Worker
+                {
+                    public object Create()
+                    {
+                        var point = (X: 1, Y: 2);
+                        IConsumer consumer = new Consumer();
+                        consumer.Use(point);
+                        return point;
+                    }
+                }
+                """;
+            line = 25;
+        }
+        else
+        {
+            source = """
+                using System;
+
+                namespace TestApp;
+
+                public class Consumer
+                {
+                    public virtual void Use(object boxed)
+                    {
+                        dynamic copy = boxed;
+                        Bump(ref copy.Item1);
+                    }
+
+                    static void Bump(ref int v) => v++;
+                }
+
+                public class Worker
+                {
+                    public object Create()
+                    {
+                        var point = (X: 1, Y: 2);
+                        Consumer consumer = new Consumer();
+                        consumer.Use(point);
+                        return point;
+                    }
+                }
+                """;
+            line = 20;
+        }
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs604ZeH): later delegate reassignment must not
+    // be mapped to the discarded initializer — refuse when sources are not unique.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_DelegateReassignmentRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        var source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Action<dynamic> use = _ => { };
+                    use = copy => Bump(ref copy.Item1);
+                    use(point);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs604ZeL): expanded params arguments must not
+    // drop the storage-bearing arg when its index exceeds Parameters.Length — refuse.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_ExpandedParamsArgumentRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        var source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static void Use(int n, params dynamic[] copies)
+                {
+                    Bump(ref copies[1].Item1);
+                }
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Use(0, "skip", point);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 16,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
 
 }

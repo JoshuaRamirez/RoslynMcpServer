@@ -491,6 +491,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         {
             if (HasElementByRefUse(root, model, aliases, memberNames, tupleType))
                 return true;
+
+            // Conservative escape: storage flowing into a callee we cannot map to a
+            // single concrete analyzable target is treated like a by-ref use (Codex
+            // P1s on #3441 — reduced extension receivers, virtual/interface
+            // dispatch, reassigned delegates, params expansion, unknown callees).
+            if (HasUnresolvedCalleeEscape(root, model, aliases, cancellationToken))
+                return true;
         }
 
         return false;
@@ -515,6 +522,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         foreach (var (root, model) in documents)
         {
             if (HasElementWrite(root, model, aliases, memberNames, tupleType))
+                return true;
+
+            // Same conservative unresolved-callee escape as the by-ref gate so
+            // asRecord init-breaking diagnostics keep the "element assignments"
+            // message style (Codex P1s on #3441).
+            if (HasUnresolvedCalleeEscape(root, model, aliases, cancellationToken))
                 return true;
         }
 
@@ -2017,36 +2030,354 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (delegateSymbol == null)
             return null;
 
-        var root = invocation.SyntaxTree.GetRoot(cancellationToken);
-        foreach (var source in EnumerateDelegateAssignmentSources(
-                     delegateSymbol, root, semanticModel, cancellationToken))
+        // Require exactly one assignment source so a later reassignment
+        // (use = _ => {}; use = copy => Bump(...); use(point)) is not mapped to the
+        // discarded initializer. Multiple / zero sources are refused via
+        // HasUnresolvedCalleeEscape instead (Codex P1 on #3441, PRRT_kwDORD0nYs604ZeH).
+        if (!TryGetSingleDelegateAssignmentSource(
+                delegateSymbol, invocation, semanticModel, cancellationToken, out var source, out var sourceModel) ||
+            source == null ||
+            sourceModel == null)
         {
-            var mapped = TryGetDelegateSourceParameter(
-                source, argumentIndex, semanticModel, cancellationToken);
-            if (mapped != null)
-                return mapped;
+            return null;
         }
 
-        // Field / property initializers and assignments may live in another partial
-        // document of the containing type (Codex P1 sibling on #3441,
-        // PRRT_kwDORD0nYs604Ela). Local functions cannot be cross-file.
+        return TryGetDelegateSourceParameter(
+            source, argumentIndex, sourceModel, cancellationToken);
+    }
+
+    /// <summary>
+    /// True when converted storage flows into a call whose parameter mapping cannot
+    /// be resolved to a single concrete analyzable target. Conservative refusal
+    /// closes reduced extension receivers, virtual/interface/abstract dispatch,
+    /// reassigned or uninitialized delegates, expanded <c>params</c> arguments,
+    /// and fully unknown/dynamic callees rather than growing precise
+    /// interprocedural cases one at a time (Codex P1s on #3441:
+    /// PRRT_kwDORD0nYs604ZeC / …604ZeE / …604ZeH / …604ZeL).
+    /// </summary>
+    private static bool HasUnresolvedCalleeEscape(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        HashSet<ISymbol> aliases,
+        CancellationToken cancellationToken)
+    {
+        foreach (var node in root.DescendantNodes())
+        {
+            switch (node)
+            {
+                case InvocationExpressionSyntax invocation:
+                    if (InvocationHasUnresolvedCalleeEscape(
+                            invocation, aliases, semanticModel, cancellationToken))
+                    {
+                        return true;
+                    }
+
+                    break;
+
+                case BaseObjectCreationExpressionSyntax objectCreation:
+                    if (ObjectCreationHasUnresolvedCalleeEscape(
+                            objectCreation, aliases, semanticModel, cancellationToken))
+                    {
+                        return true;
+                    }
+
+                    break;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool InvocationHasUnresolvedCalleeEscape(
+        InvocationExpressionSyntax invocation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out var method) ||
+            method == null)
+        {
+            // Dynamic / unresolved invoke: any storage-bearing receiver or argument escapes.
+            return InvocationReceiverOrArgumentReferencesStorage(
+                invocation, aliases, semanticModel, cancellationToken);
+        }
+
+        // Reduced extension: point.Use() never appears in ArgumentList, so the
+        // ordinary argument mapper cannot bind `this`. Refuse when the receiver
+        // carries converted storage and is not a sequence/container this (those
+        // keep existing ToArray/AsSpan/LINQ precise paths).
+        if (method.ReducedFrom is { } reduced &&
+            invocation.Expression is MemberAccessExpressionSyntax extensionAccess &&
+            ExpressionReferencesStorageAlias(
+                extensionAccess.Expression, aliases, semanticModel, cancellationToken) &&
+            !ExtensionThisIsSequenceContainer(reduced))
+        {
+            return true;
+        }
+
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
+            var expr = SkipTransparentWrappers(argument.Expression);
+            if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
+                continue;
+
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            if (method.MethodKind == MethodKind.DelegateInvoke)
+            {
+                if (StoredDelegateArgumentMappingIsUnresolved(
+                        invocation, method, i, semanticModel, cancellationToken))
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            var parameter = ResolveInvocationParameter(method, argument, i);
+            if (parameter == null)
+            {
+                // Expanded params (Use(0, "skip", point) → params dynamic[] copies)
+                // or otherwise unmapped argument.
+                if (MethodHasParamsParameter(method))
+                    return true;
+
+                continue;
+            }
+
+            if (parameter.IsParams)
+                return true;
+
+            if (!CanPreciselyAnalyzeCalleeBody(method))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool ObjectCreationHasUnresolvedCalleeEscape(
+        BaseObjectCreationExpressionSyntax objectCreation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (objectCreation.ArgumentList == null ||
+            objectCreation.ArgumentList.Arguments.Count == 0)
+        {
+            return false;
+        }
+
+        if (semanticModel.GetSymbolInfo(objectCreation, cancellationToken).Symbol is not IMethodSymbol constructor)
+        {
+            // Unresolved ctor with a storage-bearing argument escapes.
+            return ArgumentListReferencesStorage(
+                objectCreation.ArgumentList, aliases, semanticModel, cancellationToken);
+        }
+
+        for (var i = 0; i < objectCreation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = objectCreation.ArgumentList.Arguments[i];
+            var expr = SkipTransparentWrappers(argument.Expression);
+            if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
+                continue;
+
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            var parameter = ResolveInvocationParameter(constructor, argument, i);
+            if (parameter == null)
+            {
+                if (MethodHasParamsParameter(constructor))
+                    return true;
+
+                continue;
+            }
+
+            if (parameter.IsParams)
+                return true;
+
+            if (!CanPreciselyAnalyzeCalleeBody(constructor))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool InvocationReceiverOrArgumentReferencesStorage(
+        InvocationExpressionSyntax invocation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
+            ExpressionReferencesStorageAlias(
+                memberAccess.Expression, aliases, semanticModel, cancellationToken))
+        {
+            return true;
+        }
+
+        return ArgumentListReferencesStorage(
+            invocation.ArgumentList, aliases, semanticModel, cancellationToken);
+    }
+
+    private static bool ArgumentListReferencesStorage(
+        ArgumentListSyntax argumentList,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var argument in argumentList.Arguments)
+        {
+            var expr = SkipTransparentWrappers(argument.Expression);
+            if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
+                continue;
+
+            if (ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when a reduced extension's <c>this</c> parameter is a sequence/container
+    /// type already handled by collection-forwarding precise paths
+    /// (<c>points.ToArray()</c> / LINQ). Scalar <c>this object</c> /
+    /// <c>this dynamic</c> / tuple / type-parameter receivers are not.
+    /// </summary>
+    private static bool ExtensionThisIsSequenceContainer(IMethodSymbol unreducedExtension)
+    {
+        if (unreducedExtension.Parameters.IsDefaultOrEmpty)
+            return false;
+
+        return TryGetSequenceElementType(unreducedExtension.Parameters[0].Type) != null;
+    }
+
+    private static bool MethodHasParamsParameter(IMethodSymbol method) =>
+        !method.Parameters.IsDefaultOrEmpty && method.Parameters[^1].IsParams;
+
+    /// <summary>
+    /// True when the statically bound <paramref name="method"/> is a single concrete
+    /// target we can attribute this call to. Abstract/interface/open-virtual dispatch
+    /// maps to the wrong parameter symbol for implementation bodies, so those escape.
+    /// Metadata-only ordinary methods still resolve a parameter mapping (existing
+    /// precise alias path); only uncertain dispatch is refused here.
+    /// </summary>
+    private static bool CanPreciselyAnalyzeCalleeBody(IMethodSymbol method)
+    {
+        var original = (method.ReducedFrom ?? method).OriginalDefinition;
+
+        if (original.MethodKind == MethodKind.DelegateInvoke)
+            return false;
+
+        if (original.IsAbstract)
+            return false;
+
+        if (original.ContainingType?.TypeKind == TypeKind.Interface)
+            return false;
+
+        // Open virtual dispatch — overrides may differ from the static target.
+        if (original.IsVirtual && !original.IsSealed)
+            return false;
+
+        return true;
+    }
+
+    private static bool StoredDelegateArgumentMappingIsUnresolved(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol invokeMethod,
+        int argumentIndex,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var receiver = invocation.Expression is MemberAccessExpressionSyntax
+        {
+            Name.Identifier.ValueText: "Invoke"
+        } invokeAccess
+            ? invokeAccess.Expression
+            : invocation.Expression;
+
+        receiver = SkipTransparentWrappers(receiver);
+        var delegateSymbol = semanticModel.GetSymbolInfo(receiver, cancellationToken).Symbol;
+        if (delegateSymbol == null)
+            return true;
+
+        if (!TryGetSingleDelegateAssignmentSource(
+                delegateSymbol, invocation, semanticModel, cancellationToken, out var source, out var sourceModel) ||
+            source == null ||
+            sourceModel == null)
+        {
+            return true;
+        }
+
+        return TryGetDelegateSourceParameter(
+            source, argumentIndex, sourceModel, cancellationToken) == null;
+    }
+
+    /// <summary>
+    /// Returns the sole initializer/assignment expression that defines
+    /// <paramref name="delegateSymbol"/> across its declaring documents, or
+    /// <c>false</c> when there are zero or multiple sources (reassignment).
+    /// </summary>
+    private static bool TryGetSingleDelegateAssignmentSource(
+        ISymbol delegateSymbol,
+        InvocationExpressionSyntax invocation,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out ExpressionSyntax? source,
+        out SemanticModel? sourceModel)
+    {
+        source = null;
+        sourceModel = null;
+
+        ExpressionSyntax? found = null;
+        SemanticModel? foundModel = null;
+        var root = invocation.SyntaxTree.GetRoot(cancellationToken);
+
+        foreach (var candidate in EnumerateDelegateAssignmentSources(
+                     delegateSymbol, root, semanticModel, cancellationToken))
+        {
+            if (found != null)
+                return false;
+
+            found = candidate;
+            foundModel = semanticModel;
+        }
+
         foreach (var (otherRoot, otherModel) in EnumerateDelegateSymbolDocumentRoots(
                      delegateSymbol, semanticModel, cancellationToken))
         {
             if (otherRoot.SyntaxTree == root.SyntaxTree)
                 continue;
 
-            foreach (var source in EnumerateDelegateAssignmentSources(
+            foreach (var candidate in EnumerateDelegateAssignmentSources(
                          delegateSymbol, otherRoot, otherModel, cancellationToken))
             {
-                var mapped = TryGetDelegateSourceParameter(
-                    source, argumentIndex, otherModel, cancellationToken);
-                if (mapped != null)
-                    return mapped;
+                if (found != null)
+                    return false;
+
+                found = candidate;
+                foundModel = otherModel;
             }
         }
 
-        return null;
+        if (found == null || foundModel == null)
+            return false;
+
+        source = found;
+        sourceModel = foundModel;
+        return true;
     }
 
     /// <summary>
