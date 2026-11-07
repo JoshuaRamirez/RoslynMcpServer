@@ -7306,19 +7306,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 continue;
 
             var getPinnable = ResolveGetPinnableReferenceMethod(value, semanticModel);
-            if (getPinnable == null ||
-                getPinnable.IsStatic ||
-                getPinnable.IsReadOnly)
-            {
+            if (!BindsReceiverByRef(getPinnable, semanticModel.GetTypeInfo(value).Type))
                 continue;
-            }
-
-            if (!IsMutatingValueTypeReceiver(
-                    getPinnable.ContainingType,
-                    semanticModel.GetTypeInfo(value).Type))
-            {
-                continue;
-            }
 
             receiver = value;
             return true;
@@ -7328,24 +7317,21 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// Resolves the instance <c>GetPinnableReference</c> a <c>fixed</c> statement would
-    /// invoke on <paramref name="operand"/> (pattern-based pinning).
+    /// Resolves the <c>GetPinnableReference</c> a <c>fixed</c> statement would invoke
+    /// on <paramref name="operand"/> (pattern-based pinning considers instance members
+    /// and extension methods, including writable <c>this ref</c> — Codex P1 sibling on
+    /// #3441, PRRT_kwDORD0nYs607PA-). Conservative when several candidates apply.
     /// </summary>
     private static IMethodSymbol? ResolveGetPinnableReferenceMethod(
         ExpressionSyntax operand,
         SemanticModel semanticModel)
     {
         var type = semanticModel.GetTypeInfo(operand).Type;
-        if (type == null)
+        if (type == null || type is IArrayTypeSymbol || type.SpecialType == SpecialType.System_String)
             return null;
 
-        foreach (var member in type.GetMembers("GetPinnableReference").OfType<IMethodSymbol>())
-        {
-            if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty)
-                return member;
-        }
-
-        return null;
+        return ResolvePatternMethodConservatively(
+            semanticModel, operand.SpanStart, type, "GetPinnableReference", HasNoRequiredParameters);
     }
 
     /// <summary>
@@ -7388,25 +7374,54 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// Syntax nodes that own an executable <see cref="IOperation"/> body. Nested
-    /// lambdas appear as child operations of their enclosing method / accessor, so
-    /// they are not listed separately.
+    /// Syntax nodes that own an executable <see cref="IOperation"/> root. Nested
+    /// lambdas / local functions appear as child operations of their enclosing
+    /// owner, so only true roots are listed: method / constructor / operator /
+    /// conversion / destructor bodies (including expression bodies and constructor
+    /// initializers), accessors, top-level statements, field / event-field / property
+    /// initializers, enum member values, parameter defaults, expression-bodied
+    /// properties / indexers (<see cref="ArrowExpressionClauseSyntax"/> directly on the
+    /// member), and primary-constructor base arguments / bodies.
+    /// <see cref="SemanticModel.GetOperation(SyntaxNode, System.Threading.CancellationToken)"/>
+    /// does not surface those member-level roots under the enclosing type, so without
+    /// them a query <c>Where</c> in a later static field initializer (or an
+    /// expression-bodied member) that mutates a converted element is missed (Codex P1
+    /// on #3441, PRRT_kwDORD0nYs607PA7).
     /// </summary>
     private static IEnumerable<SyntaxNode> EnumerateOperationOwners(SyntaxNode root)
     {
         foreach (var node in root.DescendantNodesAndSelf())
         {
-            switch (node)
-            {
-                case BaseMethodDeclarationSyntax:
-                case AccessorDeclarationSyntax:
-                case LocalFunctionStatementSyntax:
-                case GlobalStatementSyntax:
-                    yield return node;
-                    break;
-            }
+            if (IsOperationRootOwner(node))
+                yield return node;
         }
     }
+
+    /// <summary>
+    /// True when <paramref name="node"/> is a member-level executable root (see
+    /// <see cref="EnumerateOperationOwners"/>). Arrow / equals-value clauses nested in
+    /// an already-listed owner are skipped so each operation tree is walked once.
+    /// </summary>
+    private static bool IsOperationRootOwner(SyntaxNode node) =>
+        node switch
+        {
+            BaseMethodDeclarationSyntax => true,
+            AccessorDeclarationSyntax => true,
+            LocalFunctionStatementSyntax => true,
+            GlobalStatementSyntax => true,
+            // Expression-bodied property / indexer (`int P => …;`). Method / accessor /
+            // local-function arrows are part of their owner's body operation.
+            ArrowExpressionClauseSyntax { Parent: BasePropertyDeclarationSyntax } => true,
+            // Field / event-field / property initializers, enum member values and
+            // parameter defaults. Local `var x = …` initializers live inside a body.
+            EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax { Parent.Parent: BaseFieldDeclarationSyntax } } => true,
+            EqualsValueClauseSyntax { Parent: PropertyDeclarationSyntax or EnumMemberDeclarationSyntax or ParameterSyntax } => true,
+            // Primary-constructor base call (`class C(int x) : Base(…)`) and the
+            // primary constructor itself.
+            PrimaryConstructorBaseTypeSyntax => true,
+            TypeDeclarationSyntax { ParameterList: not null } => true,
+            _ => false
+        };
 
     private static bool WalkMutatingImplicitOperationCalls(
         IOperation operation,
@@ -7416,7 +7431,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel semanticModel,
         SyntaxNode root)
     {
-        foreach (var receiver in EnumerateMutatingImplicitOperationReceivers(operation))
+        foreach (var receiver in EnumerateMutatingImplicitOperationReceivers(operation, semanticModel))
         {
             if (HasConvertedElementByRefAccess(
                     receiver,
@@ -7439,20 +7454,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// value-type instance call under <paramref name="operation"/>.
     /// </summary>
     private static IEnumerable<ExpressionSyntax> EnumerateMutatingImplicitOperationReceivers(
-        IOperation operation)
+        IOperation operation,
+        SemanticModel semanticModel)
     {
         switch (operation)
         {
             case IInvocationOperation { IsImplicit: true } invocation
-                when TryGetMutatingOperationReceiver(
-                    invocation.TargetMethod,
-                    invocation.Instance,
-                    out var invocationReceiver):
+                when TryGetMutatingOperationReceiver(invocation, out var invocationReceiver):
                 yield return invocationReceiver;
                 break;
 
             case IDeconstructionAssignmentOperation deconstruction
-                when TryGetMutatingDeconstructionAssignmentReceiver(deconstruction, out var deconReceiver):
+                when TryGetMutatingDeconstructionAssignmentReceiver(
+                    deconstruction, semanticModel, out var deconReceiver):
                 yield return deconReceiver;
                 break;
 
@@ -7470,28 +7484,37 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         foreach (var child in operation.ChildOperations)
         {
-            foreach (var receiver in EnumerateMutatingImplicitOperationReceivers(child))
+            foreach (var receiver in EnumerateMutatingImplicitOperationReceivers(child, semanticModel))
                 yield return receiver;
         }
     }
 
     /// <summary>
-    /// True when <paramref name="method"/> is a non-<c>readonly</c> instance method
-    /// whose receiver is a mutable value type; yields the receiver's syntax expression.
+    /// True when a compiler-implicit invocation (query clause method,
+    /// collection-initializer <c>Add</c>, interpolated-string handler append, …)
+    /// binds its receiver by reference: a non-<c>readonly</c> instance method on a
+    /// mutable value type, or a writable <c>this ref</c> extension (the receiver is
+    /// then the first argument, e.g. query <c>Where(this ref QuerySource, …)</c> —
+    /// Codex P1 on #3441, PRRT_kwDORD0nYs607PA-). Yields the receiver's syntax.
     /// </summary>
     private static bool TryGetMutatingOperationReceiver(
-        IMethodSymbol method,
-        IOperation? instance,
+        IInvocationOperation invocation,
         out ExpressionSyntax receiver)
     {
         receiver = null!;
-        if (method.IsStatic || method.IsReadOnly)
-            return false;
+        var method = invocation.TargetMethod;
+        IOperation? instance = invocation.Instance;
+        if (instance == null && method.IsExtensionMethod && invocation.Arguments.Length > 0)
+        {
+            instance = invocation.Arguments
+                .FirstOrDefault(static a => a.Parameter?.Ordinal == 0)?.Value
+                ?? invocation.Arguments[0].Value;
+        }
 
         if (instance?.Syntax is not ExpressionSyntax expression)
             return false;
 
-        if (!IsMutatingValueTypeReceiver(method.ContainingType, instance.Type))
+        if (!BindsReceiverByRef(method, instance.Type))
             return false;
 
         receiver = expression;
@@ -7499,22 +7522,101 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// True when <paramref name="method"/>, invoked on a receiver of
+    /// <paramref name="receiverType"/>, receives that receiver by reference — a
+    /// writable <c>this ref</c> extension (reduced or declared form), or a
+    /// non-<c>readonly</c> instance method on a mutable value type (including a
+    /// value-type-constrained type parameter). Readonly <c>this in</c> /
+    /// <c>ref readonly</c> / by-value extensions and readonly instance members are
+    /// value receivers that a generated property satisfies. Shared by every
+    /// pattern-bound implicit call (GetAwaiter, GetEnumerator / GetAsyncEnumerator,
+    /// Deconstruct, GetPinnableReference, Dispose / DisposeAsync, query methods,
+    /// collection <c>Add</c>) so instance and extension forms are judged alike
+    /// (Codex P1 on #3441, PRRT_kwDORD0nYs607PA-).
+    /// </summary>
+    private static bool BindsReceiverByRef(IMethodSymbol? method, ITypeSymbol? receiverType)
+    {
+        if (method == null)
+            return false;
+
+        if (method.ReducedFrom != null || method.IsExtensionMethod)
+            return IsWritableRefThisExtension(method);
+
+        if (method.IsStatic || method.IsReadOnly)
+            return false;
+
+        return IsMutatingValueTypeReceiver(method.ContainingType, receiverType);
+    }
+
+    /// <summary>
+    /// Resolves a pattern-bound method (<c>GetAwaiter</c>, <c>GetEnumerator</c>,
+    /// <c>GetPinnableReference</c>, <c>Dispose</c>, <c>Deconstruct</c>, …) named
+    /// <paramref name="name"/> on <paramref name="type"/> when the semantic model
+    /// does not expose the bound symbol. Considers instance members <em>and</em>
+    /// reduced extension methods in scope at <paramref name="position"/> (pattern
+    /// lookup includes extensions). Conservative: when any applicable candidate binds
+    /// its receiver by reference, that candidate is returned so the gate refuses
+    /// rather than guessing which overload the compiler picks.
+    /// <paramref name="shape"/> filters on the reduced (receiver-less) signature.
+    /// </summary>
+    private static IMethodSymbol? ResolvePatternMethodConservatively(
+        SemanticModel semanticModel,
+        int position,
+        ITypeSymbol type,
+        string name,
+        Func<IMethodSymbol, bool> shape)
+    {
+        IMethodSymbol? fallback = null;
+        IEnumerable<IMethodSymbol> candidates;
+        try
+        {
+            candidates = semanticModel
+                .LookupSymbols(position, container: type, name: name, includeReducedExtensionMethods: true)
+                .OfType<IMethodSymbol>()
+                .Concat(type.GetMembers(name).OfType<IMethodSymbol>())
+                .ToList();
+        }
+        catch (ArgumentException)
+        {
+            candidates = type.GetMembers(name).OfType<IMethodSymbol>();
+        }
+
+        foreach (var method in candidates)
+        {
+            var isExtension = method.MethodKind == MethodKind.ReducedExtension;
+            if (!isExtension && method.IsStatic)
+                continue;
+            if (!shape(method))
+                continue;
+
+            if (BindsReceiverByRef(method, type))
+                return method;
+
+            fallback ??= method;
+        }
+
+        return fallback;
+    }
+
+    /// <summary>Reduced signature takes no required parameters.</summary>
+    private static bool HasNoRequiredParameters(IMethodSymbol method) =>
+        method.Parameters.All(static p => p.IsOptional || p.IsParams);
+
+    /// <summary>
     /// Resolves <c>Deconstruct</c> for a deconstruction assignment / declaration and
-    /// yields the RHS when that method is a non-<c>readonly</c> instance method on a
-    /// mutable value type (Codex P1 on #3441, PRRT_kwDORD0nYs6063yg).
-    /// <see cref="IDeconstructionAssignmentOperation"/> does not expose the bound
-    /// <c>Deconstruct</c> symbol, so arity is taken from the target tuple shape.
+    /// yields the RHS when that method binds its receiver by reference (non-<c>readonly</c>
+    /// instance method on a mutable value type, or a writable <c>this ref</c>
+    /// extension). Prefers the bound <see cref="DeconstructionInfo"/>; falls back to
+    /// an arity lookup including reduced extensions (Codex P1 on #3441,
+    /// PRRT_kwDORD0nYs6063yg / PRRT_kwDORD0nYs607PA-).
     /// </summary>
     private static bool TryGetMutatingDeconstructionAssignmentReceiver(
         IDeconstructionAssignmentOperation deconstruction,
+        SemanticModel semanticModel,
         out ExpressionSyntax receiver)
     {
         receiver = null!;
         if (deconstruction.Value.Syntax is not ExpressionSyntax valueSyntax)
-            return false;
-
-        var arity = GetDeconstructionTargetArity(deconstruction.Target);
-        if (arity < 2)
             return false;
 
         var valueType = deconstruction.Value.Type;
@@ -7525,15 +7627,29 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (IsSystemValueTupleType(valueType))
             return false;
 
-        var deconstruct = ResolveDeconstructMethod(valueType, arity);
-        if (deconstruct == null ||
-            deconstruct.IsStatic ||
-            deconstruct.IsReadOnly)
+        IMethodSymbol? deconstruct = null;
+        if (deconstruction.Syntax is AssignmentExpressionSyntax assignmentSyntax &&
+            deconstruction.Syntax.SyntaxTree == semanticModel.SyntaxTree)
         {
-            return false;
+            deconstruct = semanticModel.GetDeconstructionInfo(assignmentSyntax).Method;
         }
 
-        if (!IsMutatingValueTypeReceiver(deconstruct.ContainingType, valueType))
+        if (deconstruct == null)
+        {
+            var arity = GetDeconstructionTargetArity(deconstruction.Target);
+            if (arity < 2)
+                return false;
+
+            deconstruct = ResolvePatternMethodConservatively(
+                semanticModel,
+                valueSyntax.SpanStart,
+                valueType,
+                "Deconstruct",
+                m => m.Parameters.Length == arity &&
+                     m.Parameters.All(static p => p.RefKind == RefKind.Out));
+        }
+
+        if (!BindsReceiverByRef(deconstruct, valueType))
             return false;
 
         receiver = valueSyntax;
@@ -7563,13 +7679,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         out ExpressionSyntax receiver)
     {
         receiver = null!;
-        if (deconstruct.IsStatic || deconstruct.IsReadOnly)
-            return false;
-
         var matchedType = patternOperation is IRecursivePatternOperation recursive
             ? recursive.MatchedType ?? deconstruct.ContainingType
             : deconstruct.ContainingType;
-        if (!IsMutatingValueTypeReceiver(deconstruct.ContainingType, matchedType))
+        // Instance Deconstruct or a writable `this ref` extension Deconstruct
+        // (Codex P1 on #3441, PRRT_kwDORD0nYs607PA-).
+        if (!BindsReceiverByRef(deconstruct, matchedType))
             return false;
 
         if (!TryGetPatternInputExpression(patternOperation, out var input))
@@ -7657,26 +7772,6 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             IPropertySymbol { GetMethod: { IsStatic: false, IsReadOnly: false } } => true,
             _ => false
         };
-
-    /// <summary>
-    /// Resolves a type's instance <c>Deconstruct</c> with <paramref name="arity"/>
-    /// <c>out</c> parameters (positional deconstruction).
-    /// </summary>
-    private static IMethodSymbol? ResolveDeconstructMethod(ITypeSymbol type, int arity)
-    {
-        foreach (var member in type.GetMembers("Deconstruct").OfType<IMethodSymbol>())
-        {
-            if (member.IsStatic)
-                continue;
-            if (member.Parameters.Length != arity)
-                continue;
-            if (!member.Parameters.All(static p => p.RefKind == RefKind.Out))
-                continue;
-            return member;
-        }
-
-        return null;
-    }
 
     /// <summary>
     /// True when <paramref name="type"/> is <c>System.ValueTuple</c> / the CLR tuple
@@ -7826,21 +7921,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // ForEachStatementInfo exposes GetEnumeratorMethod for both sync foreach and
         // await foreach (where it is GetAsyncEnumerator). Fall back to a type lookup
         // when the info is incomplete.
+        // The bound method may be a (reduced or declared) extension GetEnumerator /
+        // GetAsyncEnumerator — a writable `this ref` extension cannot bind to a
+        // generated property (Codex P1 sibling on #3441, PRRT_kwDORD0nYs607PA-).
         var enumeratorMethod = info.GetEnumeratorMethod
             ?? ResolveEnumeratorMethod(forEach.Expression, semanticModel, isAsync: forEach.AwaitKeyword != default);
-        if (enumeratorMethod == null ||
-            enumeratorMethod.IsStatic ||
-            enumeratorMethod.IsReadOnly)
-        {
+        if (!BindsReceiverByRef(enumeratorMethod, semanticModel.GetTypeInfo(forEach.Expression).Type))
             return false;
-        }
-
-        if (!IsMutatingValueTypeReceiver(
-                enumeratorMethod.ContainingType,
-                semanticModel.GetTypeInfo(forEach.Expression).Type))
-        {
-            return false;
-        }
 
         receiver = forEach.Expression;
         return true;
@@ -7848,7 +7935,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// Resolves <c>GetEnumerator</c> / <c>GetAsyncEnumerator</c> on the collection
-    /// expression's type when <see cref="ForEachStatementInfo"/> is incomplete.
+    /// expression's type (instance or extension) when <see cref="ForEachStatementInfo"/>
+    /// is incomplete. Conservative when several candidates apply.
     /// </summary>
     private static IMethodSymbol? ResolveEnumeratorMethod(
         ExpressionSyntax collection,
@@ -7860,22 +7948,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return null;
 
         var name = isAsync ? "GetAsyncEnumerator" : "GetEnumerator";
-        foreach (var member in type.GetMembers(name).OfType<IMethodSymbol>())
-        {
-            if (!member.IsStatic)
-                return member;
-        }
-
-        return null;
+        return ResolvePatternMethodConservatively(
+            semanticModel, collection.SpanStart, type, name, HasNoRequiredParameters);
     }
 
     /// <summary>
     /// True when an <c>await</c> operand is a mutable value-type element whose resolved
-    /// <c>GetAwaiter</c> is a non-<c>readonly</c> instance method — the compiler-generated
-    /// call has no <see cref="InvocationExpressionSyntax"/>, so the ordinary
-    /// mutating-receiver switch misses it (Codex P1 on #3441, PRRT_kwDORD0nYs606mPZ).
-    /// After conversion the element is a property temporary and GetAwaiter mutates only
-    /// that copy.
+    /// <c>GetAwaiter</c> is a non-<c>readonly</c> instance method — or a writable
+    /// <c>this ref</c> extension — the compiler-generated call has no
+    /// <see cref="InvocationExpressionSyntax"/>, so the ordinary mutating-receiver
+    /// switch misses it (Codex P1 on #3441, PRRT_kwDORD0nYs606mPZ /
+    /// PRRT_kwDORD0nYs607PA-). After conversion the element is a property temporary:
+    /// instance GetAwaiter mutates only that copy, and a <c>this ref</c> extension
+    /// cannot bind to a property at all.
     /// </summary>
     private static bool TryGetMutatingAwaitReceiver(
         AwaitExpressionSyntax awaitExpression,
@@ -7884,44 +7969,55 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         receiver = null;
         var operand = awaitExpression.Expression;
-        var getAwaiter = ResolveGetAwaiterMethod(operand, semanticModel);
-        if (getAwaiter == null ||
-            getAwaiter.IsStatic ||
-            getAwaiter.IsReadOnly)
-        {
+        var getAwaiter = ResolveGetAwaiterMethod(awaitExpression, semanticModel);
+        // Instance GetAwaiter on a mutable value type, or a writable `this ref`
+        // extension GetAwaiter (Codex P1 PRRT_kwDORD0nYs607PA-). By-value / `in` /
+        // `ref readonly` extensions are value receivers — a generated property is fine.
+        if (!BindsReceiverByRef(getAwaiter, semanticModel.GetTypeInfo(operand).Type))
             return false;
-        }
-
-        if (!IsMutatingValueTypeReceiver(
-                getAwaiter.ContainingType,
-                semanticModel.GetTypeInfo(operand).Type))
-        {
-            return false;
-        }
 
         receiver = operand;
         return true;
     }
 
     /// <summary>
-    /// Resolves the instance <c>GetAwaiter</c> that an <c>await</c> expression would
-    /// invoke on <paramref name="operand"/> (pattern-based awaitable).
+    /// Resolves the <c>GetAwaiter</c> that an <c>await</c> expression would invoke —
+    /// preferring <c>SemanticModel.GetAwaitExpressionInfo</c>, then reduced
+    /// extension methods via <c>SemanticModel.LookupSymbols</c>
+    /// (including <c>this ref</c>), and finally members declared on the operand
+    /// type. Await may fail to bind a <c>this ref</c> extension (CS1510) even when
+    /// the extension exists; LookupSymbols still surfaces it so the gate can refuse
+    /// rather than leave a property receiver that can never accept <c>ref this</c>
+    /// (Codex P1 on #3441, PRRT_kwDORD0nYs607PA-).
     /// </summary>
     private static IMethodSymbol? ResolveGetAwaiterMethod(
-        ExpressionSyntax operand,
+        AwaitExpressionSyntax awaitExpression,
         SemanticModel semanticModel)
     {
-        var type = semanticModel.GetTypeInfo(operand).Type;
+        var info = semanticModel.GetAwaitExpressionInfo(awaitExpression);
+        if (info.GetAwaiterMethod != null)
+            return info.GetAwaiterMethod;
+
+        var type = semanticModel.GetTypeInfo(awaitExpression.Expression).Type;
         if (type == null)
             return null;
 
-        foreach (var member in type.GetMembers("GetAwaiter").OfType<IMethodSymbol>())
-        {
-            if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty)
-                return member;
-        }
+        return ResolvePatternMethodConservatively(
+            semanticModel, awaitExpression.SpanStart, type, "GetAwaiter", HasNoRequiredParameters);
+    }
 
-        return null;
+    /// <summary>
+    /// True when <paramref name="method"/> is a reduced / declared extension whose
+    /// <c>this</c> parameter is writable <c>ref</c> (not <c>in</c> / <c>ref readonly</c>).
+    /// </summary>
+    private static bool IsWritableRefThisExtension(IMethodSymbol method)
+    {
+        var extensionSource = method.ReducedFrom
+            ?? (method.IsExtensionMethod ? method : null);
+        if (extensionSource == null || extensionSource.Parameters.IsDefaultOrEmpty)
+            return false;
+
+        return extensionSource.Parameters[0].RefKind == RefKind.Ref;
     }
 
     /// <summary>
@@ -7948,19 +8044,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var resource = usingStatement.Expression;
         var isAsync = usingStatement.AwaitKeyword != default;
         var disposeMethod = ResolveDisposeMethod(resource, semanticModel, isAsync);
-        if (disposeMethod == null ||
-            disposeMethod.IsStatic ||
-            disposeMethod.IsReadOnly)
-        {
+        if (!BindsReceiverByRef(disposeMethod, semanticModel.GetTypeInfo(resource).Type))
             return false;
-        }
-
-        if (!IsMutatingValueTypeReceiver(
-                disposeMethod.ContainingType,
-                semanticModel.GetTypeInfo(resource).Type))
-        {
-            return false;
-        }
 
         receiver = resource;
         return true;
@@ -7984,12 +8069,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         // Pattern-based Dispose / DisposeAsync on the concrete type for the actual form,
         // then the matching IDisposable / IAsyncDisposable interface member.
+        // Includes reduced extensions (writable `this ref` preferred — conservative;
+        // Codex P1 sibling on #3441, PRRT_kwDORD0nYs607PA-).
         var name = isAsync ? "DisposeAsync" : "Dispose";
-        foreach (var member in type.GetMembers(name).OfType<IMethodSymbol>())
-        {
-            if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty)
-                return member;
-        }
+        var patternMethod = ResolvePatternMethodConservatively(
+            semanticModel, resource.SpanStart, type, name, HasNoRequiredParameters);
+        if (patternMethod != null)
+            return patternMethod;
 
         foreach (var iface in type.AllInterfaces)
         {

@@ -2759,6 +2759,117 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs607PA-): await whose GetAwaiter resolves to a
+    // `this ref` extension must refuse — type.GetMembers missed extensions. (Current
+    // compilers already report CS1510 here even on the tuple field; the gate refuses
+    // conservatively instead of rewriting the element into a property.)
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AwaitRefThisExtensionGetAwaiterElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Awaitable
+            {
+                public int Calls;
+
+                public struct Awaiter : System.Runtime.CompilerServices.INotifyCompletion
+                {
+                    public bool IsCompleted => true;
+                    public void OnCompleted(System.Action continuation) { }
+                    public void GetResult() { }
+                }
+            }
+
+            public static class AwaitableExtensions
+            {
+                public static Awaitable.Awaiter GetAwaiter(this ref Awaitable value)
+                {
+                    value.Calls++;
+                    return new Awaitable.Awaiter();
+                }
+            }
+
+            public class Worker
+            {
+                public async System.Threading.Tasks.Task<object> Create()
+                {
+                    var point = (Awaitable: new Awaitable(), Y: 2);
+                    await point.Awaitable;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 28,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Control: by-value extension GetAwaiter is a value receiver — generated property OK.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AwaitNonRefExtensionGetAwaiterElement_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Awaitable
+            {
+                public struct Awaiter : System.Runtime.CompilerServices.INotifyCompletion
+                {
+                    public bool IsCompleted => true;
+                    public void OnCompleted(System.Action continuation) { }
+                    public void GetResult() { }
+                }
+            }
+
+            public static class AwaitableExtensions
+            {
+                public static Awaitable.Awaiter GetAwaiter(this Awaitable value) => new Awaitable.Awaiter();
+            }
+
+            public class Worker
+            {
+                public async System.Threading.Tasks.Task<object> Create()
+                {
+                    var point = (Awaitable: new Awaitable(), Y: 2);
+                    await point.Awaitable;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 22,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public TestApp.Awaitable Awaitable { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("await point.Awaitable", text, StringComparison.Ordinal);
+    }
+
     // Codex P2 on #3441 (PRRT_kwDORD0nYs606mPd): plain using resolves Dispose, so a
     // readonly Dispose + mutating DisposeAsync still converts.
     [SkippableFact]
@@ -3223,6 +3334,415 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
         Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs607PA7): query Where in a later field initializer
+    // is an IOperation root under EqualsValueClause — missed when only method/accessor
+    // owners are walked.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_FieldInitializerQueryMutatingWhereRefElement_ThrowsAndWritesNothing()
+    {
+        // IIFE inside a field initializer (EqualsValueClause IOperation root) so the
+        // creation is `var`-accepted and the mutating query Where is not under a
+        // method/accessor owner — missed before those roots were enumerated.
+        const string source = """
+            namespace TestApp;
+
+            public struct QuerySource
+            {
+                public int Mutations;
+
+                public QuerySource Where(System.Func<int, bool> predicate)
+                {
+                    Mutations++;
+                    return this;
+                }
+
+                public int Select(System.Func<int, int> selector)
+                {
+                    Mutations++;
+                    return 0;
+                }
+
+                public Enumerator GetEnumerator() => default;
+
+                public struct Enumerator
+                {
+                    public int Current => 0;
+                    public bool MoveNext() => false;
+                }
+            }
+
+            public class Holder
+            {
+                public static object Result = ((System.Func<object>)(() =>
+                {
+                    var point = (Source: new QuerySource(), Y: 2);
+                    return from x in point.Source where x > 0 select x;
+                }))();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 32,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 sibling: expression-bodied property is an ArrowExpressionClause IOperation
+    // root — same mutating query Where hazard.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_ExpressionBodiedPropertyMutatingCallRefElement_ThrowsAndWritesNothing()
+    {
+        // IIFE inside an expression-bodied property (ArrowExpressionClause IOperation
+        // root) — same mutating query Where hazard as the field-initializer case.
+        const string source = """
+            namespace TestApp;
+
+            public struct QuerySource
+            {
+                public int Mutations;
+
+                public QuerySource Where(System.Func<int, bool> predicate)
+                {
+                    Mutations++;
+                    return this;
+                }
+
+                public int Select(System.Func<int, int> selector)
+                {
+                    Mutations++;
+                    return 0;
+                }
+
+                public Enumerator GetEnumerator() => default;
+
+                public struct Enumerator
+                {
+                    public int Current => 0;
+                    public bool MoveNext() => false;
+                }
+            }
+
+            public class Holder
+            {
+                public object Query => ((System.Func<object>)(() =>
+                {
+                    var point = (Source: new QuerySource(), Y: 2);
+                    return from x in point.Source where x > 0 select x;
+                }))();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 32,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 sibling (PRRT_kwDORD0nYs607PA7): auto-property initializer is its own
+    // IOperation root (EqualsValueClause on the property).
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_PropertyInitializerQueryMutatingWhereRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct QuerySource
+            {
+                public int Mutations;
+
+                public QuerySource Where(System.Func<int, bool> predicate)
+                {
+                    Mutations++;
+                    return this;
+                }
+
+                public int Select(System.Func<int, int> selector)
+                {
+                    Mutations++;
+                    return 0;
+                }
+            }
+
+            public class Base
+            {
+                public Base(object value) { }
+            }
+
+            public class Holder
+            {
+                public object Result { get; } = ((System.Func<object>)(() =>
+                    {
+                        var point = (Source: new QuerySource(), Y: 2);
+                        return from x in point.Source where x > 0 select x;
+                    }))();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 29,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 sibling (PRRT_kwDORD0nYs607PA7): expression-bodied indexer root.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_ExpressionBodiedIndexerQueryMutatingWhereRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct QuerySource
+            {
+                public int Mutations;
+
+                public QuerySource Where(System.Func<int, bool> predicate)
+                {
+                    Mutations++;
+                    return this;
+                }
+
+                public int Select(System.Func<int, int> selector)
+                {
+                    Mutations++;
+                    return 0;
+                }
+            }
+
+            public class Base
+            {
+                public Base(object value) { }
+            }
+
+            public class Holder
+            {
+                public object this[int i] => ((System.Func<object>)(() =>
+                    {
+                        var point = (Source: new QuerySource(), Y: 2);
+                        return from x in point.Source where x > 0 select x;
+                    }))();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 29,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 sibling (PRRT_kwDORD0nYs607PA7): primary-constructor base argument root.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_PrimaryConstructorBaseArgumentQueryMutatingWhereRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct QuerySource
+            {
+                public int Mutations;
+
+                public QuerySource Where(System.Func<int, bool> predicate)
+                {
+                    Mutations++;
+                    return this;
+                }
+
+                public int Select(System.Func<int, int> selector)
+                {
+                    Mutations++;
+                    return 0;
+                }
+            }
+
+            public class Base
+            {
+                public Base(object value) { }
+            }
+
+            public class Holder(int seed) : Base(((System.Func<object>)(() =>
+                {
+                    var point = (Source: new QuerySource(), Y: 2);
+                    return from x in point.Source where x > 0 select x;
+                }))())
+            {
+                public int Seed => seed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 27,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 sibling (PRRT_kwDORD0nYs607PA-): fixed binds a `this ref` extension
+    // GetPinnableReference (compiles on the tuple field; CS1510 on a generated property).
+    // type.GetMembers missed the extension.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_FixedRefThisExtensionGetPinnableReferenceElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct PinTarget
+            {
+                public int[] Data;
+                public int Mutations;
+            }
+
+            public static class PinTargetExtensions
+            {
+                public static ref int GetPinnableReference(this ref PinTarget target)
+                {
+                    target.Mutations++;
+                    return ref target.Data[0];
+                }
+            }
+
+            public unsafe class Worker
+            {
+                public object Create()
+                {
+                    var point = (Pin: new PinTarget { Data = new[] { 1 } }, Y: 2);
+                    fixed (int* p = point.Pin)
+                    {
+                        *p = 2;
+                    }
+
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 22,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Control: a `this in` extension GetPinnableReference is a readonly value receiver —
+    // a generated property still pins (same as ReadOnlySpan<T>), so conversion proceeds.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_FixedInExtensionGetPinnableReferenceElement_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct PinTarget
+            {
+                public int[] Data;
+            }
+
+            public static class PinTargetExtensions
+            {
+                public static ref readonly int GetPinnableReference(this in PinTarget target) => ref target.Data[0];
+            }
+
+            public unsafe class Worker
+            {
+                public object Create()
+                {
+                    var point = (Pin: new PinTarget { Data = new[] { 1 } }, Y: 2);
+                    fixed (int* p = point.Pin)
+                    {
+                        *p = 2;
+                    }
+
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 17,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("fixed (int* p = point.Pin)", text, StringComparison.Ordinal);
     }
 
     // Index/Range implicitly reads Length and calls Slice on a mutable value-type element.
