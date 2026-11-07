@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Operations;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
@@ -7142,8 +7143,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// <c>GetAwaiter</c> on a mutable value-type element (e.g.
     /// <c>await point.Awaitable</c>), an implicit <c>using</c> /
     /// <c>await using</c> <c>Dispose</c> / <c>DisposeAsync</c> on a mutable
-    /// value-type element expression, or an assignment / increment / decrement
-    /// target that traverses a value-type converted element (for example
+    /// value-type element expression, an implicit <c>Deconstruct</c> on a
+    /// mutable value-type element (deconstruction assignment / declaration,
+    /// positional patterns), an implicit <c>fixed</c> <c>GetPinnableReference</c>,
+    /// other compiler-implicit instance calls surfaced through the
+    /// <see cref="IOperation"/> tree (query <c>Select</c>/<c>Where</c>,
+    /// collection-initializer <c>Add</c>, Index/Range <c>Length</c>+<c>Slice</c>,
+    /// interpolated-string handler appends, …), or an assignment / increment /
+    /// decrement target that traverses a value-type converted element (for example
     /// <c>point.Counter.Value++</c> — CS1612 on the property temporary).
     /// Generated properties cannot accept those uses (CS0206 / silent copy / CS1612);
     /// tuple fields can. Direct element writes such as <c>point.X = 3</c> /
@@ -7213,6 +7220,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 UsingStatementSyntax usingStatement when
                     TryGetMutatingUsingResourceReceiver(usingStatement, semanticModel, out var usingReceiver)
                     => usingReceiver,
+                // fixed (int* p = point.Pin) implicitly calls GetPinnableReference with no
+                // InvocationExpressionSyntax (Codex sibling of GetEnumerator / GetAwaiter /
+                // Dispose / Deconstruct — close the implicit-instance-call class).
+                FixedStatementSyntax fixedStatement when
+                    TryGetMutatingFixedReceiver(fixedStatement, semanticModel, out var fixedReceiver)
+                    => fixedReceiver,
                 // Nested field writes through a value-type element (Codex P1 CS1612):
                 // point.Counter.Value++ / point.Counter.Value = 1 mutate a property temporary.
                 AssignmentExpressionSyntax assignment => assignment.Left,
@@ -7246,6 +7259,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
+        // Close the compiler-implicit instance-call class in one pass: walk the
+        // IOperation tree for IsImplicit invocations (query Select/Where, collection
+        // Add, interpolated-string handler appends, …), Deconstruct (assignment +
+        // positional patterns), and Index/Range Length+Slice — patterns that have no
+        // InvocationExpressionSyntax and are easy to miss one-at-a-time (Codex P1 on
+        // #3441, PRRT_kwDORD0nYs6063yg and siblings).
+        if (HasMutatingImplicitOperationCallOnConvertedElement(
+                root, semanticModel, storages, memberNames, tupleType))
+        {
+            return true;
+        }
+
         return false;
     }
 
@@ -7261,6 +7286,406 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         || (node is PostfixUnaryExpressionSyntax postfix &&
             (postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
              postfix.IsKind(SyntaxKind.PostDecrementExpression)));
+
+    /// <summary>
+    /// True when a <c>fixed (T* p = expr)</c> initializer is a mutable value-type
+    /// element whose resolved <c>GetPinnableReference</c> is a non-<c>readonly</c>
+    /// instance method — no <see cref="InvocationExpressionSyntax"/> is present
+    /// (Codex sibling on #3441). Declaration forms that pin arrays / strings are
+    /// unaffected (those do not resolve a user GetPinnableReference).
+    /// </summary>
+    private static bool TryGetMutatingFixedReceiver(
+        FixedStatementSyntax fixedStatement,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? receiver)
+    {
+        receiver = null;
+        foreach (var variable in fixedStatement.Declaration.Variables)
+        {
+            if (variable.Initializer?.Value is not { } value)
+                continue;
+
+            var getPinnable = ResolveGetPinnableReferenceMethod(value, semanticModel);
+            if (getPinnable == null ||
+                getPinnable.IsStatic ||
+                getPinnable.IsReadOnly)
+            {
+                continue;
+            }
+
+            if (!IsMutatingValueTypeReceiver(
+                    getPinnable.ContainingType,
+                    semanticModel.GetTypeInfo(value).Type))
+            {
+                continue;
+            }
+
+            receiver = value;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves the instance <c>GetPinnableReference</c> a <c>fixed</c> statement would
+    /// invoke on <paramref name="operand"/> (pattern-based pinning).
+    /// </summary>
+    private static IMethodSymbol? ResolveGetPinnableReferenceMethod(
+        ExpressionSyntax operand,
+        SemanticModel semanticModel)
+    {
+        var type = semanticModel.GetTypeInfo(operand).Type;
+        if (type == null)
+            return null;
+
+        foreach (var member in type.GetMembers("GetPinnableReference").OfType<IMethodSymbol>())
+        {
+            if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty)
+                return member;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Walks the <see cref="IOperation"/> tree under <paramref name="root"/> for
+    /// compiler-implicit instance calls on mutable value-type receivers that have no
+    /// <see cref="InvocationExpressionSyntax"/>: <c>Deconstruct</c> (deconstruction
+    /// assignment / positional patterns), query-expression instance methods,
+    /// collection-initializer <c>Add</c>, Index/Range <c>Length</c>+<c>Slice</c>/indexer,
+    /// interpolated-string handler appends, and any future <see cref="IInvocationOperation"/>
+    /// with <see cref="IOperation.IsImplicit"/>. Explicit invocations, foreach /
+    /// await / using are handled by the syntax switch; this pass closes the rest of
+    /// the class in one go (Codex P1 on #3441, PRRT_kwDORD0nYs6063yg).
+    /// </summary>
+    private static bool HasMutatingImplicitOperationCallOnConvertedElement(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        HashSet<ISymbol> storages,
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType)
+    {
+        foreach (var owner in EnumerateOperationOwners(root))
+        {
+            var operation = semanticModel.GetOperation(owner);
+            if (operation == null)
+                continue;
+
+            if (WalkMutatingImplicitOperationCalls(
+                    operation,
+                    storages,
+                    memberNames,
+                    tupleType,
+                    semanticModel,
+                    root))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Syntax nodes that own an executable <see cref="IOperation"/> body. Nested
+    /// lambdas appear as child operations of their enclosing method / accessor, so
+    /// they are not listed separately.
+    /// </summary>
+    private static IEnumerable<SyntaxNode> EnumerateOperationOwners(SyntaxNode root)
+    {
+        foreach (var node in root.DescendantNodesAndSelf())
+        {
+            switch (node)
+            {
+                case BaseMethodDeclarationSyntax:
+                case AccessorDeclarationSyntax:
+                case LocalFunctionStatementSyntax:
+                case GlobalStatementSyntax:
+                    yield return node;
+                    break;
+            }
+        }
+    }
+
+    private static bool WalkMutatingImplicitOperationCalls(
+        IOperation operation,
+        HashSet<ISymbol> storages,
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType,
+        SemanticModel semanticModel,
+        SyntaxNode root)
+    {
+        foreach (var receiver in EnumerateMutatingImplicitOperationReceivers(operation))
+        {
+            if (HasConvertedElementByRefAccess(
+                    receiver,
+                    storages,
+                    memberNames,
+                    tupleType,
+                    semanticModel,
+                    root,
+                    refuseDirectElementAccess: true))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Yields the receiver expression of every compiler-implicit mutating
+    /// value-type instance call under <paramref name="operation"/>.
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateMutatingImplicitOperationReceivers(
+        IOperation operation)
+    {
+        switch (operation)
+        {
+            case IInvocationOperation { IsImplicit: true } invocation
+                when TryGetMutatingOperationReceiver(
+                    invocation.TargetMethod,
+                    invocation.Instance,
+                    out var invocationReceiver):
+                yield return invocationReceiver;
+                break;
+
+            case IDeconstructionAssignmentOperation deconstruction
+                when TryGetMutatingDeconstructionAssignmentReceiver(deconstruction, out var deconReceiver):
+                yield return deconReceiver;
+                break;
+
+            case IRecursivePatternOperation { DeconstructSymbol: IMethodSymbol deconstruct }
+                when TryGetMutatingRecursivePatternDeconstructReceiver(
+                    operation, deconstruct, out var patternReceiver):
+                yield return patternReceiver;
+                break;
+
+            case IImplicitIndexerReferenceOperation indexer
+                when TryGetMutatingImplicitIndexerReceiver(indexer, out var indexerReceiver):
+                yield return indexerReceiver;
+                break;
+        }
+
+        foreach (var child in operation.ChildOperations)
+        {
+            foreach (var receiver in EnumerateMutatingImplicitOperationReceivers(child))
+                yield return receiver;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> is a non-<c>readonly</c> instance method
+    /// whose receiver is a mutable value type; yields the receiver's syntax expression.
+    /// </summary>
+    private static bool TryGetMutatingOperationReceiver(
+        IMethodSymbol method,
+        IOperation? instance,
+        out ExpressionSyntax receiver)
+    {
+        receiver = null!;
+        if (method.IsStatic || method.IsReadOnly)
+            return false;
+
+        if (instance?.Syntax is not ExpressionSyntax expression)
+            return false;
+
+        if (!IsMutatingValueTypeReceiver(method.ContainingType, instance.Type))
+            return false;
+
+        receiver = expression;
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves <c>Deconstruct</c> for a deconstruction assignment / declaration and
+    /// yields the RHS when that method is a non-<c>readonly</c> instance method on a
+    /// mutable value type (Codex P1 on #3441, PRRT_kwDORD0nYs6063yg).
+    /// <see cref="IDeconstructionAssignmentOperation"/> does not expose the bound
+    /// <c>Deconstruct</c> symbol, so arity is taken from the target tuple shape.
+    /// </summary>
+    private static bool TryGetMutatingDeconstructionAssignmentReceiver(
+        IDeconstructionAssignmentOperation deconstruction,
+        out ExpressionSyntax receiver)
+    {
+        receiver = null!;
+        if (deconstruction.Value.Syntax is not ExpressionSyntax valueSyntax)
+            return false;
+
+        var arity = GetDeconstructionTargetArity(deconstruction.Target);
+        if (arity < 2)
+            return false;
+
+        var valueType = deconstruction.Value.Type;
+        if (valueType == null)
+            return false;
+
+        // Tuple / ValueTuple deconstruction is a language built-in (no Deconstruct call).
+        if (IsSystemValueTupleType(valueType))
+            return false;
+
+        var deconstruct = ResolveDeconstructMethod(valueType, arity);
+        if (deconstruct == null ||
+            deconstruct.IsStatic ||
+            deconstruct.IsReadOnly)
+        {
+            return false;
+        }
+
+        if (!IsMutatingValueTypeReceiver(deconstruct.ContainingType, valueType))
+            return false;
+
+        receiver = valueSyntax;
+        return true;
+    }
+
+    /// <summary>
+    /// Number of top-level elements in a deconstruction target (tuple / declaration).
+    /// </summary>
+    private static int GetDeconstructionTargetArity(IOperation target) =>
+        target switch
+        {
+            ITupleOperation tuple => tuple.Elements.Length,
+            IDeclarationExpressionOperation { Expression: ITupleOperation nested } => nested.Elements.Length,
+            _ => 0
+        };
+
+    /// <summary>
+    /// Positional / recursive pattern whose bound <c>Deconstruct</c> is a
+    /// non-<c>readonly</c> instance method on a mutable value type — the input
+    /// expression of the enclosing <c>is</c> / switch arm is the receiver
+    /// (e.g. <c>point.Counter is (1, _)</c>).
+    /// </summary>
+    private static bool TryGetMutatingRecursivePatternDeconstructReceiver(
+        IOperation patternOperation,
+        IMethodSymbol deconstruct,
+        out ExpressionSyntax receiver)
+    {
+        receiver = null!;
+        if (deconstruct.IsStatic || deconstruct.IsReadOnly)
+            return false;
+
+        var matchedType = patternOperation is IRecursivePatternOperation recursive
+            ? recursive.MatchedType ?? deconstruct.ContainingType
+            : deconstruct.ContainingType;
+        if (!IsMutatingValueTypeReceiver(deconstruct.ContainingType, matchedType))
+            return false;
+
+        if (!TryGetPatternInputExpression(patternOperation, out var input))
+            return false;
+
+        receiver = input;
+        return true;
+    }
+
+    /// <summary>
+    /// Walks up from a pattern operation to the enclosing <c>is</c> / switch
+    /// expression / switch statement arm and returns the value being matched.
+    /// </summary>
+    private static bool TryGetPatternInputExpression(
+        IOperation patternOperation,
+        out ExpressionSyntax input)
+    {
+        input = null!;
+        for (var current = patternOperation.Parent; current != null; current = current.Parent)
+        {
+            switch (current)
+            {
+                case IIsPatternOperation isPattern
+                    when isPattern.Value.Syntax is ExpressionSyntax isValue:
+                    input = isValue;
+                    return true;
+                case ISwitchExpressionOperation switchExpression
+                    when switchExpression.Value.Syntax is ExpressionSyntax switchValue:
+                    input = switchValue;
+                    return true;
+                case ISwitchOperation switchStatement
+                    when switchStatement.Value.Syntax is ExpressionSyntax switchStmtValue:
+                    input = switchStmtValue;
+                    return true;
+                // Nested patterns: keep walking to the outermost match input.
+                case IRecursivePatternOperation:
+                case IPatternOperation:
+                case ISwitchExpressionArmOperation:
+                case ICaseClauseOperation:
+                    continue;
+                default:
+                    return false;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Index/Range access (<c>point.Buf[1..2]</c> / <c>point.Buf[^1]</c>) implicitly
+    /// reads <c>Length</c>/<c>Count</c> and calls <c>Slice</c> or an indexer — refuse
+    /// when any of those members is a non-<c>readonly</c> instance member on a mutable
+    /// value-type element.
+    /// </summary>
+    private static bool TryGetMutatingImplicitIndexerReceiver(
+        IImplicitIndexerReferenceOperation indexer,
+        out ExpressionSyntax receiver)
+    {
+        receiver = null!;
+        if (indexer.Instance.Syntax is not ExpressionSyntax expression)
+            return false;
+
+        var instanceType = indexer.Instance.Type;
+        if (!IsMutatingValueTypeReceiver(instanceType as INamedTypeSymbol, instanceType))
+            return false;
+
+        if (IsMutatingImplicitIndexerMember(indexer.LengthSymbol) ||
+            IsMutatingImplicitIndexerMember(indexer.IndexerSymbol))
+        {
+            receiver = expression;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when an Index/Range helper symbol (Length/Count property or Slice/indexer)
+    /// receives <c>this</c> by ref (non-<c>readonly</c> getter / method).
+    /// </summary>
+    private static bool IsMutatingImplicitIndexerMember(ISymbol? symbol) =>
+        symbol switch
+        {
+            IMethodSymbol { IsStatic: false, IsReadOnly: false } => true,
+            IPropertySymbol { GetMethod: { IsStatic: false, IsReadOnly: false } } => true,
+            _ => false
+        };
+
+    /// <summary>
+    /// Resolves a type's instance <c>Deconstruct</c> with <paramref name="arity"/>
+    /// <c>out</c> parameters (positional deconstruction).
+    /// </summary>
+    private static IMethodSymbol? ResolveDeconstructMethod(ITypeSymbol type, int arity)
+    {
+        foreach (var member in type.GetMembers("Deconstruct").OfType<IMethodSymbol>())
+        {
+            if (member.IsStatic)
+                continue;
+            if (member.Parameters.Length != arity)
+                continue;
+            if (!member.Parameters.All(static p => p.RefKind == RefKind.Out))
+                continue;
+            return member;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when <paramref name="type"/> is <c>System.ValueTuple</c> / the CLR tuple
+    /// type — language deconstruction of those does not call a user <c>Deconstruct</c>.
+    /// </summary>
+    private static bool IsSystemValueTupleType(ITypeSymbol type) =>
+        type is INamedTypeSymbol { IsTupleType: true } ||
+        (type.Name == "ValueTuple" &&
+         type.ContainingNamespace?.ToDisplayString() == "System");
 
     /// <summary>
     /// True when <paramref name="invocation"/> uses its receiver by reference:

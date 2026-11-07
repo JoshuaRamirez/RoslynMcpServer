@@ -2907,6 +2907,498 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains("await using (point.Resource)", text, StringComparison.Ordinal);
     }
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs6063yg): deconstruction assignment implicitly
+    // calls a non-readonly Deconstruct on a mutable value-type element.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_DeconstructMutatingElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Counter
+            {
+                public int A;
+                public int B;
+                public int Mutations;
+
+                public void Deconstruct(out int a, out int b)
+                {
+                    Mutations++;
+                    a = A;
+                    b = B;
+                }
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Counter: new Counter { A = 1, B = 2 }, Y: 2);
+                    var (x, y) = point.Counter;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 21,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Over-refusal: readonly Deconstruct on a mutable value-type element still converts.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_ReadonlyDeconstructElement_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Counter
+            {
+                public int A;
+                public int B;
+
+                public readonly void Deconstruct(out int a, out int b)
+                {
+                    a = A;
+                    b = B;
+                }
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Counter: new Counter { A = 1, B = 2 }, Y: 2);
+                    var (x, y) = point.Counter;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 19,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public TestApp.Counter Counter { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("var (x, y) = point.Counter", text, StringComparison.Ordinal);
+    }
+
+    // Positional pattern also implicitly Deconstructs the element.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_PositionalPatternMutatingDeconstructElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Counter
+            {
+                public int A;
+                public int B;
+                public int Mutations;
+
+                public void Deconstruct(out int a, out int b)
+                {
+                    Mutations++;
+                    a = A;
+                    b = B;
+                }
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Counter: new Counter { A = 1, B = 2 }, Y: 2);
+                    var matched = point.Counter is (1, _);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 21,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // fixed implicitly calls GetPinnableReference on a mutable value-type element.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_FixedMutatingGetPinnableReferenceElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct PinTarget
+            {
+                public int[] Data;
+                public int Mutations;
+
+                public ref int GetPinnableReference()
+                {
+                    Mutations++;
+                    return ref Data[0];
+                }
+            }
+
+            public unsafe class Worker
+            {
+                public object Create()
+                {
+                    var point = (Pin: new PinTarget { Data = new[] { 1 } }, Y: 2);
+                    fixed (int* p = point.Pin)
+                    {
+                        *p = 2;
+                    }
+
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 19,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Over-refusal: readonly GetPinnableReference still converts.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_FixedReadonlyGetPinnableReferenceElement_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct PinTarget
+            {
+                public int[] Data;
+
+                public readonly ref int GetPinnableReference() => ref Data[0];
+            }
+
+            public unsafe class Worker
+            {
+                public object Create()
+                {
+                    var point = (Pin: new PinTarget { Data = new[] { 1 } }, Y: 2);
+                    fixed (int* p = point.Pin)
+                    {
+                        *p = 2;
+                    }
+
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 14,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public TestApp.PinTarget Pin { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("fixed (int* p = point.Pin)", text, StringComparison.Ordinal);
+    }
+
+    // Query expression instance Where/Select (no InvocationExpressionSyntax) on a
+    // mutable value-type element.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_QueryMutatingInstanceMethodElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct QuerySource
+            {
+                public int Mutations;
+
+                public QuerySource Where(System.Func<int, bool> predicate)
+                {
+                    Mutations++;
+                    return this;
+                }
+
+                public int Select(System.Func<int, int> selector)
+                {
+                    Mutations++;
+                    return 0;
+                }
+
+                public Enumerator GetEnumerator() => default;
+
+                public struct Enumerator
+                {
+                    public int Current => 0;
+                    public bool MoveNext() => false;
+                }
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Source: new QuerySource(), Y: 2);
+                    var q = from x in point.Source where x > 0 select x;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 32,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Index/Range implicitly reads Length and calls Slice on a mutable value-type element.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_RangeMutatingSliceElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Buffer
+            {
+                public int Mutations;
+
+                public int Length
+                {
+                    get
+                    {
+                        Mutations++;
+                        return 2;
+                    }
+                }
+
+                public int this[int index]
+                {
+                    get
+                    {
+                        Mutations++;
+                        return 0;
+                    }
+                }
+
+                public Buffer Slice(int start, int length)
+                {
+                    Mutations++;
+                    return this;
+                }
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Buffer: new Buffer(), Y: 2);
+                    var slice = point.Buffer[1..2];
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 36,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Over-refusal: readonly Length + readonly Slice still converts.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_RangeReadonlySliceElement_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Buffer
+            {
+                public readonly int Length => 2;
+
+                public readonly int this[int index] => 0;
+
+                public readonly Buffer Slice(int start, int length) => this;
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Buffer: new Buffer(), Y: 2);
+                    var slice = point.Buffer[1..2];
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 16,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public TestApp.Buffer Buffer { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("point.Buffer[1..2]", text, StringComparison.Ordinal);
+    }
+
+    // Index (^) form also refuses when Length / indexer getters mutate.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_IndexMutatingLengthElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Buffer
+            {
+                public int Mutations;
+
+                public int Length
+                {
+                    get
+                    {
+                        Mutations++;
+                        return 1;
+                    }
+                }
+
+                public int this[int index]
+                {
+                    get
+                    {
+                        Mutations++;
+                        return 0;
+                    }
+                }
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Buffer: new Buffer(), Y: 2);
+                    var last = point.Buffer[^1];
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 30,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        // Indexer getter is also caught by the asRecord init-write gate first.
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     // Over-refusal guard: readonly GetEnumerator on a mutable value-type element still converts.
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordFalse_ForeachReadonlyGetEnumeratorElement_Succeeds()
