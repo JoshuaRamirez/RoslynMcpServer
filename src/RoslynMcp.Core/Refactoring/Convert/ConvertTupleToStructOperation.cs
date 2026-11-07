@@ -102,11 +102,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (@params.AsRecord)
             await ValidateRecordStructLanguageVersionAsync(creations, cancellationToken);
 
-        ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
+        // By-ref / init-breaking gates run before member-type availability so a
+        // constrained value-type receiver (T : struct, ICounter) is refused for the
+        // mutating call rather than only for "type parameter not available" (#3347).
         if (@params.AsRecord)
             await ValidateNoInitBreakingElementWritesAsync(creations, members, tupleType, cancellationToken);
         else
             await ValidateNoByRefElementUsesAsync(creations, members, tupleType, cancellationToken);
+        ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
         var typeDeclaration = CreateNamedStruct(
             lookupName,
             @params.AsRecord,
@@ -2967,6 +2970,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     argument.RefOrOutKeyword.IsKind(SyntaxKind.InKeyword) => argument.Expression,
                 // ref int x = ref point.X; / ref returns
                 RefExpressionSyntax refExpression => refExpression.Expression,
+                // __makeref(point.X) requires a variable; generated properties are not (Codex P2).
+                MakeRefExpressionSyntax makeRef => makeRef.Expression,
                 // this-ref extension or mutating value-type instance-method receiver.
                 InvocationExpressionSyntax invocation when
                     TryGetRefReceiverExpression(invocation, semanticModel, out var refReceiver)
@@ -3026,7 +3031,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// (for example <c>point.X.Increment()</c> with <c>Increment(this ref int)</c>),
     /// or a non-<c>readonly</c> instance method on a mutable value-type element
     /// (for example <c>point.Counter.Increment()</c> on a mutable struct field —
-    /// tuple fields persist the mutation; generated properties mutate a temporary).
+    /// tuple fields persist the mutation; generated properties mutate a temporary),
+    /// including when the element is a type parameter constrained to a value type
+    /// whose resolved method lives on an interface constraint
+    /// (for example <c>where T : struct, ICounter</c> — <c>ContainingType</c> is
+    /// <c>ICounter</c>, but the call still mutates the tuple field of type <c>T</c>).
     /// Readonly <c>this in</c> / <c>ref readonly</c> receivers are allowed — a
     /// generated property is a valid value receiver with the same readonly behavior
     /// (Codex P2 on #3441).
@@ -3057,18 +3066,41 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
-        // Non-readonly instance method on a mutable value type — receiver is an
-        // implicit ref (Codex P1: point.Counter.Increment() on a mutable struct).
+        // Non-readonly instance method whose receiver is a mutable value type —
+        // either the method's containing type is that value type, or the receiver
+        // is a type parameter constrained to a value type whose method resolves
+        // on an interface constraint (Codex P1 constrained T : struct, ICounter).
         if (!method.IsStatic &&
-            method.ContainingType is { IsValueType: true, IsReadOnly: false } &&
             !method.IsReadOnly &&
-            method.MethodKind is MethodKind.Ordinary or MethodKind.ExplicitInterfaceImplementation)
+            (method.MethodKind is MethodKind.Ordinary or MethodKind.ExplicitInterfaceImplementation) &&
+            IsMutatingValueTypeReceiver(
+                method.ContainingType,
+                semanticModel.GetTypeInfo(memberAccess.Expression).Type))
         {
             receiver = memberAccess.Expression;
             return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True when an instance-method receiver is a mutable value type after conversion
+    /// would turn the element into a property temporary: the method is owned by a
+    /// mutable value type, or the receiver is a type parameter known to be a value
+    /// type (e.g. <c>where T : struct</c> / constrained to a struct) even when the
+    /// resolved method lives on an interface constraint.
+    /// </summary>
+    private static bool IsMutatingValueTypeReceiver(
+        INamedTypeSymbol? containingType,
+        ITypeSymbol? receiverType)
+    {
+        if (containingType is { IsValueType: true, IsReadOnly: false })
+            return true;
+
+        // Constrained type-parameter receivers: ContainingType is often an interface
+        // (ICounter), but T is a value type so the call mutates the tuple field.
+        return receiverType is ITypeParameterSymbol { IsValueType: true };
     }
 
     /// <summary>

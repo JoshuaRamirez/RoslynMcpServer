@@ -1240,6 +1240,42 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P2 on #3441: __makeref(point.X) requires a variable; properties are not.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_MakeRefElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var handle = __makeref(point.X);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     // Codex P1 on #3441: generic wrapper fields (Box<T>.Value) yield converted storage.
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordFalse_GenericWrapperFieldRefElement_ThrowsAndWritesNothing()
@@ -1838,6 +1874,53 @@ public class ConvertTupleToStructOperationTests
             {
                 SourceFile = workspace.SourcePath,
                 Line = 13,
+                NewTypeName = "Point",
+                AsRecord = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441: constrained T : struct, ICounter — ContainingType is the interface.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFalse_ConstrainedValueTypeInterfaceMethodReceiver_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface ICounter
+            {
+                void Increment();
+            }
+
+            public struct Counter : ICounter
+            {
+                public int Value;
+                public void Increment() => Value++;
+            }
+
+            public class Worker<T> where T : struct, ICounter
+            {
+                public object Create(T counter)
+                {
+                    var point = (Counter: counter, Y: 2);
+                    point.Counter.Increment();
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 18,
                 NewTypeName = "Point",
                 AsRecord = false
             }));
