@@ -2703,6 +2703,210 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs606mPZ): await implicitly calls GetAwaiter on a
+    // mutable value-type element with no InvocationExpressionSyntax.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_AwaitMutatingGetAwaiterElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Awaitable
+            {
+                public int Calls;
+                public Awaiter GetAwaiter()
+                {
+                    Calls++;
+                    return new Awaiter();
+                }
+
+                public struct Awaiter : System.Runtime.CompilerServices.INotifyCompletion
+                {
+                    public bool IsCompleted => true;
+                    public void OnCompleted(System.Action continuation) { }
+                    public void GetResult() { }
+                }
+            }
+
+            public class Worker
+            {
+                public async System.Threading.Tasks.Task<object> Create()
+                {
+                    var point = (Awaitable: new Awaitable(), Y: 2);
+                    await point.Awaitable;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 24,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441 (PRRT_kwDORD0nYs606mPd): plain using resolves Dispose, so a
+    // readonly Dispose + mutating DisposeAsync still converts.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_UsingReadonlyDisposeWithMutatingDisposeAsync_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Resource
+            {
+                public int Mutations;
+                public readonly void Dispose() { }
+                public System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    Mutations++;
+                    return default;
+                }
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (Resource: new Resource(), Y: 2);
+                    using (point.Resource)
+                    {
+                    }
+
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 18,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public TestApp.Resource Resource { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("using (point.Resource)", text, StringComparison.Ordinal);
+    }
+
+    // Codex P2 sibling: await using resolves DisposeAsync — mutating DisposeAsync refuses.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_AwaitUsingMutatingDisposeAsyncElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Resource
+            {
+                public int Mutations;
+                public System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    Mutations++;
+                    return default;
+                }
+            }
+
+            public class Worker
+            {
+                public async System.Threading.Tasks.Task<object> Create()
+                {
+                    var point = (Resource: new Resource(), Y: 2);
+                    await using (point.Resource)
+                    {
+                    }
+
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 17,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 vice versa: await using with readonly DisposeAsync + mutating Dispose converts.
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AwaitUsingReadonlyDisposeAsyncWithMutatingDispose_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Resource
+            {
+                public int Mutations;
+                public void Dispose() => Mutations++;
+                public readonly System.Threading.Tasks.ValueTask DisposeAsync() => default;
+            }
+
+            public class Worker
+            {
+                public async System.Threading.Tasks.Task<object> Create()
+                {
+                    var point = (Resource: new Resource(), Y: 2);
+                    await using (point.Resource)
+                    {
+                    }
+
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 14,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public TestApp.Resource Resource { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains("await using (point.Resource)", text, StringComparison.Ordinal);
+    }
+
     // Over-refusal guard: readonly GetEnumerator on a mutable value-type element still converts.
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordFalse_ForeachReadonlyGetEnumeratorElement_Succeeds()

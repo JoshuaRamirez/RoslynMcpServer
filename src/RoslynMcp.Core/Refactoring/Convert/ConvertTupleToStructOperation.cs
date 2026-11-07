@@ -7138,7 +7138,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// getter on a mutable value-type element (e.g. <c>point.Counter.Next</c>),
     /// an implicit <c>foreach</c> / <c>await foreach</c> <c>GetEnumerator</c> /
     /// <c>GetAsyncEnumerator</c> on a mutable value-type element (e.g.
-    /// <c>foreach (var item in point.Sequence)</c>), an implicit <c>using</c> /
+    /// <c>foreach (var item in point.Sequence)</c>), an implicit <c>await</c>
+    /// <c>GetAwaiter</c> on a mutable value-type element (e.g.
+    /// <c>await point.Awaitable</c>), an implicit <c>using</c> /
     /// <c>await using</c> <c>Dispose</c> / <c>DisposeAsync</c> on a mutable
     /// value-type element expression, or an assignment / increment / decrement
     /// target that traverses a value-type converted element (for example
@@ -7198,6 +7200,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 CommonForEachStatementSyntax forEach when
                     TryGetMutatingForeachCollectionReceiver(forEach, semanticModel, out var foreachReceiver)
                     => foreachReceiver,
+                // await point.Awaitable implicitly calls GetAwaiter on the operand with no
+                // InvocationExpressionSyntax — a non-readonly GetAwaiter on a mutable
+                // value-type element mutates a property temporary after conversion
+                // (Codex P1 on #3441, PRRT_kwDORD0nYs606mPZ).
+                AwaitExpressionSyntax awaitExpression when
+                    TryGetMutatingAwaitReceiver(awaitExpression, semanticModel, out var awaitReceiver)
+                    => awaitReceiver,
                 // using (point.Resource) / await using (point.Resource) implicitly calls
                 // Dispose / DisposeAsync on a variable resource expression — same silent
                 // copy hazard when the element becomes a property (Codex P1 sibling).
@@ -7436,11 +7445,70 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// True when an <c>await</c> operand is a mutable value-type element whose resolved
+    /// <c>GetAwaiter</c> is a non-<c>readonly</c> instance method — the compiler-generated
+    /// call has no <see cref="InvocationExpressionSyntax"/>, so the ordinary
+    /// mutating-receiver switch misses it (Codex P1 on #3441, PRRT_kwDORD0nYs606mPZ).
+    /// After conversion the element is a property temporary and GetAwaiter mutates only
+    /// that copy.
+    /// </summary>
+    private static bool TryGetMutatingAwaitReceiver(
+        AwaitExpressionSyntax awaitExpression,
+        SemanticModel semanticModel,
+        out ExpressionSyntax? receiver)
+    {
+        receiver = null;
+        var operand = awaitExpression.Expression;
+        var getAwaiter = ResolveGetAwaiterMethod(operand, semanticModel);
+        if (getAwaiter == null ||
+            getAwaiter.IsStatic ||
+            getAwaiter.IsReadOnly)
+        {
+            return false;
+        }
+
+        if (!IsMutatingValueTypeReceiver(
+                getAwaiter.ContainingType,
+                semanticModel.GetTypeInfo(operand).Type))
+        {
+            return false;
+        }
+
+        receiver = operand;
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves the instance <c>GetAwaiter</c> that an <c>await</c> expression would
+    /// invoke on <paramref name="operand"/> (pattern-based awaitable).
+    /// </summary>
+    private static IMethodSymbol? ResolveGetAwaiterMethod(
+        ExpressionSyntax operand,
+        SemanticModel semanticModel)
+    {
+        var type = semanticModel.GetTypeInfo(operand).Type;
+        if (type == null)
+            return null;
+
+        foreach (var member in type.GetMembers("GetAwaiter").OfType<IMethodSymbol>())
+        {
+            if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty)
+                return member;
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// True when a <c>using (expr)</c> / <c>await using (expr)</c> resource expression
     /// (not a declaration) is a mutable value-type element whose resolved
     /// <c>Dispose</c> / <c>DisposeAsync</c> is a non-<c>readonly</c> instance method.
     /// Declaration forms (<c>using var x = …</c> / <c>using (var x = …)</c>) Dispose the
     /// declared local copy both before and after conversion, so they are allowed.
+    /// Method selection follows the actual form: plain <c>using</c> resolves
+    /// <c>Dispose</c>; <c>await using</c> resolves <c>DisposeAsync</c> (Codex P2 on
+    /// #3441, PRRT_kwDORD0nYs606mPd) — matching <c>foreach</c> vs <c>await foreach</c>
+    /// <c>GetEnumerator</c> / <c>GetAsyncEnumerator</c> selection.
     /// </summary>
     private static bool TryGetMutatingUsingResourceReceiver(
         UsingStatementSyntax usingStatement,
@@ -7453,7 +7521,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return false;
 
         var resource = usingStatement.Expression;
-        var disposeMethod = ResolveDisposeMethod(resource, semanticModel);
+        var isAsync = usingStatement.AwaitKeyword != default;
+        var disposeMethod = ResolveDisposeMethod(resource, semanticModel, isAsync);
         if (disposeMethod == null ||
             disposeMethod.IsStatic ||
             disposeMethod.IsReadOnly)
@@ -7473,42 +7542,50 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// Resolves the instance <c>Dispose</c> / <c>DisposeAsync</c> that a
+    /// Resolves the instance <c>Dispose</c> or <c>DisposeAsync</c> that a
     /// <c>using</c> / <c>await using</c> statement would invoke on
-    /// <paramref name="resource"/> (interface or pattern-based).
+    /// <paramref name="resource"/> (interface or pattern-based). Chooses by
+    /// <paramref name="isAsync"/> so a readonly sync Dispose is not overshadowed by
+    /// a mutating DisposeAsync on a plain <c>using</c>, and vice versa.
     /// </summary>
     private static IMethodSymbol? ResolveDisposeMethod(
         ExpressionSyntax resource,
-        SemanticModel semanticModel)
+        SemanticModel semanticModel,
+        bool isAsync)
     {
         var type = semanticModel.GetTypeInfo(resource).Type;
         if (type == null)
             return null;
 
-        // Prefer pattern-based Dispose / DisposeAsync on the concrete type, then
-        // IDisposable / IAsyncDisposable interface members.
-        foreach (var name in new[] { "DisposeAsync", "Dispose" })
+        // Pattern-based Dispose / DisposeAsync on the concrete type for the actual form,
+        // then the matching IDisposable / IAsyncDisposable interface member.
+        var name = isAsync ? "DisposeAsync" : "Dispose";
+        foreach (var member in type.GetMembers(name).OfType<IMethodSymbol>())
         {
-            foreach (var member in type.GetMembers(name).OfType<IMethodSymbol>())
-            {
-                if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty)
-                    return member;
-            }
+            if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty)
+                return member;
         }
 
         foreach (var iface in type.AllInterfaces)
         {
-            if (iface.SpecialType == SpecialType.System_IDisposable ||
-                (iface.Name is "IAsyncDisposable" &&
-                 iface.ContainingNamespace?.ToDisplayString() == "System"))
+            if (isAsync)
             {
-                foreach (var member in iface.GetMembers().OfType<IMethodSymbol>())
+                if (iface.Name == "IAsyncDisposable" &&
+                    iface.ContainingNamespace?.ToDisplayString() == "System")
                 {
-                    if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty &&
-                        member.Name is "Dispose" or "DisposeAsync")
+                    foreach (var member in iface.GetMembers("DisposeAsync").OfType<IMethodSymbol>())
                     {
-                        return member;
+                        if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty)
+                            return member;
                     }
+                }
+            }
+            else if (iface.SpecialType == SpecialType.System_IDisposable)
+            {
+                foreach (var member in iface.GetMembers("Dispose").OfType<IMethodSymbol>())
+                {
+                    if (!member.IsStatic && member.Parameters.IsDefaultOrEmpty)
+                        return member;
                 }
             }
         }
