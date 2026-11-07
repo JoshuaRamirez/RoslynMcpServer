@@ -7261,4 +7261,188 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
         Assert.Contains("Bump(ref copies[0].A)", text, StringComparison.Ordinal);
     }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs603sqr): a selected tuple passed directly to an
+    // opaque constructor must climb to the enclosing assigned carrier before validation
+    // is skipped — var holder = new Holder((X: 1, Y: 2)); Bump(ref holder.Value.X).
+    [SkippableTheory]
+    [InlineData(false, "var holder = new Holder((X: 1, Y: 2)); Bump(ref holder.Value.X);")]
+    [InlineData(true, "var holder = new Holder((X: 1, Y: 2)); Bump(ref holder.Value.X);")]
+    [InlineData(false, "var holder = new Holder(value: (X: 1, Y: 2)); Bump(ref holder.Value.X);")]
+    [InlineData(true, "var holder = new Holder(value: (X: 1, Y: 2)); Bump(ref holder.Value.X);")]
+    [InlineData(false, "Holder holder = new((X: 1, Y: 2)); Bump(ref holder.Value.X);")]
+    [InlineData(true, "Holder holder = new((X: 1, Y: 2)); Bump(ref holder.Value.X);")]
+    [InlineData(false, "var holder = new DynamicHolder((X: 1, Y: 2)); Bump(ref holder.Value.X);")]
+    [InlineData(true, "var holder = new DynamicHolder((X: 1, Y: 2)); Bump(ref holder.Value.X);")]
+    [InlineData(false, "var box = new Box<object>((X: 1, Y: 2)); Bump(ref box.Value.X);")]
+    [InlineData(true, "var box = new Box<object>((X: 1, Y: 2)); Bump(ref box.Value.X);")]
+    [InlineData(false, "var box = new Box<dynamic>((X: 1, Y: 2)); Bump(ref box.Value.X);")]
+    [InlineData(true, "var box = new Box<dynamic>((X: 1, Y: 2)); Bump(ref box.Value.X);")]
+    public async Task ConvertTupleToStruct_DirectConstructorArgumentRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Holder
+            {
+                public dynamic Value;
+                public Holder(object value) => Value = value;
+            }
+
+            public class DynamicHolder
+            {
+                public dynamic Value;
+                public DynamicHolder(dynamic value) => Value = value;
+            }
+
+            public class Box<T>
+            {
+                public dynamic Value;
+                public Box(T value) => Value = value;
+            }
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    {{statements}}
+                    return 0;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 27,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs603sqw): converted storage passed to an ordinary
+    // method / stored-delegate parameter must track that callee parameter (not only
+    // inline lambda params and out vars) — Use(point) with Use(dynamic copy) => Bump(ref copy.X).
+    [SkippableTheory]
+    [InlineData(false, "Use(point);", "static void Use(dynamic copy) => Bump(ref copy.X);")]
+    [InlineData(true, "Use(point);", "static void Use(dynamic copy) => Bump(ref copy.X);")]
+    [InlineData(false, "Use(point);", "static void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.X); }")]
+    [InlineData(true, "Use(point);", "static void Use(object boxed) { dynamic copy = boxed; Bump(ref copy.X); }")]
+    [InlineData(false, "Use(point);", "static void Use((int X, int Y) copy) => Bump(ref copy.X);")]
+    [InlineData(true, "Use(point);", "static void Use((int X, int Y) copy) => Bump(ref copy.X);")]
+    [InlineData(false, "Use<object>(point);", "static void Use<T>(T copy) { dynamic d = copy; Bump(ref d.X); }")]
+    [InlineData(true, "Use<object>(point);", "static void Use<T>(T copy) { dynamic d = copy; Bump(ref d.X); }")]
+    [InlineData(false, "Action<dynamic> use = copy => Bump(ref copy.X); use(point);", "")]
+    [InlineData(true, "Action<dynamic> use = copy => Bump(ref copy.X); use(point);", "")]
+    [InlineData(false, "Action<dynamic> use = copy => Bump(ref copy.X); use.Invoke(point);", "")]
+    [InlineData(true, "Action<dynamic> use = copy => Bump(ref copy.X); use.Invoke(point);", "")]
+    [InlineData(false, "var use = (Action<dynamic>)(copy => Bump(ref copy.X)); use(point);", "")]
+    [InlineData(true, "var use = (Action<dynamic>)(copy => Bump(ref copy.X)); use(point);", "")]
+    [InlineData(false, "Use((X: 1, Y: 2));", "static void Use(dynamic copy) => Bump(ref copy.X);")]
+    [InlineData(true, "Use((X: 1, Y: 2));", "static void Use(dynamic copy) => Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_OrdinaryCalleeParameterRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string statements,
+        string helpers)
+    {
+        var source = $$"""
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+
+                {{helpers}}
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Over-refusal guard for ordinary callee params: by-value reads through the
+    // callee must still convert.
+    [SkippableTheory]
+    [InlineData(false, "var n = Read(point);", "static int Read(dynamic copy) => copy.X;")]
+    [InlineData(true, "var n = Read(point);", "static int Read(dynamic copy) => copy.X;")]
+    [InlineData(false, "var n = Read(point);", "static int Read((int X, int Y) copy) => copy.X;")]
+    [InlineData(true, "var n = Read(point);", "static int Read((int X, int Y) copy) => copy.X;")]
+    [InlineData(false, "Action<dynamic> read = copy => { var _ = copy.X; }; read(point);", "")]
+    [InlineData(true, "Action<dynamic> read = copy => { var _ = copy.X; }; read(point);", "")]
+    public async Task ConvertTupleToStruct_OrdinaryCalleeParameterByValue_Succeeds(
+        bool asRecord,
+        string statements,
+        string helpers)
+    {
+        var source = $$"""
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+
+                {{helpers}}
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 11,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+    }
+
+
 }

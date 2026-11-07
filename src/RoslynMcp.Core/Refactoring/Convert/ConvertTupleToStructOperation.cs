@@ -635,6 +635,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 return semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
             }
 
+            // Use((X: 1, Y: 2)) — the matching callee parameter is the storage for a
+            // nested creation passed directly as an ordinary argument (sibling of
+            // constructor-arg climb; Codex P1 on #3441, PRRT_kwDORD0nYs603sqw).
+            if (TryGetInvocationArgumentParameterStorage(
+                    node, semanticModel, cancellationToken, out var parameterStorage))
+            {
+                return parameterStorage;
+            }
+
             if (!TryClimbAssignedStorageContainer(node, out var container))
                 return null;
 
@@ -643,10 +652,61 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// When a nested convertible creation is passed directly to an ordinary
+    /// invocation / local function / delegate (<c>Use((X: 1, Y: 2))</c>), resolves
+    /// the matching callee parameter as the creation's storage so by-ref uses
+    /// through that parameter are still gated.
+    /// </summary>
+    private static bool TryGetInvocationArgumentParameterStorage(
+        SyntaxNode node,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out ISymbol? parameterStorage)
+    {
+        parameterStorage = null;
+        if (node.Parent is not ArgumentSyntax argument ||
+            argument.Parent is not ArgumentListSyntax { Parent: InvocationExpressionSyntax invocation } argumentList)
+        {
+            return false;
+        }
+
+        if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out var method) ||
+            method == null)
+        {
+            return false;
+        }
+
+        var index = argumentList.Arguments.IndexOf(argument);
+        if (index < 0)
+            return false;
+
+        var parameter = ResolveInvocationParameter(method, argument, index);
+        if (parameter == null)
+            return false;
+
+        // Delegate Invoke parameters are synthesized; prefer the source lambda /
+        // method-group parameter that the stored delegate was assigned from.
+        if (method.MethodKind == MethodKind.DelegateInvoke)
+        {
+            var mapped = TryMapStoredDelegateParameter(
+                invocation, method, index, semanticModel, cancellationToken);
+            if (mapped != null)
+            {
+                parameterStorage = mapped;
+                return true;
+            }
+        }
+
+        parameterStorage = parameter.OriginalDefinition;
+        return true;
+    }
+
+    /// <summary>
     /// Climbs one nesting level from a nested convertible creation (or an
     /// intermediate container already climbed into) toward enclosing storage.
-    /// Only walks value-preserving initializer / collection / aggregate wrappers —
-    /// not invocations or other transforming expressions.
+    /// Walks value-preserving initializer / collection / aggregate wrappers and
+    /// opaque constructor arguments (<c>new Holder((X: 1, Y: 2))</c> → holder) —
+    /// not ordinary transforming invocations (Codex P1 on #3441).
     /// </summary>
     private static bool TryClimbAssignedStorageContainer(
         SyntaxNode node,
@@ -702,6 +762,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             })
         {
             container = anonymous;
+            return true;
+        }
+
+        // Direct constructor arguments: new Holder((X: 1, Y: 2)) / new((X: 1, Y: 2))
+        // climb to the object creation so the enclosing assigned carrier (holder) is
+        // resolved instead of skipping validation (Codex P1 on #3441,
+        // PRRT_kwDORD0nYs603sqr).
+        if (parent is ArgumentSyntax
+            {
+                Parent: ArgumentListSyntax { Parent: BaseObjectCreationExpressionSyntax objectCreation }
+            })
+        {
+            container = objectCreation;
             return true;
         }
 
@@ -915,7 +988,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     // converted storage (read back via ToArray/indexer/foreach).
                     var insertionAdded = TryAddCollectionInsertionReceiverAlias(
                         invocation, aliases, semanticModel, cancellationToken);
-                    if (lambdaAdded || outVarAdded || insertionAdded)
+                    // Use(point) / storedDelegate(point): ordinary callee / stored-delegate
+                    // parameters receiving converted storage (Codex P1 on #3441,
+                    // PRRT_kwDORD0nYs603sqw).
+                    var calleeAdded = TryAddOrdinaryCalleeParameterAliasesFromInvocation(
+                        invocation, aliases, semanticModel, root, cancellationToken);
+                    if (lambdaAdded || outVarAdded || insertionAdded || calleeAdded)
                     {
                         changed = true;
                         continue;
@@ -1717,6 +1795,191 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         return added;
+    }
+
+    /// <summary>
+    /// When converted storage is passed to an ordinary method, local function, or
+    /// stored delegate (<c>Use(point)</c> / <c>use(point)</c>), tracks the matching
+    /// callee parameter so by-ref element uses inside its body are gated — not only
+    /// inline lambda callback parameters and <c>out var</c> destinations
+    /// (Codex P1 on #3441, PRRT_kwDORD0nYs603sqw).
+    /// </summary>
+    private static bool TryAddOrdinaryCalleeParameterAliasesFromInvocation(
+        InvocationExpressionSyntax invocation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken)
+    {
+        if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out var method) ||
+            method == null)
+        {
+            return false;
+        }
+
+        var added = false;
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = invocation.ArgumentList.Arguments[i];
+            var expr = SkipTransparentWrappers(argument.Expression);
+            // Inline lambdas / out-var declarations are handled by dedicated helpers.
+            if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
+                continue;
+
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            ISymbol? parameter = ResolveInvocationParameter(method, argument, i);
+            if (parameter == null)
+                continue;
+
+            if (method.MethodKind == MethodKind.DelegateInvoke)
+            {
+                var mapped = TryMapStoredDelegateParameter(
+                    invocation, method, i, semanticModel, cancellationToken);
+                if (mapped != null)
+                    parameter = mapped;
+            }
+            else if (parameter is IParameterSymbol parameterSymbol)
+            {
+                // Prefer the unbound generic / source declaration parameter so
+                // Use<object>(point) still matches Use<T>(T copy) body references.
+                parameter = parameterSymbol.OriginalDefinition;
+            }
+
+            if (aliases.Contains(parameter))
+                continue;
+
+            aliases.Add(parameter);
+            added = true;
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// Maps a stored-delegate invocation argument ordinal onto the source lambda /
+    /// anonymous-method / method-group parameter the delegate was assigned from
+    /// (e.g. <c>Action&lt;dynamic&gt; use = copy =&gt; …; use(point)</c>).
+    /// </summary>
+    private static ISymbol? TryMapStoredDelegateParameter(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol invokeMethod,
+        int argumentIndex,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (invokeMethod.MethodKind != MethodKind.DelegateInvoke)
+            return null;
+
+        var receiver = invocation.Expression is MemberAccessExpressionSyntax
+        {
+            Name.Identifier.ValueText: "Invoke"
+        } invokeAccess
+            ? invokeAccess.Expression
+            : invocation.Expression;
+
+        receiver = SkipTransparentWrappers(receiver);
+        var delegateSymbol = semanticModel.GetSymbolInfo(receiver, cancellationToken).Symbol;
+        if (delegateSymbol == null)
+            return null;
+
+        var root = invocation.SyntaxTree.GetRoot(cancellationToken);
+        foreach (var source in EnumerateDelegateAssignmentSources(
+                     delegateSymbol, root, semanticModel, cancellationToken))
+        {
+            var mapped = TryGetDelegateSourceParameter(
+                source, argumentIndex, semanticModel, cancellationToken);
+            if (mapped != null)
+                return mapped;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<ExpressionSyntax> EnumerateDelegateAssignmentSources(
+        ISymbol delegateSymbol,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var node in root.DescendantNodes())
+        {
+            if (node is VariableDeclaratorSyntax
+                {
+                    Initializer.Value: { } value
+                } declarator)
+            {
+                var declared = semanticModel.GetDeclaredSymbol(declarator, cancellationToken);
+                if (declared != null &&
+                    SymbolEqualityComparer.Default.Equals(declared, delegateSymbol))
+                {
+                    yield return value;
+                }
+            }
+            else if (node is AssignmentExpressionSyntax assignment &&
+                     assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+            {
+                var left = semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
+                if (left != null &&
+                    SymbolEqualityComparer.Default.Equals(left, delegateSymbol))
+                {
+                    yield return assignment.Right;
+                }
+            }
+        }
+    }
+
+    private static ISymbol? TryGetDelegateSourceParameter(
+        ExpressionSyntax source,
+        int argumentIndex,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        source = SkipTransparentWrappers(source);
+        while (TryUnwrapValuePreservingCast(
+                   source, semanticModel, cancellationToken, out var castOperand))
+        {
+            source = SkipTransparentWrappers(castOperand);
+        }
+
+        IReadOnlyList<ParameterSyntax>? parameters = source switch
+        {
+            SimpleLambdaExpressionSyntax simple => new[] { simple.Parameter },
+            ParenthesizedLambdaExpressionSyntax parenthesized => parenthesized.ParameterList.Parameters,
+            AnonymousMethodExpressionSyntax { ParameterList: { } list } => list.Parameters,
+            _ => null
+        };
+
+        if (parameters != null)
+        {
+            if (argumentIndex < 0 || argumentIndex >= parameters.Count)
+                return null;
+            return semanticModel.GetDeclaredSymbol(parameters[argumentIndex], cancellationToken);
+        }
+
+        // Method group: Action<dynamic> use = Use;
+        var group = semanticModel.GetSymbolInfo(source, cancellationToken).Symbol as IMethodSymbol;
+        if (group == null)
+        {
+            var info = semanticModel.GetSymbolInfo(source, cancellationToken);
+            if (info.CandidateSymbols.Length == 1)
+                group = info.CandidateSymbols[0] as IMethodSymbol;
+        }
+
+        if (group == null)
+            return null;
+
+        var original = (group.ReducedFrom ?? group).OriginalDefinition;
+        var extensionOffset = group.ReducedFrom != null ? 1 : 0;
+        var ordinal = argumentIndex + extensionOffset;
+        if (ordinal < 0 || ordinal >= original.Parameters.Length)
+            return null;
+
+        return original.Parameters[ordinal];
     }
 
     private static bool TryResolveInvocationMethod(
@@ -4257,6 +4520,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SyntaxNode root)
     {
         expression = UnwrapParenthesesAndNullForgiving(expression);
+
+        // A nested convertible creation of the same shape IS the converted storage
+        // itself — needed when an opaque constructor forwards an inline literal
+        // (new Holder((X: 1, Y: 2)) → holder.Value) rather than a tracked local
+        // (Codex P1 on #3441, PRRT_kwDORD0nYs603sqr).
+        if (tupleType != null &&
+            IsRewritableCreationSyntax(expression) &&
+            SymbolEqualityComparer.Default.Equals(
+                semanticModel.GetTypeInfo(expression).Type, tupleType))
+        {
+            return true;
+        }
 
         if (ReceiverYieldsConvertedStorage(expression, storages, tupleType, semanticModel))
             return true;
