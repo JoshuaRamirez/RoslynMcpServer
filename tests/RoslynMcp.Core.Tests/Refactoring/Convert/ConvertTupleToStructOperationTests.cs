@@ -5811,6 +5811,102 @@ public class ConvertTupleToStructOperationTests
             };
         }
 
+        /// <summary>
+        /// Dependent project holds local convertible storage and calls a public
+        /// callee declared in a referenced project whose body passes an element by
+        /// ref (Codex P1 sibling on #3441, PRRT_kwDORD0nYs604Ela).
+        /// </summary>
+        public static async Task<TempWorkspace> CreateDependentProjectCalleeRefAsync()
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertTupleCallee_" + Guid.NewGuid().ToString("N"));
+            var appDir = Path.Combine(directory, "App");
+            var otherDir = Path.Combine(directory, "Other");
+            Directory.CreateDirectory(appDir);
+            Directory.CreateDirectory(otherDir);
+
+            var appProject = Path.Combine(appDir, "App.csproj");
+            var otherProject = Path.Combine(otherDir, "Other.csproj");
+            var appSource = Path.Combine(appDir, "Helpers.cs");
+            var otherSource = Path.Combine(otherDir, "Worker.cs");
+
+            await File.WriteAllTextAsync(appProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(otherProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\App\App.csproj" />
+                  </ItemGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(appSource, """
+                namespace TestApp;
+
+                public static class Helpers
+                {
+                    static void Bump(ref int v) => v++;
+
+                    public static void Use(dynamic copy) => Bump(ref copy.X);
+                }
+                """);
+            await File.WriteAllTextAsync(otherSource, """
+                namespace OtherApp;
+
+                public class Worker
+                {
+                    public object Create()
+                    {
+                        var point = (X: 1, Y: 2);
+                        TestApp.Helpers.Use(point);
+                        return point;
+                    }
+                }
+                """);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Other", "Other\Other.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            var workspace = await LoadAsync(directory, solutionPath, otherSource);
+            return new TempWorkspace
+            {
+                DirectoryPath = workspace.DirectoryPath,
+                ProjectPath = workspace.ProjectPath,
+                SourcePath = workspace.SourcePath,
+                Context = workspace.Context,
+                SecondarySourcePath = appSource
+            };
+        }
+
+
         public static async Task<TempWorkspace> CreateSiblingProjectsAsync()
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
@@ -7435,6 +7531,248 @@ public class ConvertTupleToStructOperationTests
         {
             SourceFile = workspace.SourcePath,
             Line = 11,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs604Ela): local storage + Use(point) in one partial
+    // document, callee body with by-ref element use in another — propagated parameter
+    // aliases must be scanned in the callee's document too.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_CrossDocumentPartialCalleeParameterRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string primary = """
+            namespace TestApp;
+
+            public partial class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    Use(point);
+                    return point;
+                }
+            }
+            """;
+        const string secondary = """
+            namespace TestApp;
+
+            public partial class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static void Use(dynamic copy) => Bump(ref copy.X);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Worker.cs", primary),
+            ("Worker.Partial.cs", secondary));
+        var primaryPath = workspace.SourcePath;
+        var secondaryPath = Path.Combine(workspace.DirectoryPath, "Worker.Partial.cs");
+        var originalPrimary = await File.ReadAllTextAsync(primaryPath);
+        var originalSecondary = await File.ReadAllTextAsync(secondaryPath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = primaryPath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(originalPrimary, await File.ReadAllTextAsync(primaryPath));
+        Assert.Equal(originalSecondary, await File.ReadAllTextAsync(secondaryPath));
+    }
+
+    // Sibling: constructor parameter body in another partial document.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_CrossDocumentPartialConstructorParameterRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string primary = """
+            namespace TestApp;
+
+            public partial class Holder
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var holder = new Holder(point);
+                    return holder;
+                }
+            }
+            """;
+        const string secondary = """
+            namespace TestApp;
+
+            public partial class Holder
+            {
+                static void Bump(ref int v) => v++;
+
+                public Holder(dynamic copy) => Bump(ref copy.X);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Holder.cs", primary),
+            ("Holder.Partial.cs", secondary));
+        var primaryPath = workspace.SourcePath;
+        var secondaryPath = Path.Combine(workspace.DirectoryPath, "Holder.Partial.cs");
+        var originalPrimary = await File.ReadAllTextAsync(primaryPath);
+        var originalSecondary = await File.ReadAllTextAsync(secondaryPath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = primaryPath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(originalPrimary, await File.ReadAllTextAsync(primaryPath));
+        Assert.Equal(originalSecondary, await File.ReadAllTextAsync(secondaryPath));
+    }
+
+    // Sibling: stored method-group / delegate field whose target lives in another
+    // partial document.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_CrossDocumentPartialDelegateMethodGroupRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        const string primary = """
+            using System;
+
+            namespace TestApp;
+
+            public partial class Worker
+            {
+                public Action<dynamic> use = Use;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    use(point);
+                    return point;
+                }
+            }
+            """;
+        const string secondary = """
+            namespace TestApp;
+
+            public partial class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                static void Use(dynamic copy) => Bump(ref copy.X);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Worker.cs", primary),
+            ("Worker.Partial.cs", secondary));
+        var primaryPath = workspace.SourcePath;
+        var secondaryPath = Path.Combine(workspace.DirectoryPath, "Worker.Partial.cs");
+        var originalPrimary = await File.ReadAllTextAsync(primaryPath);
+        var originalSecondary = await File.ReadAllTextAsync(secondaryPath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = primaryPath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(originalPrimary, await File.ReadAllTextAsync(primaryPath));
+        Assert.Equal(originalSecondary, await File.ReadAllTextAsync(secondaryPath));
+    }
+
+    // Sibling: callee lives in a referenced project; local storage + call are in the
+    // dependent project.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_DependentProjectCalleeParameterRefElement_ThrowsAndWritesNothing(bool asRecord)
+    {
+        await using var workspace = await TempWorkspace.CreateDependentProjectCalleeRefAsync();
+        var originalOrigin = await File.ReadAllTextAsync(workspace.SourcePath);
+        var originalConsumer = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(originalOrigin, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(originalConsumer, await File.ReadAllTextAsync(workspace.SecondarySourcePath));
+    }
+
+    // Over-refusal guard: cross-document callee that only reads by value still converts.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConvertTupleToStruct_CrossDocumentPartialCalleeParameterByValue_Succeeds(bool asRecord)
+    {
+        const string primary = """
+            namespace TestApp;
+
+            public partial class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var n = Read(point);
+                    return point;
+                }
+            }
+            """;
+        const string secondary = """
+            namespace TestApp;
+
+            public partial class Worker
+            {
+                static int Read(dynamic copy) => copy.X;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Worker.cs", primary),
+            ("Worker.Partial.cs", secondary));
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 7,
             NewTypeName = "Point",
             AsRecord = asRecord
         });

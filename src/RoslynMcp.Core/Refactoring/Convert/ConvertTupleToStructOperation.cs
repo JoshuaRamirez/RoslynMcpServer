@@ -463,7 +463,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// document of a partial type or from a referencing/dependent project; scan the
     /// originating project and every project that can already see it (same set as
     /// <see cref="CollectSameShapeCreationsAsync"/>) for aliases and by-ref uses
-    /// (Codex P1 on #3441). Locals / parameters / range variables stay document-scoped.
+    /// (Codex P1 on #3441). Locals / parameters / range variables start document-scoped,
+    /// but when <see cref="CollectStorageAliases"/> propagates a source-declared alias
+    /// into another document (partial callee / constructor / method-group target), that
+    /// declaring document is scanned too (Codex P1 on #3441, PRRT_kwDORD0nYs604Ela).
     /// </summary>
     private static bool RequiresCrossDocumentStorageScan(ISymbol storage) =>
         storage is IFieldSymbol or IPropertySymbol;
@@ -477,16 +480,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         ITypeSymbol tupleType,
         CancellationToken cancellationToken)
     {
-        if (!RequiresCrossDocumentStorageScan(storage))
-        {
-            var storages = CollectStorageAliases(
-                originatingRoot, originatingModel, storage, cancellationToken);
-            return HasElementByRefUse(
-                originatingRoot, originatingModel, storages, memberNames, tupleType);
-        }
+        var (aliases, documents) = RequiresCrossDocumentStorageScan(storage)
+            ? await CollectCrossDocumentStorageAliasesAsync(
+                originatingDocument, storage, cancellationToken).ConfigureAwait(false)
+            : await CollectPropagatedAliasDocumentsAsync(
+                originatingDocument, originatingRoot, originatingModel, storage, cancellationToken)
+                .ConfigureAwait(false);
 
-        var (aliases, documents) = await CollectCrossDocumentStorageAliasesAsync(
-            originatingDocument, storage, cancellationToken);
         foreach (var (root, model) in documents)
         {
             if (HasElementByRefUse(root, model, aliases, memberNames, tupleType))
@@ -505,16 +505,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         ITypeSymbol tupleType,
         CancellationToken cancellationToken)
     {
-        if (!RequiresCrossDocumentStorageScan(storage))
-        {
-            var storages = CollectStorageAliases(
-                originatingRoot, originatingModel, storage, cancellationToken);
-            return HasElementWrite(
-                originatingRoot, originatingModel, storages, memberNames, tupleType);
-        }
+        var (aliases, documents) = RequiresCrossDocumentStorageScan(storage)
+            ? await CollectCrossDocumentStorageAliasesAsync(
+                originatingDocument, storage, cancellationToken).ConfigureAwait(false)
+            : await CollectPropagatedAliasDocumentsAsync(
+                originatingDocument, originatingRoot, originatingModel, storage, cancellationToken)
+                .ConfigureAwait(false);
 
-        var (aliases, documents) = await CollectCrossDocumentStorageAliasesAsync(
-            originatingDocument, storage, cancellationToken);
         foreach (var (root, model) in documents)
         {
             if (HasElementWrite(root, model, aliases, memberNames, tupleType))
@@ -522,6 +519,76 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// For document-scoped storage (locals / parameters / range variables), collects
+    /// aliases in the originating document and then continues into every syntax tree
+    /// that declares a collected alias — e.g. a callee / constructor parameter whose
+    /// body lives in another partial file or project. Local functions cannot be
+    /// cross-file; ordinary methods, constructors, and method-group targets can
+    /// (Codex P1 on #3441, PRRT_kwDORD0nYs604Ela).
+    /// </summary>
+    private static async Task<(HashSet<ISymbol> Aliases, List<(SyntaxNode Root, SemanticModel Model)> Documents)>
+        CollectPropagatedAliasDocumentsAsync(
+            Document originatingDocument,
+            SyntaxNode originatingRoot,
+            SemanticModel originatingModel,
+            ISymbol storage,
+            CancellationToken cancellationToken)
+    {
+        var aliases = CollectStorageAliases(
+            originatingRoot, originatingModel, storage, cancellationToken);
+        var documents = new List<(SyntaxNode Root, SemanticModel Model)>
+        {
+            (originatingRoot, originatingModel)
+        };
+        var loadedTrees = new HashSet<SyntaxTree> { originatingRoot.SyntaxTree };
+
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            var seed = aliases.ToArray();
+
+            foreach (var symbol in seed)
+            {
+                foreach (var reference in symbol.DeclaringSyntaxReferences)
+                {
+                    var tree = reference.SyntaxTree;
+                    if (!loadedTrees.Add(tree))
+                        continue;
+
+                    var document = originatingDocument.Project.Solution.GetDocument(tree);
+                    if (document == null)
+                        continue;
+
+                    var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+                    var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                    if (root == null || model == null)
+                        continue;
+
+                    documents.Add((root, model));
+                    changed = true;
+                }
+            }
+
+            // Re-seed each loaded document so copies inside newly discovered callee
+            // bodies (and further callees they invoke) join the alias set.
+            foreach (var (root, model) in documents)
+            {
+                foreach (var symbol in seed)
+                {
+                    foreach (var alias in CollectStorageAliases(root, model, symbol, cancellationToken))
+                    {
+                        if (aliases.Add(alias))
+                            changed = true;
+                    }
+                }
+            }
+        }
+
+        return (aliases, documents);
     }
 
     /// <summary>
@@ -994,6 +1061,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     var calleeAdded = TryAddOrdinaryCalleeParameterAliasesFromInvocation(
                         invocation, aliases, semanticModel, root, cancellationToken);
                     if (lambdaAdded || outVarAdded || insertionAdded || calleeAdded)
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
+                else if (node is BaseObjectCreationExpressionSyntax objectCreation)
+                {
+                    // new Holder(point): ordinary constructor parameters receiving
+                    // converted storage (sibling of invocation callees; bodies may live
+                    // in another partial document — Codex P1 on #3441, PRRT_kwDORD0nYs604Ela).
+                    if (TryAddOrdinaryCalleeParameterAliasesFromObjectCreation(
+                            objectCreation, aliases, semanticModel, cancellationToken))
                     {
                         changed = true;
                         continue;
@@ -1861,6 +1940,57 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// When converted storage is passed to an ordinary constructor
+    /// (<c>new Holder(point)</c>), tracks the matching constructor parameter so
+    /// by-ref element uses inside its body are gated — including when that body
+    /// lives in another partial document (Codex P1 sibling on #3441,
+    /// PRRT_kwDORD0nYs604Ela).
+    /// </summary>
+    private static bool TryAddOrdinaryCalleeParameterAliasesFromObjectCreation(
+        BaseObjectCreationExpressionSyntax objectCreation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (objectCreation.ArgumentList == null ||
+            objectCreation.ArgumentList.Arguments.Count == 0)
+        {
+            return false;
+        }
+
+        if (semanticModel.GetSymbolInfo(objectCreation, cancellationToken).Symbol is not IMethodSymbol constructor)
+            return false;
+
+        var added = false;
+        for (var i = 0; i < objectCreation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = objectCreation.ArgumentList.Arguments[i];
+            var expr = SkipTransparentWrappers(argument.Expression);
+            if (expr is AnonymousFunctionExpressionSyntax or DeclarationExpressionSyntax)
+                continue;
+
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            var parameter = ResolveInvocationParameter(constructor, argument, i);
+            if (parameter == null)
+                continue;
+
+            ISymbol alias = parameter.OriginalDefinition;
+            if (aliases.Contains(alias))
+                continue;
+
+            aliases.Add(alias);
+            added = true;
+        }
+
+        return added;
+    }
+
+    /// <summary>
     /// Maps a stored-delegate invocation argument ordinal onto the source lambda /
     /// anonymous-method / method-group parameter the delegate was assigned from
     /// (e.g. <c>Action&lt;dynamic&gt; use = copy =&gt; …; use(point)</c>).
@@ -1897,7 +2027,66 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 return mapped;
         }
 
+        // Field / property initializers and assignments may live in another partial
+        // document of the containing type (Codex P1 sibling on #3441,
+        // PRRT_kwDORD0nYs604Ela). Local functions cannot be cross-file.
+        foreach (var (otherRoot, otherModel) in EnumerateDelegateSymbolDocumentRoots(
+                     delegateSymbol, semanticModel, cancellationToken))
+        {
+            if (otherRoot.SyntaxTree == root.SyntaxTree)
+                continue;
+
+            foreach (var source in EnumerateDelegateAssignmentSources(
+                         delegateSymbol, otherRoot, otherModel, cancellationToken))
+            {
+                var mapped = TryGetDelegateSourceParameter(
+                    source, argumentIndex, otherModel, cancellationToken);
+                if (mapped != null)
+                    return mapped;
+            }
+        }
+
         return null;
+    }
+
+    /// <summary>
+    /// Yields roots+models for documents that declare <paramref name="delegateSymbol"/>
+    /// or (for fields/properties) other partial parts of its containing type, so
+    /// stored-delegate sources assigned in sibling files are still mapped.
+    /// </summary>
+    private static IEnumerable<(SyntaxNode Root, SemanticModel Model)> EnumerateDelegateSymbolDocumentRoots(
+        ISymbol delegateSymbol,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var seen = new HashSet<SyntaxTree>();
+        foreach (var reference in EnumerateDelegateRelatedSyntaxReferences(delegateSymbol))
+        {
+            var tree = reference.SyntaxTree;
+            if (!seen.Add(tree))
+                continue;
+
+            var root = tree.GetRoot(cancellationToken);
+            var model = tree == semanticModel.SyntaxTree
+                ? semanticModel
+                : semanticModel.Compilation.GetSemanticModel(tree);
+            yield return (root, model);
+        }
+    }
+
+    private static IEnumerable<SyntaxReference> EnumerateDelegateRelatedSyntaxReferences(ISymbol delegateSymbol)
+    {
+        foreach (var reference in delegateSymbol.DeclaringSyntaxReferences)
+            yield return reference;
+
+        if (delegateSymbol is not (IFieldSymbol or IPropertySymbol) ||
+            delegateSymbol.ContainingType == null)
+        {
+            yield break;
+        }
+
+        foreach (var reference in delegateSymbol.ContainingType.DeclaringSyntaxReferences)
+            yield return reference;
     }
 
     private static IEnumerable<ExpressionSyntax> EnumerateDelegateAssignmentSources(
