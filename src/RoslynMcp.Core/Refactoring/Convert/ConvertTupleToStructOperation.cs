@@ -2534,7 +2534,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// Strips one value-transparent wrapper: parentheses, null-forgiving
-    /// <c>x!</c>, and <c>checked(x)</c> / <c>unchecked(x)</c> (Codex P1 on #3441).
+    /// <c>x!</c>, <c>checked(x)</c> / <c>unchecked(x)</c>, struct <c>with</c>
+    /// expressions (<c>point with { Y = 3 }</c> — receiver is the storage source),
+    /// and simple assignment expressions used as values (<c>(tmp = point)</c>)
+    /// (Codex P1 on #3441).
     /// </summary>
     private static bool TryUnwrapTransparentWrapper(ExpressionSyntax expression, out ExpressionSyntax inner)
     {
@@ -2549,6 +2552,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 return true;
             case CheckedExpressionSyntax checkedExpression:
                 inner = checkedExpression.Expression;
+                return true;
+            // var copy = point with { Y = 3 }; — with creates a modified copy of the
+            // receiver; track the receiver as the storage source (Codex P1).
+            case WithExpressionSyntax withExpression:
+                inner = withExpression.Expression;
+                return true;
+            // var copy = (tmp = point); — assignment-as-value yields the RHS.
+            case AssignmentExpressionSyntax assignment when
+                assignment.IsKind(SyntaxKind.SimpleAssignmentExpression):
+                inner = assignment.Right;
                 return true;
             default:
                 inner = expression;
@@ -4036,7 +4049,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// Value leaves an expression may evaluate to: unwraps parentheses, casts,
-    /// null-forgiving, <c>?:</c> branches, <c>??</c> operands and switch-expression arms.
+    /// null-forgiving, <c>with</c> receivers, assignment-as-value RHS, <c>?:</c>
+    /// branches, <c>??</c> operands and switch-expression arms.
     /// </summary>
     private static IEnumerable<ExpressionSyntax> EnumerateForwardedValueLeaves(ExpressionSyntax expression)
     {
@@ -4075,6 +4089,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     break;
                 case RefExpressionSyntax refExpression:
                     pending.Push(refExpression.Expression);
+                    break;
+                case WithExpressionSyntax withExpression:
+                    pending.Push(withExpression.Expression);
+                    break;
+                case AssignmentExpressionSyntax assignment when
+                    assignment.IsKind(SyntaxKind.SimpleAssignmentExpression):
+                    pending.Push(assignment.Right);
                     break;
                 default:
                     yield return current;

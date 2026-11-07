@@ -1541,6 +1541,103 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs602baw): with-expression copies must track the
+    // receiver as a storage source (var copy = point with { Y = 3 }; Bump(ref copy.X)).
+    [SkippableTheory]
+    [InlineData(false, "var copy = point with { Y = 3 }; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = point with { Y = 3 }; Bump(ref copy.X);")]
+    [InlineData(false, "var copy = (point with { Y = 3 }); Bump(ref copy.X);")]
+    [InlineData(true, "var copy = (point with { Y = 3 }); Bump(ref copy.X);")]
+    [InlineData(false, "var copy = point! with { Y = 3 }; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = point! with { Y = 3 }; Bump(ref copy.X);")]
+    [InlineData(false, "var copy = flag ? point with { Y = 3 } : point with { Y = 4 }; Bump(ref copy.X);")]
+    [InlineData(true, "var copy = flag ? point with { Y = 3 } : point with { Y = 4 }; Bump(ref copy.X);")]
+    [InlineData(false, "var points = new[] { point }; var copies = points.Select(x => x with { Y = 3 }).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var points = new[] { point }; var copies = points.Select(x => x with { Y = 3 }).ToArray(); Bump(ref copies[0].X);")]
+    public async Task ConvertTupleToStruct_WithExpressionCopyRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Proactive gap fold on #3441: assignment-as-value yields the RHS storage
+    // (var copy = (tmp = point); Bump(ref copy.X)).
+    [SkippableTheory]
+    [InlineData(false, "(int X, int Y) tmp = default; var copy = (tmp = point); Bump(ref copy.X);")]
+    [InlineData(true, "(int X, int Y) tmp = default; var copy = (tmp = point); Bump(ref copy.X);")]
+    [InlineData(false, "(int X, int Y) tmp = default; var copy = flag ? (tmp = point) : point; Bump(ref copy.X);")]
+    [InlineData(true, "(int X, int Y) tmp = default; var copy = flag ? (tmp = point) : point; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_AssignmentExpressionValueRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     // Codex P1 on #3441: non-local field/property storage used from another partial-class
     // document must still refuse by-ref element uses (scan project documents).
     [SkippableTheory]
