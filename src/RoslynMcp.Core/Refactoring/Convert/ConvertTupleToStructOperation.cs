@@ -939,7 +939,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     // (T*)p / (p += 0) (Codex P1 on #3441).
                     else if (TryUnwrapPointerDerivedSource(source, semanticModel, out var pointerOperand))
                         source = pointerOperand;
-                    // Built-in identity/boxing casts: dynamic copy = (dynamic)point (Codex P1).
+                    // Built-in identity/boxing casts / as: dynamic copy = point as object (Codex P1).
                     else if (TryUnwrapValuePreservingCast(
                                  source, semanticModel, cancellationToken, out var castOperand))
                         source = castOperand;
@@ -2361,6 +2361,21 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         memberSource = null;
         expression = SkipTransparentWrappers(expression);
+
+        // box?.Value / box?.Inner.Value — same aggregate provenance as ordinary member
+        // access (Codex P1 on #3441, PRRT_kwDORD0nYs602M2n).
+        if (expression is ConditionalAccessExpressionSyntax conditionalAccess)
+        {
+            return TryResolveAggregateMemberReadFromConditionalWhenNotNull(
+                conditionalAccess.Expression,
+                SkipTransparentWrappers(conditionalAccess.WhenNotNull),
+                aliases,
+                semanticModel,
+                root,
+                cancellationToken,
+                out memberSource);
+        }
+
         if (expression is not MemberAccessExpressionSyntax memberAccess ||
             !memberAccess.IsKind(SyntaxKind.SimpleMemberAccessExpression))
         {
@@ -2389,6 +2404,87 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         memberSource = resolved;
         return true;
+    }
+
+    /// <summary>
+    /// Resolves a null-conditional member chain (<c>box?.Value</c> /
+    /// <c>box?.Inner.Value</c>) to the aggregate initializer expression it reads.
+    /// </summary>
+    private static bool TryResolveAggregateMemberReadFromConditionalWhenNotNull(
+        ExpressionSyntax receiver,
+        ExpressionSyntax whenNotNull,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        CancellationToken cancellationToken,
+        [NotNullWhen(true)] out ExpressionSyntax? memberSource)
+    {
+        memberSource = null;
+        whenNotNull = SkipTransparentWrappers(whenNotNull);
+
+        switch (whenNotNull)
+        {
+            case MemberBindingExpressionSyntax memberBinding:
+                {
+                    receiver = SkipTransparentWrappers(receiver);
+                    if (TryResolveAggregateMemberRead(
+                            receiver, aliases, semanticModel, root, cancellationToken, out var resolvedReceiver))
+                    {
+                        receiver = resolvedReceiver;
+                    }
+
+                    if (!TryResolvePatternMemberInput(
+                            receiver,
+                            memberBinding.Name.Identifier.ValueText,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken,
+                            out var resolved) ||
+                        resolved == null)
+                    {
+                        return false;
+                    }
+
+                    memberSource = resolved;
+                    return true;
+                }
+            case MemberAccessExpressionSyntax memberAccess when
+                memberAccess.IsKind(SyntaxKind.SimpleMemberAccessExpression):
+                {
+                    // box?.Inner.Value — resolve the binding prefix, then the final member.
+                    if (!TryResolveAggregateMemberReadFromConditionalWhenNotNull(
+                            receiver,
+                            memberAccess.Expression,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken,
+                            out var mid) ||
+                        mid == null)
+                    {
+                        return false;
+                    }
+
+                    if (!TryResolvePatternMemberInput(
+                            mid,
+                            memberAccess.Name.Identifier.ValueText,
+                            aliases,
+                            semanticModel,
+                            root,
+                            cancellationToken,
+                            out var resolved) ||
+                        resolved == null)
+                    {
+                        return false;
+                    }
+
+                    memberSource = resolved;
+                    return true;
+                }
+            default:
+                return false;
+        }
     }
 
     /// <summary>
@@ -2461,9 +2557,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// Unwraps one built-in identity or boxing cast (e.g. <c>(dynamic)point</c> /
-    /// <c>(object)point</c>). User-defined conversions are not followed so a custom
-    /// conversion cannot invent a false alias (Codex P1 on #3441).
+    /// Unwraps one built-in identity or boxing cast / <c>as</c> (e.g. <c>(dynamic)point</c> /
+    /// <c>(object)point</c> / <c>point as object</c>). User-defined conversions are not
+    /// followed so a custom conversion cannot invent a false alias (Codex P1 on #3441).
     /// </summary>
     private static bool TryUnwrapValuePreservingCast(
         ExpressionSyntax expression,
@@ -2472,14 +2568,21 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         out ExpressionSyntax operand)
     {
         operand = expression;
-        if (expression is not CastExpressionSyntax cast)
+
+        ExpressionSyntax? candidate = null;
+        if (expression is CastExpressionSyntax cast)
+            candidate = cast.Expression;
+        else if (expression is BinaryExpressionSyntax asExpression &&
+                 asExpression.IsKind(SyntaxKind.AsExpression))
+            candidate = asExpression.Left;
+        else
             return false;
 
-        var conversion = semanticModel.GetConversion(cast, cancellationToken);
+        var conversion = semanticModel.GetConversion(expression, cancellationToken);
         if (!conversion.IsIdentity && !conversion.IsBoxing)
             return false;
 
-        operand = cast.Expression;
+        operand = candidate;
         return true;
     }
 
@@ -2624,7 +2727,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 expression = addressOf.Operand;
             else if (TryUnwrapPointerDerivedSource(expression, semanticModel, out var pointerOperand))
                 expression = pointerOperand;
-            // Built-in identity/boxing casts: (dynamic)point / (object)point (Codex P1).
+            // Built-in identity/boxing casts / as: (dynamic)point / point as object (Codex P1).
             else if (TryUnwrapValuePreservingCast(
                          expression, semanticModel, cancellationToken, out var castOperand))
                 expression = castOperand;
@@ -2985,7 +3088,134 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 anonymousFunction, aliases, semanticModel, cancellationToken);
         }
 
+        // Null-conditional member/element bindings: box?.Value / points?[0]
+        // (Codex P1 on #3441, PRRT_kwDORD0nYs602M2n).
+        if (expression is ConditionalAccessExpressionSyntax conditionalAccess)
+        {
+            return ConditionalAccessReferencesStorageAlias(
+                conditionalAccess, aliases, semanticModel, cancellationToken);
+        }
+
         return false;
+    }
+
+    /// <summary>
+    /// True when a null-conditional expression forwards converted storage the same
+    /// way the equivalent ordinary member/element/invocation access would
+    /// (<c>box?.Value</c>, <c>points?[0]</c>, <c>box?.Get()</c>).
+    /// </summary>
+    private static bool ConditionalAccessReferencesStorageAlias(
+        ConditionalAccessExpressionSyntax conditionalAccess,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        ExpressionReferencesStorageThroughConditionalWhenNotNull(
+            conditionalAccess.Expression,
+            conditionalAccess.WhenNotNull,
+            conditionalAccess,
+            aliases,
+            semanticModel,
+            cancellationToken);
+
+    /// <summary>
+    /// Walks the <c>WhenNotNull</c> side of a null-conditional chain as if each
+    /// member/element binding were an ordinary access rooted at <paramref name="receiver"/>.
+    /// </summary>
+    private static bool ExpressionReferencesStorageThroughConditionalWhenNotNull(
+        ExpressionSyntax receiver,
+        ExpressionSyntax whenNotNull,
+        ExpressionSyntax conditionalRoot,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        whenNotNull = SkipTransparentWrappers(whenNotNull);
+
+        switch (whenNotNull)
+        {
+            case MemberBindingExpressionSyntax memberBinding:
+                {
+                    var memberName = memberBinding.Name.Identifier.ValueText;
+                    if (memberName is "Span" or "Memory" or "Result")
+                    {
+                        return ExpressionReferencesStorageAlias(
+                            receiver, aliases, semanticModel, cancellationToken);
+                    }
+
+                    // box?.Value — same wrapper-member provenance as box.Value.
+                    return MemberAccessUnwrapsStorageTypeArgument(
+                               conditionalRoot,
+                               receiver,
+                               memberBinding.Name,
+                               aliases,
+                               semanticModel,
+                               cancellationToken) &&
+                           ExpressionReferencesStorageAlias(
+                               receiver, aliases, semanticModel, cancellationToken);
+                }
+            case ElementBindingExpressionSyntax:
+                // points?[0]
+                return ExpressionReferencesStorageAlias(
+                    receiver, aliases, semanticModel, cancellationToken);
+            case MemberAccessExpressionSyntax memberAccess when
+                memberAccess.IsKind(SyntaxKind.SimpleMemberAccessExpression):
+                {
+                    // box?.Inner.Value
+                    if (!ExpressionReferencesStorageThroughConditionalWhenNotNull(
+                            receiver,
+                            memberAccess.Expression,
+                            conditionalRoot,
+                            aliases,
+                            semanticModel,
+                            cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    var memberName = memberAccess.Name.Identifier.ValueText;
+                    if (memberName is "Span" or "Memory" or "Result")
+                        return true;
+
+                    return MemberAccessUnwrapsStorageTypeArgument(
+                        memberAccess,
+                        memberAccess.Expression,
+                        memberAccess.Name,
+                        aliases,
+                        semanticModel,
+                        cancellationToken);
+                }
+            case ElementAccessExpressionSyntax elementAccess:
+                // box?.Values[0]
+                return ExpressionReferencesStorageThroughConditionalWhenNotNull(
+                    receiver,
+                    elementAccess.Expression,
+                    conditionalRoot,
+                    aliases,
+                    semanticModel,
+                    cancellationToken);
+            case InvocationExpressionSyntax invocation:
+                {
+                    // box?.Get() / box?.Unwrap() — extract storage from the conditional receiver.
+                    if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method ||
+                        method.ReturnsVoid)
+                    {
+                        return false;
+                    }
+
+                    if (!ExpressionReferencesStorageAlias(
+                            receiver, aliases, semanticModel, cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    return MethodReturnExtractsReceiverStorage(method, aliases) ||
+                           MethodReturnForwardsContainer(
+                               method,
+                               semanticModel.GetTypeInfo(receiver, cancellationToken).Type);
+                }
+            default:
+                return false;
+        }
     }
 
     /// <summary>
@@ -3104,13 +3334,35 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         MemberAccessExpressionSyntax memberAccess,
         HashSet<ISymbol> aliases,
         SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        MemberAccessUnwrapsStorageTypeArgument(
+            memberAccess,
+            memberAccess.Expression,
+            memberAccess.Name,
+            aliases,
+            semanticModel,
+            cancellationToken);
+
+    /// <summary>
+    /// Shared unwrap check for ordinary member access and null-conditional member
+    /// bindings (<c>box?.Value</c>) — <paramref name="memberExpression"/> supplies
+    /// the member type (the conditional access node when lifted), while
+    /// <paramref name="receiverExpression"/> / <paramref name="memberName"/> supply
+    /// the receiver type and member symbol (Codex P1 on #3441).
+    /// </summary>
+    private static bool MemberAccessUnwrapsStorageTypeArgument(
+        ExpressionSyntax memberExpression,
+        ExpressionSyntax receiverExpression,
+        SimpleNameSyntax memberName,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        var memberType = semanticModel.GetTypeInfo(memberAccess, cancellationToken).Type;
+        var memberType = semanticModel.GetTypeInfo(memberExpression, cancellationToken).Type;
         if (memberType == null || !TypeInvolvesStorageAliasType(memberType, aliases))
             return false;
 
-        var receiverType = semanticModel.GetTypeInfo(memberAccess.Expression, cancellationToken).Type;
+        var receiverType = semanticModel.GetTypeInfo(receiverExpression, cancellationToken).Type;
         if (receiverType is not INamedTypeSymbol { IsTupleType: false, IsAnonymousType: false } named ||
             named.TypeArguments.Length == 0)
         {
@@ -3121,7 +3373,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // containing-type parameter bound to storage forward it. Box<T>.Other declared
         // as (int X, int Y) merely shares the constructed shape (Codex P2 on #3441,
         // PRRT_kwDORD0nYs600gme). Other member kinds keep the constructed-type check.
-        var member = semanticModel.GetSymbolInfo(memberAccess, cancellationToken).Symbol;
+        var member = semanticModel.GetSymbolInfo(memberName, cancellationToken).Symbol
+            ?? semanticModel.GetSymbolInfo(memberExpression, cancellationToken).Symbol;
         if (member is IFieldSymbol or IPropertySymbol)
             return MemberOriginalTypeForwardsStorageTypeArgument(member, memberType);
 
