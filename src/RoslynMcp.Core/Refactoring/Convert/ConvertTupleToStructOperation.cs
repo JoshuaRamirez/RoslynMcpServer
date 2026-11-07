@@ -458,34 +458,135 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
     }
 
+    /// <summary>
+    /// Resolves the local/parameter/field/property that a convertible creation
+    /// initializes. Walks through nested array/collection/object/anonymous/tuple
+    /// containers so <c>dynamic[] points = { (1, 2) }</c> tracks <c>points</c>
+    /// rather than returning null when the tuple's parent is an initializer
+    /// (Codex P1 on #3441).
+    /// </summary>
     internal static ISymbol? TryGetAssignedStorageSymbol(
         ExpressionSyntax creation,
         SemanticModel semanticModel,
         CancellationToken cancellationToken = default)
     {
         SyntaxNode node = creation;
-        while (node.Parent is ParenthesizedExpressionSyntax parenthesized)
-            node = parenthesized;
-
-        if (node.Parent is EqualsValueClauseSyntax equals)
+        while (true)
         {
-            switch (equals.Parent)
+            while (node.Parent is ParenthesizedExpressionSyntax parenthesized)
+                node = parenthesized;
+
+            // (1, 2)! inside an initializer — climb through null-forgiving.
+            while (node.Parent is PostfixUnaryExpressionSyntax postfix &&
+                   postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression))
             {
-                case VariableDeclaratorSyntax declarator:
-                    return semanticModel.GetDeclaredSymbol(declarator, cancellationToken);
-                case PropertyDeclarationSyntax property:
-                    return semanticModel.GetDeclaredSymbol(property, cancellationToken);
+                node = postfix;
             }
-        }
 
-        if (node.Parent is AssignmentExpressionSyntax assignment &&
-            assignment.Right == node)
-        {
-            return semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
-        }
+            // checked((1, 2)) / unchecked((1, 2)) inside a container.
+            while (node.Parent is CheckedExpressionSyntax checkedExpression)
+                node = checkedExpression;
 
-        return null;
+            if (node.Parent is EqualsValueClauseSyntax equals && equals.Value == node)
+            {
+                switch (equals.Parent)
+                {
+                    case VariableDeclaratorSyntax declarator:
+                        return semanticModel.GetDeclaredSymbol(declarator, cancellationToken);
+                    case PropertyDeclarationSyntax property:
+                        return semanticModel.GetDeclaredSymbol(property, cancellationToken);
+                }
+
+                return null;
+            }
+
+            if (node.Parent is AssignmentExpressionSyntax assignment &&
+                assignment.Right == node)
+            {
+                // Object / with initializers assign a member; keep climbing to the
+                // enclosing storage (new Box { Value = (1, 2) } → box).
+                if (assignment.Parent is InitializerExpressionSyntax)
+                {
+                    node = assignment;
+                    continue;
+                }
+
+                return semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
+            }
+
+            if (!TryClimbAssignedStorageContainer(node, out var container))
+                return null;
+
+            node = container;
+        }
     }
+
+    /// <summary>
+    /// Climbs one nesting level from a nested convertible creation (or an
+    /// intermediate container already climbed into) toward enclosing storage.
+    /// Only walks value-preserving initializer / collection / aggregate wrappers —
+    /// not invocations or other transforming expressions.
+    /// </summary>
+    private static bool TryClimbAssignedStorageContainer(
+        SyntaxNode node,
+        out SyntaxNode container)
+    {
+        container = null!;
+        var parent = node.Parent;
+        if (parent == null)
+            return false;
+
+        // Array / collection / object / complex-element initializers.
+        if (parent is InitializerExpressionSyntax)
+        {
+            container = parent;
+            return true;
+        }
+
+        // new[] { … } / new T[] { … } / stackalloc / new List<> { … } / new { }
+        // that own an initializer we already climbed into.
+        if (node is InitializerExpressionSyntax &&
+            parent is ExpressionSyntax owningExpression &&
+            IsStorageCarryingContainerExpression(owningExpression))
+        {
+            container = owningExpression;
+            return true;
+        }
+
+        // Collection expressions: [(1, 2)] / [..(other), (1, 2)].
+        if (parent is ExpressionElementSyntax { Parent: CollectionExpressionSyntax collection })
+        {
+            container = collection;
+            return true;
+        }
+
+        // Nested tuples: ((1, 2), 0) / (Value: (1, 2), Other: 0).
+        if (parent is ArgumentSyntax { Parent: TupleExpressionSyntax tuple })
+        {
+            container = tuple;
+            return true;
+        }
+
+        // Anonymous members: new { Value = (1, 2) }.
+        if (parent is AnonymousObjectMemberDeclaratorSyntax
+            {
+                Parent: AnonymousObjectCreationExpressionSyntax anonymous
+            })
+        {
+            container = anonymous;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsStorageCarryingContainerExpression(ExpressionSyntax expression) =>
+        expression is ImplicitArrayCreationExpressionSyntax
+            or ArrayCreationExpressionSyntax
+            or ImplicitStackAllocArrayCreationExpressionSyntax
+            or StackAllocArrayCreationExpressionSyntax
+            or BaseObjectCreationExpressionSyntax
+            or AnonymousObjectCreationExpressionSyntax;
 
     /// <summary>
     /// Collects <paramref name="storage"/> plus locals/parameters/fields that are

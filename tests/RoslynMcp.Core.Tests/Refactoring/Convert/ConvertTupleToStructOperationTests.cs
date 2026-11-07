@@ -1292,6 +1292,59 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441: nested convertible creations inside dynamic/array/collection
+    // containers must resolve the enclosing storage (TryGetAssignedStorageSymbol used to
+    // return null when the tuple's parent was an initializer, skipping validation).
+    // e.g. dynamic[] points = { (1, 2) }; Bump(ref points[0].Item1);
+    [SkippableTheory]
+    [InlineData(false, "dynamic[] points = { (1, 2) }; Bump(ref points[0].Item1);")]
+    [InlineData(true, "dynamic[] points = { (1, 2) }; Bump(ref points[0].Item1);")]
+    [InlineData(false, "dynamic[] points = [(1, 2)]; Bump(ref points[0].Item1);")]
+    [InlineData(true, "dynamic[] points = [(1, 2)]; Bump(ref points[0].Item1);")]
+    [InlineData(false, "var bag = new List<dynamic> { (1, 2) }; Bump(ref bag[0].Item1);")]
+    [InlineData(true, "var bag = new List<dynamic> { (1, 2) }; Bump(ref bag[0].Item1);")]
+    public async Task ConvertTupleToStruct_NestedCreationEnclosingStorageRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string statements)
+    {
+        var source = $$"""
+            using System.Collections.Generic;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    {{statements}}
+                    return 0;
+                }
+            }
+            """;
+
+        // Matches Codex evidence: these sites are accepted by the compiler as dynamic
+        // binding targets in the workspace even when ref-dynamic→ref-int is invalid;
+        // conversion must still refuse before rewriting (same stance as DynamicAliasRefElement).
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     // Codex P1 on #3441: dynamic aliases of converted storage must refuse by-ref element uses
     // (type-mismatch must not short-circuit before consulting the tracked symbol).
     [SkippableTheory]
