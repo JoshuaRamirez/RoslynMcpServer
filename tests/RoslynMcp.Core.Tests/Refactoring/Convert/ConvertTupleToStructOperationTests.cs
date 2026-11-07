@@ -5227,4 +5227,145 @@ public class ConvertTupleToStructOperationTests
     }
 
     #endregion
+
+    // Codex P1 on #3441: selectors that conditionally forward the element
+    // (?:, casts, switch arms, block returns) still alias converted storage.
+    [SkippableTheory]
+    [InlineData(false, "var copies = points.Select(x => flag ? x : x).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => flag ? x : x).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => (flag ? (x) : x)).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => (flag ? (x) : x)).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => ((int X, int Y))x).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => ((int X, int Y))x).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => flag switch { true => x, _ => x }).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => flag switch { true => x, _ => x }).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select(x => { if (flag) return x; return x; }).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select(x => { if (flag) return x; return x; }).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(false, "var copies = points.Select((x, i) => i > 0 ? x : x).ToArray(); Bump(ref copies[0].X);")]
+    [InlineData(true, "var copies = points.Select((x, i) => i > 0 ? x : x).ToArray(); Bump(ref copies[0].X);")]
+    public async Task ConvertTupleToStruct_ConditionalForwardingSelectorRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create(bool flag)
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441: element members that are direct deconstruction
+    // destinations are setter writes (like point.X = 3) under asRecord:false.
+    [SkippableTheory]
+    [InlineData("(point.X, point.Y) = (3, 4);")]
+    [InlineData("((point.X), point.Y) = (3, 4);")]
+    [InlineData("(point.X, (point.Y, other)) = (3, (4, 5));")]
+    [InlineData("(point.X, other) = (3, 5);")]
+    public async Task ConvertTupleToStruct_AsRecordFalse_DeconstructionAssignmentDirectElementWrite_Succeeds(string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var other = 0;
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 7,
+            NewTypeName = "Point",
+            AsRecord = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("public int X { get; set; }", text, StringComparison.Ordinal);
+        Assert.Contains(statements, text, StringComparison.Ordinal);
+        AssertTupleContainerCompiles(text);
+    }
+
+    // Codex P2 on #3441: under asRecord:true deconstruction destinations keep the
+    // existing direct element-assignment rejection (init-only properties).
+    [SkippableTheory]
+    [InlineData("(point.X, point.Y) = (3, 4);")]
+    [InlineData("((point.X), point.Y) = (3, 4);")]
+    [InlineData("(point.X, (point.Y, other)) = (3, (4, 5));")]
+    [InlineData("(point.X, other) = (3, 5);")]
+    public async Task ConvertTupleToStruct_AsRecordTrue_DeconstructionAssignmentDirectElementWrite_ThrowsAndWritesNothing(string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var other = 0;
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("element assignments", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
 }

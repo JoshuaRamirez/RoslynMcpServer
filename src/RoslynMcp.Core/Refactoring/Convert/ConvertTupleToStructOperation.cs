@@ -2399,21 +2399,91 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         BlockSyntax? block,
         string parameterName)
     {
-        if (expressionBody != null)
+        // Any returned value path that yields the element parameter forwards
+        // storage: x => x, x => flag ? x : x, x => (T)x, x => k switch { _ => x },
+        // x => { if (flag) return x; return x; } (Codex P1 on #3441).
+        foreach (var returned in EnumerateSelectorReturnExpressions(expressionBody, block))
         {
-            var body = ParenthesizedExpressionHelpers.SkipParentheses(expressionBody);
-
-            return body is IdentifierNameSyntax id &&
-                   id.Identifier.ValueText == parameterName;
-        }
-
-        if (block?.Statements is [ReturnStatementSyntax { Expression: { } returned }])
-        {
-            return ParenthesizedExpressionHelpers.SkipParentheses(returned) is IdentifierNameSyntax id &&
-                   id.Identifier.ValueText == parameterName;
+            foreach (var leaf in EnumerateForwardedValueLeaves(returned))
+            {
+                if (leaf is IdentifierNameSyntax id &&
+                    id.Identifier.ValueText == parameterName)
+                {
+                    return true;
+                }
+            }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Returned expressions of a selector body, excluding returns that belong to
+    /// nested lambdas / local functions.
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateSelectorReturnExpressions(
+        ExpressionSyntax? expressionBody,
+        BlockSyntax? block)
+    {
+        if (expressionBody != null)
+            yield return expressionBody;
+
+        if (block == null)
+            yield break;
+
+        foreach (var statement in block
+                     .DescendantNodes(n => n is not (AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))
+                     .OfType<ReturnStatementSyntax>())
+        {
+            if (statement.Expression != null)
+                yield return statement.Expression;
+        }
+    }
+
+    /// <summary>
+    /// Value leaves an expression may evaluate to: unwraps parentheses, casts,
+    /// null-forgiving, <c>?:</c> branches, <c>??</c> operands and switch-expression arms.
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateForwardedValueLeaves(ExpressionSyntax expression)
+    {
+        var pending = new Stack<ExpressionSyntax>();
+        pending.Push(expression);
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            switch (current)
+            {
+                case ParenthesizedExpressionSyntax parenthesized:
+                    pending.Push(parenthesized.Expression);
+                    break;
+                case CastExpressionSyntax cast:
+                    pending.Push(cast.Expression);
+                    break;
+                case PostfixUnaryExpressionSyntax postfix when
+                    postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                    pending.Push(postfix.Operand);
+                    break;
+                case ConditionalExpressionSyntax conditional:
+                    pending.Push(conditional.WhenTrue);
+                    pending.Push(conditional.WhenFalse);
+                    break;
+                case BinaryExpressionSyntax coalesce when
+                    coalesce.IsKind(SyntaxKind.CoalesceExpression):
+                    pending.Push(coalesce.Left);
+                    pending.Push(coalesce.Right);
+                    break;
+                case SwitchExpressionSyntax switchExpression:
+                    foreach (var arm in switchExpression.Arms)
+                        pending.Push(arm.Expression);
+                    break;
+                case RefExpressionSyntax refExpression:
+                    pending.Push(refExpression.Expression);
+                    break;
+                default:
+                    yield return current;
+                    break;
+            }
+        }
     }
 
     /// <summary>
@@ -3534,6 +3604,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         var coreTarget = UnwrapParenthesesAndNullForgiving(byRefTarget);
 
+        // Deconstruction assignment: (point.X, point.Y) = (3, 4) writes each
+        // destination like point.X = 3 (Codex P2 on #3441), including nested tuples.
+        var deconstructionDestinations = coreTarget is TupleExpressionSyntax tupleTarget
+            ? CollectDeconstructionDestinations(tupleTarget)
+            : null;
+
         foreach (var memberAccess in EnumerateAssignmentMemberAccesses(byRefTarget))
         {
             if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
@@ -3555,6 +3631,21 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (coreTarget == memberAccess)
                 return refuseDirectElementAccess;
 
+            var effectiveTarget = coreTarget;
+            if (deconstructionDestinations != null)
+            {
+                if (deconstructionDestinations.Contains(memberAccess))
+                {
+                    if (refuseDirectElementAccess)
+                        return true;
+                    continue;
+                }
+
+                // Nested write inside one destination: evaluate against that destination.
+                effectiveTarget = FindContainingDeconstructionDestination(
+                    memberAccess, deconstructionDestinations) ?? coreTarget;
+            }
+
             // Through the element: reference-type property returns the same
             // reference — allow. Value-type property returns a copy — allow only
             // when the remaining path reaches nested reference storage (array /
@@ -3564,7 +3655,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 continue;
 
             if (elementType is { IsValueType: true } &&
-                !ValueTypeElementByRefIsUnsafe(memberAccess, coreTarget, semanticModel))
+                !ValueTypeElementByRefIsUnsafe(memberAccess, effectiveTarget, semanticModel))
             {
                 continue;
             }
@@ -3638,6 +3729,43 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         // Reached the by-ref target without finding nested reference storage.
         return true;
+    }
+
+    /// <summary>
+    /// Collects the leaf destinations of a deconstruction assignment left-hand side
+    /// (<c>(point.X, (point.Y, other))</c>), unwrapping parentheses / null-forgiving.
+    /// </summary>
+    private static HashSet<ExpressionSyntax> CollectDeconstructionDestinations(TupleExpressionSyntax tuple)
+    {
+        var destinations = new HashSet<ExpressionSyntax>();
+        var pending = new Stack<TupleExpressionSyntax>();
+        pending.Push(tuple);
+        while (pending.Count > 0)
+        {
+            foreach (var argument in pending.Pop().Arguments)
+            {
+                var destination = UnwrapParenthesesAndNullForgiving(argument.Expression);
+                if (destination is TupleExpressionSyntax nested)
+                    pending.Push(nested);
+                else
+                    destinations.Add(destination);
+            }
+        }
+
+        return destinations;
+    }
+
+    private static ExpressionSyntax? FindContainingDeconstructionDestination(
+        SyntaxNode node,
+        HashSet<ExpressionSyntax> destinations)
+    {
+        foreach (var ancestor in node.AncestorsAndSelf())
+        {
+            if (ancestor is ExpressionSyntax expression && destinations.Contains(expression))
+                return expression;
+        }
+
+        return null;
     }
 
     private static ExpressionSyntax UnwrapParenthesesAndNullForgiving(ExpressionSyntax expression)
