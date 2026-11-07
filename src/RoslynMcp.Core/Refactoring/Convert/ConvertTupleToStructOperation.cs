@@ -2978,45 +2978,58 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
+        // Ordinary constructors that capture converted storage into object / dynamic /
+        // generic parameters are storage carriers (Codex P1 on #3441,
+        // PRRT_kwDORD0nYs602oDk): var holder = new Holder(point) with
+        // Holder(object value) storing into dynamic Value.
         // Explicit collection containers also carry converted values. Their generic
         // element type may stay a tuple, but by-ref callbacks must still refuse
         // before replacing the initializer value with an incompatible struct.
-        if (expression is BaseObjectCreationExpressionSyntax { Initializer: { } initializer } &&
-            initializer.IsKind(SyntaxKind.CollectionInitializerExpression))
+        if (expression is BaseObjectCreationExpressionSyntax objectCreation)
         {
-            foreach (var element in initializer.Expressions)
+            if (ObjectCreationCapturesConvertedStorageViaConstructor(
+                    objectCreation, aliases, semanticModel, cancellationToken))
             {
-                // Bind each entry to the collection initializer's Add method and only
-                // count parts flowing into parameters whose type embeds converted
-                // storage — { { point, value } } into Dictionary<object, V> only puts
-                // point in the object key (Codex P2 on #3441, PRRT_kwDORD0nYs600gmf).
-                // Mirrors TryAddCollectionInsertionReceiverAlias for explicit Add calls.
-                var addMethod = semanticModel.GetCollectionInitializerSymbolInfo(element, cancellationToken).Symbol
-                    as IMethodSymbol;
+                return true;
+            }
 
-                // new Dictionary<K, V> { { key, point } }: complex element initializers.
-                if (element is InitializerExpressionSyntax complexElement &&
-                    complexElement.IsKind(SyntaxKind.ComplexElementInitializerExpression))
+            if (objectCreation.Initializer is { } initializer &&
+                initializer.IsKind(SyntaxKind.CollectionInitializerExpression))
+            {
+                foreach (var element in initializer.Expressions)
                 {
-                    for (var i = 0; i < complexElement.Expressions.Count; i++)
-                    {
-                        if (!CollectionInitializerPartMayCarryStorage(addMethod, i, aliases))
-                            continue;
+                    // Bind each entry to the collection initializer's Add method and only
+                    // count parts flowing into parameters whose type embeds converted
+                    // storage — { { point, value } } into Dictionary<object, V> only puts
+                    // point in the object key (Codex P2 on #3441, PRRT_kwDORD0nYs600gmf).
+                    // Mirrors TryAddCollectionInsertionReceiverAlias for explicit Add calls.
+                    var addMethod = semanticModel.GetCollectionInitializerSymbolInfo(element, cancellationToken).Symbol
+                        as IMethodSymbol;
 
-                        if (ExpressionReferencesStorageAlias(
-                                complexElement.Expressions[i], aliases, semanticModel, cancellationToken))
+                    // new Dictionary<K, V> { { key, point } }: complex element initializers.
+                    if (element is InitializerExpressionSyntax complexElement &&
+                        complexElement.IsKind(SyntaxKind.ComplexElementInitializerExpression))
+                    {
+                        for (var i = 0; i < complexElement.Expressions.Count; i++)
                         {
-                            return true;
+                            if (!CollectionInitializerPartMayCarryStorage(addMethod, i, aliases))
+                                continue;
+
+                            if (ExpressionReferencesStorageAlias(
+                                    complexElement.Expressions[i], aliases, semanticModel, cancellationToken))
+                            {
+                                return true;
+                            }
                         }
+
+                        continue;
                     }
 
-                    continue;
-                }
-
-                if (CollectionInitializerPartMayCarryStorage(addMethod, 0, aliases) &&
-                    ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
-                {
-                    return true;
+                    if (CollectionInitializerPartMayCarryStorage(addMethod, 0, aliases) &&
+                        ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                    {
+                        return true;
+                    }
                 }
             }
         }
@@ -3047,9 +3060,32 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
-        // Reads from tracked containers: var copy = points[0]; copy.X = 3;
+        // Reads from tracked containers: var copy = points[0]; copy.X = 3.
+        // Prefer constant-index resolution against initializer-known containers before
+        // falling back to container-wide propagation (Codex P2 on #3441,
+        // PRRT_kwDORD0nYs602oDm): object[] values = { point, new Other() };
+        // dynamic copy = values[1]; must not taint copy.
         if (expression is ElementAccessExpressionSyntax elementAccess)
         {
+            if (TryResolveConstantIndexedContainerElement(
+                    elementAccess, aliases, semanticModel, cancellationToken, out var indexedElement) &&
+                indexedElement != null)
+            {
+                if (ExpressionReferencesStorageAlias(
+                        indexedElement, aliases, semanticModel, cancellationToken))
+                {
+                    return true;
+                }
+
+                // Unrelated sibling (new Other() beside point): do not taint via the
+                // container (Codex P2). Nested converted tuple literals such as
+                // dynamic[] points = { (1, 2) }; Bump(ref points[0].Item1) still need
+                // container-wide fallthrough — the enclosing array is the tracked
+                // storage for that nested creation.
+                if (!ElementMayBeNestedConvertedCreation(indexedElement))
+                    return false;
+            }
+
             return ExpressionReferencesStorageAlias(
                 elementAccess.Expression, aliases, semanticModel, cancellationToken);
         }
@@ -4297,6 +4333,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 yield return forwarded;
             }
+
+            // Ordinary constructors that capture into object/dynamic/generic fields
+            // (new Holder(point) → holder.Value) — Codex P1 on #3441.
+            foreach (var forwarded in EnumerateObjectCreationForwardedConstructorArguments(
+                         creation, memberName, semanticModel))
+            {
+                yield return forwarded;
+            }
         }
     }
 
@@ -4655,6 +4699,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 when implicitStackAlloc.Initializer != null => implicitStackAlloc.Initializer.Expressions,
             StackAllocArrayCreationExpressionSyntax stackAlloc
                 when stackAlloc.Initializer != null => stackAlloc.Initializer.Expressions,
+            // object[] values = { point, new Other() }; — bare array initializer.
+            InitializerExpressionSyntax arrayInitializer
+                when arrayInitializer.IsKind(SyntaxKind.ArrayInitializerExpression)
+                => arrayInitializer.Expressions,
             _ => null
         };
 
@@ -4688,7 +4736,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         // new List<T> { expr0, expr1 } / similar object-creation collection initializers.
-        if (containerInitializer is ObjectCreationExpressionSyntax objectCreation &&
+        if (containerInitializer is BaseObjectCreationExpressionSyntax objectCreation &&
             objectCreation.Initializer != null)
         {
             var initExpressions = objectCreation.Initializer.Expressions;
@@ -4721,6 +4769,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 when implicitStackAlloc.Initializer != null => implicitStackAlloc.Initializer.Expressions,
             StackAllocArrayCreationExpressionSyntax stackAlloc
                 when stackAlloc.Initializer != null => stackAlloc.Initializer.Expressions,
+            InitializerExpressionSyntax arrayInitializer
+                when arrayInitializer.IsKind(SyntaxKind.ArrayInitializerExpression)
+                => arrayInitializer.Expressions,
             _ => null
         };
 
@@ -4744,7 +4795,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             yield break;
         }
 
-        if (containerInitializer is ObjectCreationExpressionSyntax objectCreation &&
+        if (containerInitializer is BaseObjectCreationExpressionSyntax objectCreation &&
             objectCreation.Initializer != null)
         {
             foreach (var expression in objectCreation.Initializer.Expressions)
@@ -4795,6 +4846,203 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 SymbolEqualityComparer.Default.Equals(
                     semanticModel.GetDeclaredSymbol(declarator),
                     symbol) &&
+                declarator.Initializer?.Value is { } value)
+            {
+                initializer = value;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when an object creation's constructor receives converted storage into
+    /// an <c>object</c> / <c>dynamic</c> / type-parameter parameter (or a parameter
+    /// whose constructed type already embeds tracked storage) — e.g.
+    /// <c>new Holder(point)</c> with <c>Holder(object value)</c> (Codex P1 on #3441).
+    /// </summary>
+    private static bool ObjectCreationCapturesConvertedStorageViaConstructor(
+        BaseObjectCreationExpressionSyntax objectCreation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (objectCreation.ArgumentList == null ||
+            objectCreation.ArgumentList.Arguments.Count == 0)
+        {
+            return false;
+        }
+
+        if (semanticModel.GetSymbolInfo(objectCreation, cancellationToken).Symbol is not IMethodSymbol constructor)
+            return false;
+
+        for (var i = 0; i < objectCreation.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = objectCreation.ArgumentList.Arguments[i];
+            if (!ExpressionReferencesStorageAlias(
+                    argument.Expression, aliases, semanticModel, cancellationToken))
+            {
+                continue;
+            }
+
+            var parameter = ResolveInvocationParameter(constructor, argument, i);
+            if (parameter == null)
+                continue;
+
+            if (ParameterTypeMayCaptureConvertedStorage(parameter.Type) ||
+                TypeInvolvesStorageAliasType(parameter.Type, aliases))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when a constructor / factory parameter type can hide converted storage
+    /// without preserving the tuple shape: <c>object</c>, <c>dynamic</c>, or a
+    /// method/type type parameter (Codex P1 on #3441).
+    /// </summary>
+    private static bool ParameterTypeMayCaptureConvertedStorage(ITypeSymbol parameterType) =>
+        parameterType.SpecialType == SpecialType.System_Object ||
+        parameterType.TypeKind == TypeKind.Dynamic ||
+        parameterType is ITypeParameterSymbol;
+
+    /// <summary>
+    /// For <c>new Holder(point)</c> with <c>Holder(object value)</c> storing into
+    /// <c>dynamic Value</c>, yields constructor arguments that may surface through
+    /// an opaque object/dynamic/generic member read (Codex P1 on #3441).
+    /// </summary>
+    private static IEnumerable<ExpressionSyntax> EnumerateObjectCreationForwardedConstructorArguments(
+        ExpressionSyntax creation,
+        string memberName,
+        SemanticModel semanticModel)
+    {
+        creation = UnwrapParenthesesAndNullForgiving(creation);
+        if (creation is not BaseObjectCreationExpressionSyntax { ArgumentList: { } argumentList } objectCreation ||
+            argumentList.Arguments.Count == 0)
+        {
+            yield break;
+        }
+
+        if (semanticModel.GetSymbolInfo(objectCreation).Symbol is not IMethodSymbol constructor)
+            yield break;
+
+        var constructedType = semanticModel.GetTypeInfo(objectCreation).Type as INamedTypeSymbol;
+        if (constructedType == null)
+            yield break;
+
+        ISymbol? member = constructedType.GetMembers(memberName)
+            .FirstOrDefault(candidate => candidate is IFieldSymbol { IsStatic: false } or IPropertySymbol { IsStatic: false });
+        var memberType = member switch
+        {
+            IFieldSymbol field => field.Type,
+            IPropertySymbol property => property.Type,
+            _ => null
+        };
+        if (memberType == null || !MemberTypeMayHoldOpaqueConstructorCapture(memberType))
+            yield break;
+
+        for (var i = 0; i < argumentList.Arguments.Count; i++)
+        {
+            var argument = argumentList.Arguments[i];
+            var parameter = ResolveInvocationParameter(constructor, argument, i);
+            if (parameter == null)
+                continue;
+
+            if (!ParameterTypeMayCaptureConvertedStorage(parameter.Type))
+                continue;
+
+            yield return argument.Expression;
+        }
+    }
+
+    /// <summary>
+    /// Members that can surface an opaque constructor capture without preserving
+    /// the original tuple type: <c>object</c>, <c>dynamic</c>, or a type parameter.
+    /// </summary>
+    private static bool MemberTypeMayHoldOpaqueConstructorCapture(ITypeSymbol memberType) =>
+        memberType.SpecialType == SpecialType.System_Object ||
+        memberType.TypeKind == TypeKind.Dynamic ||
+        memberType is ITypeParameterSymbol;
+
+    /// <summary>
+    /// True when <paramref name="element"/> may be a nested convertible tuple
+    /// creation whose enclosing container is the tracked storage (Codex nested
+    /// creation / enclosing-storage path).
+    /// </summary>
+    private static bool ElementMayBeNestedConvertedCreation(ExpressionSyntax element)
+    {
+        element = UnwrapParenthesesAndNullForgiving(element);
+        while (TryUnwrapTransparentWrapper(element, out var inner))
+            element = UnwrapParenthesesAndNullForgiving(inner);
+
+        return element is TupleExpressionSyntax;
+    }
+
+    /// <summary>
+    /// When <paramref name="elementAccess"/> uses a constant index into a tracked
+    /// container whose initializer is known, resolves the specific element
+    /// expression (Codex P2 on #3441).
+    /// </summary>
+    private static bool TryResolveConstantIndexedContainerElement(
+        ElementAccessExpressionSyntax elementAccess,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out ExpressionSyntax? element)
+    {
+        element = null;
+        if (!TryGetConstantElementIndex(elementAccess, semanticModel, out var index))
+            return false;
+
+        // Dictionary / custom indexers use keys, not positional initializer indices —
+        // only arrays get precise constant-index resolution (Codex P2 on #3441).
+        var containerType = semanticModel.GetTypeInfo(elementAccess.Expression, cancellationToken).Type;
+        if (containerType is not IArrayTypeSymbol)
+            return false;
+
+        var container = UnwrapParenthesesAndNullForgiving(elementAccess.Expression);
+        ExpressionSyntax? containerInitializer = null;
+
+        // Direct creation / initializer expression as the indexed receiver.
+        if (container is ImplicitArrayCreationExpressionSyntax or ArrayCreationExpressionSyntax
+            or CollectionExpressionSyntax or BaseObjectCreationExpressionSyntax
+            or InitializerExpressionSyntax)
+        {
+            containerInitializer = container;
+        }
+        else
+        {
+            var containerSymbol = semanticModel.GetSymbolInfo(container, cancellationToken).Symbol;
+            if (containerSymbol == null || !aliases.Contains(containerSymbol))
+                return false;
+
+            if (!TryFindSymbolInitializerViaDeclaringReferences(containerSymbol, out containerInitializer) ||
+                containerInitializer == null)
+            {
+                return false;
+            }
+        }
+
+        return TryGetElementAtConstantIndex(containerInitializer, index, out element) &&
+               element != null;
+    }
+
+    /// <summary>
+    /// Locates a symbol's initializer expression via declaring syntax references
+    /// (no syntax-tree root walk required).
+    /// </summary>
+    private static bool TryFindSymbolInitializerViaDeclaringReferences(
+        ISymbol symbol,
+        out ExpressionSyntax? initializer)
+    {
+        initializer = null;
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            if (reference.GetSyntax() is VariableDeclaratorSyntax declarator &&
                 declarator.Initializer?.Value is { } value)
             {
                 initializer = value;

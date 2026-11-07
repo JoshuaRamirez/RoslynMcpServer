@@ -7088,6 +7088,133 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs602oDk): ordinary constructors that capture
+    // converted storage into object/dynamic/generic parameters are storage carriers —
+    // var holder = new Holder(point); Bump(ref holder.Value.Item1) must refuse.
+    [SkippableTheory]
+    [InlineData(false, "var holder = new Holder(point); Bump(ref holder.Value.Item1);")]
+    [InlineData(true, "var holder = new Holder(point); Bump(ref holder.Value.Item1);")]
+    [InlineData(false, "var holder = new Holder(value: point); Bump(ref holder.Value.Item1);")]
+    [InlineData(true, "var holder = new Holder(value: point); Bump(ref holder.Value.Item1);")]
+    [InlineData(false, "Holder holder = new(point); Bump(ref holder.Value.Item1);")]
+    [InlineData(true, "Holder holder = new(point); Bump(ref holder.Value.Item1);")]
+    [InlineData(false, "var holder = new DynamicHolder(point); Bump(ref holder.Value.Item1);")]
+    [InlineData(true, "var holder = new DynamicHolder(point); Bump(ref holder.Value.Item1);")]
+    [InlineData(false, "var box = new Box<object>(point); Bump(ref box.Value.Item1);")]
+    [InlineData(true, "var box = new Box<object>(point); Bump(ref box.Value.Item1);")]
+    [InlineData(false, "var box = new Box<dynamic>(point); Bump(ref box.Value.Item1);")]
+    [InlineData(true, "var box = new Box<dynamic>(point); Bump(ref box.Value.Item1);")]
+    public async Task ConvertTupleToStruct_OrdinaryConstructorCaptureRefElement_ThrowsAndWritesNothing(bool asRecord, string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Holder
+            {
+                public dynamic Value;
+                public Holder(object value) => Value = value;
+            }
+
+            public class DynamicHolder
+            {
+                public dynamic Value;
+                public DynamicHolder(dynamic value) => Value = value;
+            }
+
+            public class Box<T>
+            {
+                public dynamic Value;
+                public Box(T value) => Value = value;
+            }
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 27,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains(asRecord ? "element assignments" : "passed by reference", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P2 on #3441 (PRRT_kwDORD0nYs602oDm): constant container indices must be
+    // resolved before container-wide tainting — values[1] of { point, new Other() }
+    // must not mark copy as converted storage.
+    [SkippableTheory]
+    [InlineData(false, "object[] values = { point, new Other() }; dynamic copy = values[1]; Bump(ref copy.X);")]
+    [InlineData(true, "object[] values = { point, new Other() }; dynamic copy = values[1]; Bump(ref copy.X);")]
+    [InlineData(false, "object[] values = new object[] { point, new Other() }; dynamic copy = values[1]; Bump(ref copy.X);")]
+    [InlineData(true, "object[] values = new object[] { point, new Other() }; dynamic copy = values[1]; Bump(ref copy.X);")]
+    [InlineData(false, "var values = new object[] { point, new Other() }; dynamic copy = values[1]; Bump(ref copy.X);")]
+    [InlineData(true, "var values = new object[] { point, new Other() }; dynamic copy = values[1]; Bump(ref copy.X);")]
+    [InlineData(false, "object[] values = [point, new Other()]; dynamic copy = values[1]; Bump(ref copy.X);")]
+    [InlineData(true, "object[] values = [point, new Other()]; dynamic copy = values[1]; Bump(ref copy.X);")]
+    [InlineData(false, "object[] values = { point, new Other() }; dynamic copy = values[1]!; Bump(ref copy.X);")]
+    [InlineData(true, "object[] values = { point, new Other() }; dynamic copy = values[1]!; Bump(ref copy.X);")]
+    public async Task ConvertTupleToStruct_ConstantIndexUnrelatedElement_Succeeds(bool asRecord, string statements)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Other
+            {
+                public int X;
+            }
+
+            public class Worker
+            {
+                static void Bump(ref int v) => v++;
+
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    {{statements}}
+                    return point;
+                }
+            }
+            """;
+
+        // Dynamic ref-to-int sites match Codex evidence (same stance as NestedCreation /
+        // DynamicAlias): the workspace accepts them as binding targets even when
+        // ref-dynamic→ref-int is CS1503 under AssertTupleContainerCompiles.
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 14,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("Bump(ref copy.X)", text, StringComparison.Ordinal);
+    }
+
     // Codex P1 on #3441 (PRRT_kwDORD0nYs600BUC) over-refusal guard: a method-group
     // selector that synthesizes a fresh value of an unrelated type does not alias.
     [SkippableTheory]
