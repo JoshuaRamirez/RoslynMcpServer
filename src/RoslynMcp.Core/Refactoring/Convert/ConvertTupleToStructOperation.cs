@@ -3030,6 +3030,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
                 case BaseObjectCreationExpressionSyntax objectCreation:
                     if (ObjectCreationHasUnresolvedCalleeEscape(
+                            objectCreation, aliases, semanticModel, cancellationToken) ||
+                        CollectionInitializerHasUnresolvedCalleeEscape(
                             objectCreation, aliases, semanticModel, cancellationToken))
                     {
                         return true;
@@ -3054,6 +3056,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // receiving converted storage must bind to one concrete analyzable body
             // (Codex P1s on #3441, PRRT_kwDORD0nYs605hQL / …605hQM).
             if (AccessorHasUnresolvedCalleeEscape(node, aliases, semanticModel, cancellationToken) ||
+                MetadataIndexerArgumentHasUnresolvedCalleeEscape(node, aliases, semanticModel, cancellationToken) ||
                 OperatorHasUnresolvedCalleeEscape(node, aliases, semanticModel, cancellationToken))
             {
                 return true;
@@ -3288,19 +3291,27 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         //
         // Sequence/container receivers are only exempt when the extension body can
         // be analyzed (source-declared: the hidden `this` parameter is aliased by
-        // TryAddOrdinaryCalleeParameterAliasesFromInvocation) or is a framework
-        // (BCL/LINQ) forwarding method. A metadata-only non-framework sequence
-        // extension has no body to inspect, so it is refused (Codex P1 on #3441,
-        // PRRT_kwDORD0nYs608u-W).
+        // TryAddOrdinaryCalleeParameterAliasesFromInvocation) or is a LINQ /
+        // MemoryExtensions operator whose results the receiver propagation already
+        // tracks. Any other metadata-only sequence extension (framework or not) has
+        // no body to inspect, so it is refused (Codex P1s on #3441,
+        // PRRT_kwDORD0nYs608u-W / PRRT_kwDORD0nYs6087Qf).
         if (method.ReducedFrom is { } reduced &&
             invocation.Expression is MemberAccessExpressionSyntax extensionAccess &&
             ExpressionReferencesStorageAlias(
                 extensionAccess.Expression, aliases, semanticModel, cancellationToken) &&
             (!ExtensionThisIsSequenceContainer(reduced) ||
-             IsMetadataOnlyNonFrameworkMethod(reduced)))
+             IsUnmodeledMetadataOnlySequenceExtension(reduced)))
         {
             return true;
         }
+
+        // Known-safe read-only framework observers (Console.WriteLine,
+        // string.Format/Concat/Join, Debug.WriteLine, StringBuilder.Append,
+        // object/ValueType/ValueTuple Equals/GetHashCode/ToString) only format or
+        // compare the value and never store or forward it.
+        if (IsKnownSafeMetadataObserver(method))
+            return false;
 
         for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
         {
@@ -3345,7 +3356,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             if (MetadataOnlyCalleeCanObserveStorage(
                     method, parameter, argument, semanticModel, cancellationToken) &&
-                !IsCollectionInsertionInvocation(invocation, method))
+                !IsModeledCollectionInsertionArgument(
+                    invocation, method, parameter, aliases, semanticModel, cancellationToken))
             {
                 return true;
             }
@@ -3405,6 +3417,67 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     constructor, parameter, argument, semanticModel, cancellationToken))
             {
                 return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// <c>new ConcurrentBag&lt;object&gt; { point }</c> / <c>new ExternalBag { point }</c>:
+    /// a collection initializer element bound to a metadata-only <c>Add</c> whose
+    /// parameter is opaque (<c>object</c>/<c>dynamic</c>/interface/type parameter)
+    /// may store or forward the boxed tuple anywhere, so it refuses unless the
+    /// collection type is one the carrier tracking explicitly models
+    /// (<see cref="IsModeledCarrierStore"/>).
+    /// </summary>
+    private static bool CollectionInitializerHasUnresolvedCalleeEscape(
+        BaseObjectCreationExpressionSyntax objectCreation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (objectCreation.Initializer is not { } initializer ||
+            !initializer.IsKind(SyntaxKind.CollectionInitializerExpression))
+        {
+            return false;
+        }
+
+        foreach (var element in initializer.Expressions)
+        {
+            var parts = element is InitializerExpressionSyntax complexElement &&
+                        complexElement.IsKind(SyntaxKind.ComplexElementInitializerExpression)
+                ? complexElement.Expressions.ToArray()
+                : new[] { element };
+
+            if (!parts.Any(part => ExpressionReferencesStorageAlias(part, aliases, semanticModel, cancellationToken)))
+                continue;
+
+            if (semanticModel.GetCollectionInitializerSymbolInfo(element, cancellationToken).Symbol
+                is not IMethodSymbol addMethod)
+            {
+                return true;
+            }
+
+            for (var i = 0; i < parts.Length; i++)
+            {
+                if (!ExpressionReferencesStorageAlias(parts[i], aliases, semanticModel, cancellationToken))
+                    continue;
+
+                var parameter = i < addMethod.Parameters.Length
+                    ? addMethod.Parameters[i]
+                    : addMethod.Parameters.Length > 0 && addMethod.Parameters[^1].IsParams
+                        ? addMethod.Parameters[^1]
+                        : null;
+                if (parameter == null)
+                    return true;
+
+                if (MetadataOnlyCalleeCanObserveStorage(
+                        addMethod, parameter, parts[i], semanticModel, cancellationToken) &&
+                    !IsModeledCarrierStore(addMethod, parameter))
+                {
+                    return true;
+                }
             }
         }
 
@@ -3701,8 +3774,67 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                    ExpressionReferencesStorageAlias(assignment.Right, aliases, semanticModel, cancellationToken);
         }
 
-        return !CanPreciselyAnalyzeCalleeBody(setter) &&
-               ExpressionReferencesStorageAlias(assignment.Right, aliases, semanticModel, cancellationToken);
+        if (!ExpressionReferencesStorageAlias(assignment.Right, aliases, semanticModel, cancellationToken))
+            return false;
+
+        if (!CanPreciselyAnalyzeCalleeBody(setter))
+            return true;
+
+        // Metadata-only setters (array.SetValue's indexer cousins, external
+        // holders, ConcurrentDictionary[key] = point): an opaque value parameter
+        // may store or forward the boxed tuple, so refuse unless the indexed
+        // container is a modeled carrier collection whose receiver is tracked
+        // (Codex P1 on #3441, PRRT_kwDORD0nYs6087Qc).
+        if (!setter.Parameters.IsDefaultOrEmpty &&
+            MetadataOnlyCalleeCanObserveStorage(
+                setter, setter.Parameters[^1], assignment.Right, semanticModel, cancellationToken))
+        {
+            var left = UnwrapParenthesesAndNullForgiving(assignment.Left);
+            var container = left is ElementAccessExpressionSyntax indexed ? indexed.Expression : null;
+            return container == null ||
+                   !IsModeledCarrierStore(setter, setter.Parameters[^1]) ||
+                   !ReceiverIsTrackedAlias(container, aliases, semanticModel, cancellationToken);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// <c>table[point]</c> / <c>cache[point] = 1</c> on a metadata-only indexer:
+    /// a storage-bearing index argument converted to an opaque key parameter may be
+    /// stored or handed to a comparer, so it follows the same metadata rule as
+    /// ordinary call arguments (no indexer keys are modeled carriers).
+    /// </summary>
+    private static bool MetadataIndexerArgumentHasUnresolvedCalleeEscape(
+        SyntaxNode node,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (node is not ElementAccessExpressionSyntax elementAccess ||
+            semanticModel.GetSymbolInfo(elementAccess, cancellationToken).Symbol
+                is not IPropertySymbol { IsIndexer: true } indexer ||
+            (indexer.GetMethod ?? indexer.SetMethod) is not { } accessor)
+        {
+            return false;
+        }
+
+        var arguments = elementAccess.ArgumentList.Arguments;
+        for (var i = 0; i < arguments.Count; i++)
+        {
+            if (!ExpressionReferencesStorageAlias(arguments[i].Expression, aliases, semanticModel, cancellationToken))
+                continue;
+
+            var parameter = ResolveInvocationParameter(accessor, arguments[i], i);
+            if (parameter == null ||
+                MetadataOnlyCalleeCanObserveStorage(
+                    accessor, parameter, arguments[i], semanticModel, cancellationToken))
+            {
+                return accessor.OriginalDefinition.DeclaringSyntaxReferences.IsDefaultOrEmpty;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -3840,14 +3972,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// True when <paramref name="method"/> has no declaring syntax (no body for alias
-    /// propagation to inspect) and does not come from a framework assembly.
+    /// True when <paramref name="method"/> is a metadata-only (no declaring syntax)
+    /// sequence extension other than the LINQ <c>Enumerable</c> /
+    /// <c>MemoryExtensions</c> operators whose results receiver propagation tracks.
     /// </summary>
-    private static bool IsMetadataOnlyNonFrameworkMethod(IMethodSymbol method)
+    private static bool IsUnmodeledMetadataOnlySequenceExtension(IMethodSymbol method)
     {
         var original = (method.ReducedFrom ?? method).OriginalDefinition;
-        return original.DeclaringSyntaxReferences.IsDefaultOrEmpty &&
-               !IsFrameworkAssembly(original.ContainingAssembly);
+        if (!original.DeclaringSyntaxReferences.IsDefaultOrEmpty)
+            return false;
+
+        return GetMetadataName(original.ContainingType) is not
+            ("System.Linq.Enumerable" or "System.MemoryExtensions");
     }
 
     /// <summary>
@@ -3876,7 +4012,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// target we can attribute this call to. Abstract/interface/open-virtual dispatch
     /// maps to the wrong parameter symbol for implementation bodies, so those escape.
     /// Metadata-only callees are gated separately by
-    /// <see cref="MetadataOnlyCalleeCanObserveStorage"/>.
+    /// <c>MetadataOnlyCalleeCanObserveStorage</c>.
     /// </summary>
     private static bool CanPreciselyAnalyzeCalleeBody(IMethodSymbol method)
     {
@@ -3899,38 +4035,48 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// True when converted storage is handed to a callee that exists only in
-    /// metadata (no declaring syntax, so there is no body for alias propagation to
-    /// inspect) through a parameter that could keep observing the boxed tuple:
-    /// <c>ref</c>/<c>in</c>/<c>out</c>, <c>object</c>/<c>dynamic</c>/<c>ValueType</c>/
-    /// interface, or a generic type parameter. An external <c>Use(dynamic copy)</c>
-    /// doing <c>Bump(ref copy.Item1)</c> works on a boxed <c>ValueTuple</c> but fails
-    /// after conversion (Codex P1 on #3441, PRRT_kwDORD0nYs608hph). Arguments that
-    /// only pass a scalar element (<c>point.X</c>) and framework (BCL) callees are
-    /// not affected.
+    /// Sound conservative rule for callees that exist only in metadata (no
+    /// declaring syntax, so there is no body for alias propagation to inspect):
+    /// when a storage-bearing argument (the converted tuple, a value derived from
+    /// it, or a carrier object/collection holding it) is converted to an opaque
+    /// parameter — <c>ref</c>/<c>in</c>/<c>out</c>, <c>object</c>/<c>dynamic</c>/
+    /// <c>ValueType</c>/interface, or a generic type parameter — the callee may
+    /// store or forward the boxed tuple anywhere (<c>Array.SetValue</c>,
+    /// <c>ThreadPool.QueueUserWorkItem</c> state, <c>ConcurrentBag.Add</c>,
+    /// <c>Task.FromResult</c>, …) where <c>dynamic copy = …; Bump(ref copy.Item1)</c>
+    /// works on a boxed <c>ValueTuple</c> but fails after conversion. This applies
+    /// to framework and third-party assemblies alike (Codex P1s on #3441,
+    /// PRRT_kwDORD0nYs608hph / …6087Qc / …6087Qf). Exemptions are explicit: the
+    /// read-only <see cref="IsKnownSafeMetadataObserver"/> allowlist, modeled
+    /// carrier stores (<see cref="IsModeledCollectionInsertionArgument"/>), and
+    /// detached scalar arguments such as <c>point.X</c>.
     /// </summary>
     private static bool MetadataOnlyCalleeCanObserveStorage(
         IMethodSymbol method,
         IParameterSymbol parameter,
         ArgumentSyntax argument,
         SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        MetadataOnlyCalleeCanObserveStorage(
+            method, parameter, argument.Expression, semanticModel, cancellationToken);
+
+    private static bool MetadataOnlyCalleeCanObserveStorage(
+        IMethodSymbol method,
+        IParameterSymbol parameter,
+        ExpressionSyntax argumentExpression,
+        SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
         var original = (method.ReducedFrom ?? method).OriginalDefinition;
-        if (!original.DeclaringSyntaxReferences.IsDefaultOrEmpty ||
-            IsFrameworkAssembly(original.ContainingAssembly))
-        {
+        if (!original.DeclaringSyntaxReferences.IsDefaultOrEmpty)
             return false;
-        }
 
-        var argumentType = semanticModel.GetTypeInfo(argument.Expression, cancellationToken).Type;
-        if (argumentType != null &&
-            !argumentType.IsTupleType &&
-            !IsOpaqueCarrierType(argumentType) &&
-            argumentType is not ITypeParameterSymbol)
-        {
+        if (IsKnownSafeMetadataObserver(method))
             return false;
-        }
+
+        var argumentType = semanticModel.GetTypeInfo(argumentExpression, cancellationToken).Type;
+        if (argumentType != null && IsDetachedScalarType(argumentType))
+            return false;
 
         return parameter.RefKind != RefKind.None ||
                IsOpaqueCarrierType(parameter.Type) ||
@@ -3939,37 +4085,147 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// Framework (BCL) assemblies: <c>Console.WriteLine(object)</c>,
-    /// <c>List&lt;object&gt;.Add</c>, string formatting and similar APIs observe
-    /// values only through <c>ToString</c>/<c>Equals</c>/<c>GetHashCode</c> or
-    /// return them through tracked containers, never by dynamically binding tuple
-    /// element fields by reference, so they keep converting.
+    /// Values that cannot embed or refer to the converted tuple: primitives,
+    /// <c>string</c>, <c>decimal</c>, <c>DateTime</c> and enums
+    /// (<c>point.X</c>, <c>point.ToString()</c>). Tuples, opaque values, type
+    /// parameters, other structs and reference types (possible carriers such as
+    /// <c>List&lt;object&gt;</c>) are storage-bearing.
     /// </summary>
-    private static bool IsFrameworkAssembly(IAssemblySymbol? assembly)
+    private static bool IsDetachedScalarType(ITypeSymbol type)
     {
-        var name = assembly?.Identity.Name;
-        if (string.IsNullOrEmpty(name))
+        if (type.IsTupleType || type is ITypeParameterSymbol || IsOpaqueCarrierType(type))
             return false;
 
-        return name is "mscorlib" or "netstandard" or "System" ||
-               name.StartsWith("System.", StringComparison.Ordinal) ||
-               name.StartsWith("Microsoft.", StringComparison.Ordinal);
+        if (type.TypeKind == TypeKind.Enum)
+            return true;
+
+        return type.SpecialType is
+            SpecialType.System_Boolean or SpecialType.System_Char or
+            SpecialType.System_SByte or SpecialType.System_Byte or
+            SpecialType.System_Int16 or SpecialType.System_UInt16 or
+            SpecialType.System_Int32 or SpecialType.System_UInt32 or
+            SpecialType.System_Int64 or SpecialType.System_UInt64 or
+            SpecialType.System_Single or SpecialType.System_Double or
+            SpecialType.System_Decimal or SpecialType.System_String or
+            SpecialType.System_IntPtr or SpecialType.System_UIntPtr or
+            SpecialType.System_DateTime;
     }
 
     /// <summary>
-    /// <c>list.Add(point)</c>-style insertions are tracked precisely by
-    /// <see cref="TryAddCollectionInsertionReceiverAlias"/> (the receiver becomes an
-    /// alias), so the metadata-only refusal does not apply to them.
+    /// Small explicit allowlist of metadata APIs that only read a value (format it,
+    /// compare it, hash it) and never store or forward the instance itself:
+    /// <c>Console.Write/WriteLine</c>, <c>string.Format</c> (without an
+    /// <c>IFormatProvider</c>, whose custom formatter would receive the object),
+    /// <c>string.Concat/Join</c>, <c>Debug.Write/WriteLine/WriteIf/WriteLineIf/Print</c>,
+    /// <c>StringBuilder.Append</c>, and <c>ToString/Equals/GetHashCode</c> on
+    /// <c>object</c>/<c>ValueType</c>/<c>ValueTuple</c> plus <c>object.ReferenceEquals</c>.
+    /// <c>Trace</c> is excluded because it forwards the object to listeners.
     /// </summary>
-    private static bool IsCollectionInsertionInvocation(
-        InvocationExpressionSyntax invocation,
-        IMethodSymbol method) =>
-        invocation.Expression is MemberAccessExpressionSyntax
+    private static bool IsKnownSafeMetadataObserver(IMethodSymbol method)
+    {
+        var original = (method.ReducedFrom ?? method).OriginalDefinition;
+        if (!original.DeclaringSyntaxReferences.IsDefaultOrEmpty || original.ReducedFrom != null)
+            return false;
+
+        if (method.ReducedFrom != null || original.IsExtensionMethod)
+            return false;
+
+        var typeName = GetMetadataName(original.ContainingType);
+        var name = original.Name;
+        return typeName switch
         {
-            Name.Identifier.ValueText: "Add" or "AddRange" or "Insert" or "InsertRange"
-                or "Push" or "Enqueue" or "TryAdd" or "AddFirst" or "AddLast"
-        } &&
-        (method.ReducedFrom != null || !method.IsStatic);
+            "System.Console" => name is "Write" or "WriteLine",
+            "System.String" => name is "Concat" or "Join" ||
+                               (name == "Format" && !original.Parameters.Any(IsFormatProviderParameter)),
+            "System.Diagnostics.Debug" => name is "Write" or "WriteLine" or "WriteIf" or "WriteLineIf" or "Print",
+            "System.Text.StringBuilder" => name == "Append" && !original.Parameters.Any(IsFormatProviderParameter),
+            "System.Object" => name is "ToString" or "Equals" or "GetHashCode" or "ReferenceEquals",
+            "System.ValueType" => name is "ToString" or "Equals" or "GetHashCode",
+            _ when typeName != null && typeName.StartsWith("System.ValueTuple", StringComparison.Ordinal) =>
+                name is "ToString" or "Equals" or "GetHashCode",
+            _ => false
+        };
+    }
+
+    private static bool IsFormatProviderParameter(IParameterSymbol parameter) =>
+        GetMetadataName(parameter.Type as INamedTypeSymbol) == "System.IFormatProvider";
+
+    private static string? GetMetadataName(INamedTypeSymbol? type)
+    {
+        if (type == null)
+            return null;
+
+        var ns = type.ContainingNamespace is { IsGlobalNamespace: false } containing
+            ? containing.ToDisplayString() + "."
+            : string.Empty;
+        return ns + type.MetadataName;
+    }
+
+    /// <summary>
+    /// Metadata collection types the carrier tracking explicitly models: values
+    /// stored through them are only read back through the tracked receiver
+    /// (indexer, <c>foreach</c>, <c>ToArray</c>, LINQ) and the type never hands
+    /// the stored value to a callback, comparer, event, or returned node.
+    /// <c>Dictionary&lt;K, V&gt;</c> qualifies only for the value position (its key
+    /// comparer observes keys). Everything else (<c>ConcurrentX</c>, <c>HashSet</c>,
+    /// sorted collections, <c>ObservableCollection</c>, <c>LinkedList</c> nodes,
+    /// <c>Array.SetValue</c>, …) refuses.
+    /// </summary>
+    private static bool IsModeledCarrierStore(IMethodSymbol method, IParameterSymbol parameter)
+    {
+        var original = method.OriginalDefinition;
+        var typeName = GetMetadataName(original.ContainingType?.OriginalDefinition);
+        if (original.IsStatic || parameter.RefKind != RefKind.None || parameter.IsParams)
+            return false;
+
+        var name = original.MethodKind is MethodKind.PropertySet ? "set_Item" : original.Name;
+        return typeName switch
+        {
+            "System.Collections.Generic.List`1" =>
+                name is "Add" or "Insert" or "AddRange" or "InsertRange" or "set_Item",
+            "System.Collections.Generic.Queue`1" => name == "Enqueue",
+            "System.Collections.Generic.Stack`1" => name == "Push",
+            "System.Collections.ArrayList" =>
+                name is "Add" or "Insert" or "AddRange" or "InsertRange" or "set_Item",
+            "System.Collections.Queue" => name == "Enqueue",
+            "System.Collections.Stack" => name == "Push",
+            "System.Collections.Generic.Dictionary`2" =>
+                name is "Add" or "TryAdd" or "set_Item" &&
+                parameter.Ordinal == original.Parameters.Length - 1 &&
+                original.Parameters.Length == 2,
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// <c>list.Add(point)</c> on a modeled carrier collection
+    /// (<see cref="IsModeledCarrierStore"/>) whose receiver is a tracked alias:
+    /// <see cref="TryAddCollectionInsertionReceiverAlias"/> already made the
+    /// receiver a carrier, so every read back stays gated.
+    /// </summary>
+    private static bool IsModeledCollectionInsertionArgument(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol method,
+        IParameterSymbol parameter,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        method.ReducedFrom == null &&
+        invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
+        IsModeledCarrierStore(method, parameter) &&
+        ReceiverIsTrackedAlias(memberAccess.Expression, aliases, semanticModel, cancellationToken);
+
+    private static bool ReceiverIsTrackedAlias(
+        ExpressionSyntax receiver,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        receiver = UnwrapParenthesesAndNullForgiving(receiver);
+        var symbol = semanticModel.GetSymbolInfo(receiver, cancellationToken).Symbol;
+        return symbol is ILocalSymbol or IParameterSymbol or IFieldSymbol or IPropertySymbol &&
+               aliases.Contains(symbol);
+    }
 
     private static bool StoredDelegateArgumentMappingIsUnresolved(
         InvocationExpressionSyntax invocation,

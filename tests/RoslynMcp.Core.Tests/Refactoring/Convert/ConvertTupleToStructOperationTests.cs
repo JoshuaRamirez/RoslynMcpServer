@@ -8090,8 +8090,11 @@ public class ConvertTupleToStructOperationTests
     }
 
 
-    // Codex P2 on #3441: Dictionary<object, tuple>.Add(point, …) must not taint
-    // the receiver via the unrelated object key — value reads stay tuples.
+    // Codex P2 on #3441 originally kept Dictionary<object, tuple>.Add(point, …)
+    // converting. Under the sound metadata rule (Codex P1s PRRT_kwDORD0nYs6087Qc /
+    // …6087Qf) a converted tuple boxed into the object KEY of a metadata collection
+    // is refused: the key is stored, handed to the key comparer, and readable back
+    // through dict.Keys without the receiver being a tracked carrier.
     [SkippableTheory]
     [InlineData(false, "dict.Add(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
     [InlineData(true, "dict.Add(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
@@ -8099,7 +8102,7 @@ public class ConvertTupleToStructOperationTests
     [InlineData(true, "dict.Add(point, (X: 3, Y: 4)); var copy = dict.Values.First(); Bump(ref copy.X);")]
     [InlineData(false, "dict.TryAdd(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
     [InlineData(true, "dict.TryAdd(point, (X: 3, Y: 4)); var copy = dict[point]; Bump(ref copy.X);")]
-    public async Task ConvertTupleToStruct_DictionaryObjectKeyInsertion_DoesNotTaintValues_Succeeds(bool asRecord, string statements)
+    public async Task ConvertTupleToStruct_DictionaryObjectKeyInsertion_ThrowsAndWritesNothing(bool asRecord, string statements)
     {
         var source = $$"""
             using System.Collections.Generic;
@@ -8123,32 +8126,32 @@ public class ConvertTupleToStructOperationTests
 
         AssertTupleContainerCompiles(source);
         await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
         var operation = new ConvertTupleToStructOperation(workspace.Context);
 
-        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
-        {
-            SourceFile = workspace.SourcePath,
-            Line = 12,
-            NewTypeName = "Point",
-            AsRecord = asRecord
-        });
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
 
-        Assert.True(result.Success);
-        var text = await File.ReadAllTextAsync(workspace.SourcePath);
-        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
-        Assert.Contains("Bump(ref copy.X)", text, StringComparison.Ordinal);
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
-    // Codex P2 on #3441 (PRRT_kwDORD0nYs600gmf): collection-initializer entries
-    // bind to Add parameters — { point, value } only puts point in the object key,
-    // so refs into dictionary values stay tuples. (Codex's literal ref dict[point].X
-    // is CS1612 — indexer values are not variables — so read a copy first.)
+    // Codex P2 on #3441 (PRRT_kwDORD0nYs600gmf) originally kept { { point, value } }
+    // converting because point only lands in the object key. Under the sound metadata
+    // rule (Codex P1s PRRT_kwDORD0nYs6087Qc / …6087Qf) a converted tuple boxed into a
+    // metadata dictionary key is refused (stored + observed by the key comparer).
     [SkippableTheory]
     [InlineData(false, "Dictionary<object, (int X, int Y)> dict = new() { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
     [InlineData(true, "Dictionary<object, (int X, int Y)> dict = new() { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
     [InlineData(false, "var dict = new Dictionary<object, (int X, int Y)> { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
     [InlineData(true, "var dict = new Dictionary<object, (int X, int Y)> { { point, (X: 3, Y: 4) } }; var copy = dict[point]; Bump(ref copy.X);")]
-    public async Task ConvertTupleToStruct_DictionaryInitializerObjectKey_DoesNotTaintValues_Succeeds(bool asRecord, string statements)
+    public async Task ConvertTupleToStruct_DictionaryInitializerObjectKey_ThrowsAndWritesNothing(bool asRecord, string statements)
     {
         var source = $$"""
             using System.Collections.Generic;
@@ -8171,20 +8174,20 @@ public class ConvertTupleToStructOperationTests
 
         AssertTupleContainerCompiles(source);
         await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
         var operation = new ConvertTupleToStructOperation(workspace.Context);
 
-        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
-        {
-            SourceFile = workspace.SourcePath,
-            Line = 12,
-            NewTypeName = "Point",
-            AsRecord = asRecord
-        });
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 12,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
 
-        Assert.True(result.Success);
-        var text = await File.ReadAllTextAsync(workspace.SourcePath);
-        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
-        Assert.Contains(".X)", text, StringComparison.Ordinal);
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
     // Codex P2 on #3441: still refuse when the converted tuple is the dictionary value.
@@ -10322,8 +10325,8 @@ public class ConvertTupleToStructOperationTests
     }
 
     // Companion to PRRT_kwDORD0nYs608hph: metadata-only callees that only receive a
-    // scalar element, and framework (BCL) callees such as Console.WriteLine(object) /
-    // List<object>.Add, still convert.
+    // scalar element, allowlisted read-only observers such as Console.WriteLine(object),
+    // and modeled carrier stores such as List<object>.Add on a tracked local still convert.
     [SkippableTheory]
     [InlineData(false, "var doubled = Ext.Twice(point.X);")]
     [InlineData(true, "var doubled = Ext.Twice(point.X);")]
@@ -10526,5 +10529,141 @@ public class ConvertTupleToStructOperationTests
 
         Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    private const string FrameworkMetadataTemplate = """
+        using System;
+        using System.Collections;
+        using System.Collections.Concurrent;
+        using System.Collections.Generic;
+        using System.Diagnostics;
+        using System.Text;
+        using System.Threading;
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public static class Worker
+        {
+            static void Bump(ref dynamic v) => v++;
+
+            public static object Run()
+            {
+                var point = (X: 1, Y: 2);
+                USE
+                return point;
+            }
+        }
+        """;
+
+    private static async Task AssertFrameworkMetadataUseRefusedAsync(bool asRecord, string use)
+    {
+        var source = FrameworkMetadataTemplate.Replace("USE", use);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 18,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs6087Qc): Array.SetValue(point, 0) is not a
+    // modeled insertion and used to be BCL-exempt, so values never became a carrier;
+    // dynamic copy = values.GetValue(0)!; Bump(ref copy.X) then fails after conversion.
+    // Framework callees no longer get a blanket exemption.
+    [SkippableTheory]
+    [InlineData(false, "Array values = new object[1]; values.SetValue(point, 0); dynamic copy = values.GetValue(0)!; Bump(ref copy.X);")]
+    [InlineData(true, "Array values = new object[1]; values.SetValue(point, 0); dynamic copy = values.GetValue(0)!; Bump(ref copy.X);")]
+    [InlineData(false, "var values = new object[1]; values.SetValue(point, 0); dynamic copy = values.GetValue(0)!; Bump(ref copy.Item1);")]
+    [InlineData(true, "var values = new object[1]; values.SetValue(point, 0); dynamic copy = values.GetValue(0)!; Bump(ref copy.Item1);")]
+    public async Task ConvertTupleToStruct_ArraySetValueOpaqueStore_ThrowsAndWritesNothing(bool asRecord, string use) =>
+        await AssertFrameworkMetadataUseRefusedAsync(asRecord, use);
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs6087Qf): framework APIs that forward an opaque
+    // object state to a callback (ThreadPool.QueueUserWorkItem, Timer, Task.Factory.StartNew)
+    // hand the boxed tuple to code that can Bump(ref copy.Item1).
+    [SkippableTheory]
+    [InlineData(false, "ThreadPool.QueueUserWorkItem(state => { dynamic copy = state!; Bump(ref copy.Item1); }, point);")]
+    [InlineData(true, "ThreadPool.QueueUserWorkItem(state => { dynamic copy = state!; Bump(ref copy.Item1); }, point);")]
+    [InlineData(false, "using var timer = new Timer(state => { dynamic copy = state!; Bump(ref copy.Item1); }, point, 0, -1);")]
+    [InlineData(true, "using var timer = new Timer(state => { dynamic copy = state!; Bump(ref copy.Item1); }, point, 0, -1);")]
+    [InlineData(false, "Task.Factory.StartNew(state => { dynamic copy = state!; Bump(ref copy.Item1); }, point).Wait();")]
+    [InlineData(true, "Task.Factory.StartNew(state => { dynamic copy = state!; Bump(ref copy.Item1); }, point).Wait();")]
+    public async Task ConvertTupleToStruct_QueueUserWorkItemStateCallback_ThrowsAndWritesNothing(bool asRecord, string use) =>
+        await AssertFrameworkMetadataUseRefusedAsync(asRecord, use);
+
+    // Sound metadata rule (PRRT_kwDORD0nYs6087Qc / …6087Qf): any framework API that
+    // stores or forwards the boxed tuple through an opaque/generic/by-ref parameter
+    // refuses unless it is a modeled carrier store on a tracked receiver.
+    [SkippableTheory]
+    [InlineData(false, "var bag = new ConcurrentBag<object>(); bag.Add(point);")]
+    [InlineData(true, "var bag = new ConcurrentBag<object>(); bag.Add(point);")]
+    [InlineData(false, "var bag = new ConcurrentBag<object> { point };")]
+    [InlineData(true, "var bag = new ConcurrentBag<object> { point };")]
+    [InlineData(false, "var set = new HashSet<object>(); set.Add(point);")]
+    [InlineData(true, "var set = new HashSet<object>(); set.Add(point);")]
+    [InlineData(false, "var task = Task.FromResult<object>(point);")]
+    [InlineData(true, "var task = Task.FromResult<object>(point);")]
+    [InlineData(false, "object slot = null!; Interlocked.Exchange(ref slot, point);")]
+    [InlineData(true, "object slot = null!; Interlocked.Exchange(ref slot, point);")]
+    [InlineData(false, "var boxed = Tuple.Create<object>(point);")]
+    [InlineData(true, "var boxed = Tuple.Create<object>(point);")]
+    [InlineData(false, "var list = new List<object>(); list.Add(point); ThreadPool.QueueUserWorkItem(s => { }, list);")]
+    [InlineData(true, "var list = new List<object>(); list.Add(point); ThreadPool.QueueUserWorkItem(s => { }, list);")]
+    [InlineData(false, "var map = new ConcurrentDictionary<int, object>(); map[0] = point;")]
+    [InlineData(true, "var map = new ConcurrentDictionary<int, object>(); map[0] = point;")]
+    [InlineData(false, "var map = new Dictionary<int, object>(); map.Add(0, point); dynamic copy = map[0]; Bump(ref copy.Item1);")]
+    [InlineData(true, "var map = new Dictionary<int, object>(); map.Add(0, point); dynamic copy = map[0]; Bump(ref copy.Item1);")]
+    [InlineData(false, "var linked = new LinkedList<object>(); linked.AddFirst(point);")]
+    [InlineData(true, "var linked = new LinkedList<object>(); linked.AddFirst(point);")]
+    public async Task ConvertTupleToStruct_FrameworkOpaqueStoreOrForward_ThrowsAndWritesNothing(bool asRecord, string use) =>
+        await AssertFrameworkMetadataUseRefusedAsync(asRecord, use);
+
+    // Allowlist guard for the sound metadata rule: read-only, non-storing,
+    // non-forwarding framework observers and modeled carrier stores still convert.
+    [SkippableTheory]
+    [InlineData(false, "Console.WriteLine(point);")]
+    [InlineData(true, "Console.Write(point);")]
+    [InlineData(false, "Console.WriteLine(\"{0} {1}\", point, point);")]
+    [InlineData(true, "var text = string.Format(\"{0}\", point);")]
+    [InlineData(false, "var text = string.Concat(point, \"!\");")]
+    [InlineData(true, "var text = string.Join(\", \", point, point);")]
+    [InlineData(false, "var text = $\"{point}\";")]
+    [InlineData(true, "Debug.WriteLine(point);")]
+    [InlineData(false, "var builder = new StringBuilder().Append(point);")]
+    [InlineData(true, "var same = object.Equals(point, point);")]
+    [InlineData(false, "var same = point.Equals((object)point);")]
+    [InlineData(true, "var hash = point.GetHashCode(); var text = point.ToString();")]
+    [InlineData(false, "var list = new List<object>(); list.Add(point);")]
+    [InlineData(true, "var queue = new Queue<object>(); queue.Enqueue(point);")]
+    [InlineData(false, "var map = new Dictionary<object, object>(); map.Add(0, point);")]
+    [InlineData(true, "var map = new Dictionary<object, object>(); map.Add(0, point);")]
+    [InlineData(true, "var list = new List<object>(); list.Add(point); dynamic copy = list[0]; Console.WriteLine(copy.Item1);")]
+    public async Task ConvertTupleToStruct_FrameworkReadOnlyAllowlist_Succeeds(bool asRecord, string use)
+    {
+        var source = FrameworkMetadataTemplate.Replace("USE", use);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 18,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
     }
 }
