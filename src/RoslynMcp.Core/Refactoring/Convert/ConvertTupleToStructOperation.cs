@@ -6911,7 +6911,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// True when a function body returns (or <c>yield return</c>s) converted storage,
-    /// including <c>ref return</c> expressions.
+    /// including <c>ref return</c> expressions and aggregate member reads that
+    /// extract tracked storage (e.g. <c>(point, 0).Item1</c> /
+    /// <c>new { Value = point }.Value</c>).
     /// </summary>
     private static bool FunctionReturnsConvertedStorage(
         ExpressionSyntax? expressionBody,
@@ -6920,10 +6922,24 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
+        SyntaxNode? root = null;
         foreach (var returned in EnumerateFunctionReturnExpressions(expressionBody, block))
         {
             if (ExpressionReferencesStorageAlias(
                     returned, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
+
+            // Get => (point, 0).Item1 / new { Value = point }.Value /
+            // boxes[0].Value — assignment
+            // propagation already resolves these member reads; return
+            // expressions must too or the returning member stays untracked
+            // (Codex P1 on #3441, PRRT_kwDORD0nYs60-Q9H).
+            root ??= returned.SyntaxTree.GetRoot(cancellationToken);
+            if (TryResolveAggregateMemberRead(
+                    returned, aliases, semanticModel, root, cancellationToken, out var memberSource) &&
+                ExpressionReferencesStorageAlias(memberSource, aliases, semanticModel, cancellationToken))
             {
                 return true;
             }

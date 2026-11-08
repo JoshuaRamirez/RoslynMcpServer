@@ -10249,6 +10249,89 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains("new Point", text, StringComparison.Ordinal);
     }
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs60-Q9H): returning tracked storage extracted
+    // from an aggregate must mark the method / property / indexer / operator so call
+    // sites stay gated. ExpressionReferencesStorageAlias alone does not resolve
+    // (point, 0).Item1 / new { Value = point }.Value / collection element member
+    // reads the way assignment propagation already does.
+    [SkippableTheory]
+    [InlineData(false, "static dynamic point = (1, 2);\n        static dynamic Get => (point, 0).Item1;", "dynamic copy = Get; Bump(ref copy.Item1);")]
+    [InlineData(true, "static dynamic point = (1, 2);\n        static dynamic Get => (point, 0).Item1;", "dynamic copy = Get; Bump(ref copy.Item1);")]
+    [InlineData(false, "static dynamic point = (1, 2);\n        static dynamic Get() => (point, 0).Item1;", "dynamic copy = Get(); Bump(ref copy.Item1);")]
+    [InlineData(true, "static dynamic point = (1, 2);\n        static dynamic Get() => (point, 0).Item1;", "dynamic copy = Get(); Bump(ref copy.Item1);")]
+    [InlineData(false, "static dynamic point = (1, 2);\n        static dynamic Get() { return (point, 0).Item1; }", "dynamic copy = Get(); Bump(ref copy.Item1);")]
+    [InlineData(true, "static dynamic point = (1, 2);\n        static dynamic Get() { return (point, 0).Item1; }", "dynamic copy = Get(); Bump(ref copy.Item1);")]
+    [InlineData(false, "static dynamic point = (1, 2);\n        static dynamic Get { get { return (point, 0).Item1; } }", "dynamic copy = Get; Bump(ref copy.Item1);")]
+    [InlineData(true, "static dynamic point = (1, 2);\n        static dynamic Get { get => (point, 0).Item1; }", "dynamic copy = Get; Bump(ref copy.Item1);")]
+    [InlineData(false, "static dynamic point = (1, 2);\n        static dynamic Get => new { Value = point }.Value;", "dynamic copy = Get; Bump(ref copy.Item1);")]
+    [InlineData(true, "static dynamic point = (1, 2);\n        static dynamic Get => new { Value = point }.Value;", "dynamic copy = Get; Bump(ref copy.Item1);")]
+    [InlineData(false, "static dynamic point = (1, 2);\n        static dynamic boxes = new[] { new { Value = point } };\n        static dynamic Get => boxes[0].Value;", "dynamic copy = Get; Bump(ref copy.Item1);")]
+    [InlineData(true, "static dynamic point = (1, 2);\n        static dynamic boxes = new[] { new { Value = point } };\n        static dynamic Get => boxes[0].Value;", "dynamic copy = Get; Bump(ref copy.Item1);")]
+    [InlineData(false, "static dynamic point = (1, 2);\n        static dynamic wrapped = (point, 0);\n        static dynamic Get => wrapped.Item1;", "dynamic copy = Get; Bump(ref copy.Item1);")]
+    [InlineData(true, "static dynamic point = (1, 2);\n        static dynamic box = new { Value = point };\n        static dynamic Get => box.Value;", "dynamic copy = Get; Bump(ref copy.Item1);")]
+    [InlineData(false, "sealed class Holder { public dynamic point = (1, 2);\n            public dynamic this[int i] => (point, 0).Item1; }", "var holder = new Holder(); dynamic copy = holder[0]; Bump(ref copy.Item1);")]
+    [InlineData(true, "sealed class Holder { public dynamic point = (1, 2);\n            public dynamic this[int i] => (point, 0).Item1; }", "var holder = new Holder(); dynamic copy = holder[0]; Bump(ref copy.Item1);")]
+    [InlineData(false, "sealed class Holder { public dynamic point = (1, 2);\n            public static dynamic operator +(Holder h, int n) => (h.point, 0).Item1; }", "var holder = new Holder(); dynamic copy = holder + 0; Bump(ref copy.Item1);")]
+    [InlineData(true, "sealed class Holder { public dynamic point = (1, 2);\n            public static dynamic operator +(Holder h, int n) => (h.point, 0).Item1; }", "var holder = new Holder(); dynamic copy = holder + 0; Bump(ref copy.Item1);")]
+    [InlineData(false, "static dynamic point = (1, 2);", "dynamic copy = Local(); Bump(ref copy.Item1); static dynamic Local() => (point, 0).Item1;")]
+    [InlineData(true, "static dynamic point = (1, 2);", "Func<dynamic> get = () => (point, 0).Item1; dynamic copy = get(); Bump(ref copy.Item1);")]
+    public async Task ConvertTupleToStruct_AggregateMemberReturnRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string declaration,
+        string use)
+    {
+        var source = OpaqueReturnTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 8,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Companion to PRRT_kwDORD0nYs60-Q9H: returning an unrelated aggregate member
+    // (not the converted storage) still converts.
+    [SkippableTheory]
+    [InlineData(false, "static dynamic point = (1, 2);\n        static dynamic Get => (point, \"ok\").Item2;", "dynamic copy = Get; Console.WriteLine(copy);")]
+    [InlineData(true, "static dynamic point = (1, 2);\n        static dynamic Get => (point, \"ok\").Item2;", "dynamic copy = Get; Console.WriteLine(copy);")]
+    [InlineData(false, "static dynamic point = (1, 2);\n        static dynamic Get => new { Value = point, Other = \"ok\" }.Other;", "dynamic copy = Get; Console.WriteLine(copy);")]
+    [InlineData(true, "static dynamic point = (1, 2);\n        static dynamic Get => new { Value = point, Other = \"ok\" }.Other;", "dynamic copy = Get; Console.WriteLine(copy);")]
+    [InlineData(false, "static dynamic point = (1, 2);\n        static dynamic boxes = new[] { new { Value = point, Other = \"ok\" } };\n        static dynamic Get => boxes[0].Other;", "dynamic copy = Get; Console.WriteLine(copy);")]
+    [InlineData(true, "static dynamic point = (1, 2);\n        static dynamic boxes = new[] { new { Value = point, Other = \"ok\" } };\n        static dynamic Get => boxes[0].Other;", "dynamic copy = Get; Console.WriteLine(copy);")]
+    public async Task ConvertTupleToStruct_UnrelatedAggregateMemberReturn_Succeeds(
+        bool asRecord,
+        string declaration,
+        string use)
+    {
+        var source = OpaqueReturnTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 8,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("new Point", text, StringComparison.Ordinal);
+    }
+
     private const string MetadataCalleeExternalSource = """
         namespace ExternalLib;
 
