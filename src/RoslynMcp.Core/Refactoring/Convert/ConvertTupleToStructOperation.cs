@@ -3318,6 +3318,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             if (!CanPreciselyAnalyzeCalleeBody(method))
                 return true;
+
+            if (MetadataOnlyCalleeCanObserveStorage(
+                    method, parameter, argument, semanticModel, cancellationToken) &&
+                !IsCollectionInsertionInvocation(invocation, method))
+            {
+                return true;
+            }
         }
 
         return false;
@@ -3369,6 +3376,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             if (!CanPreciselyAnalyzeCalleeBody(constructor))
                 return true;
+
+            if (MetadataOnlyCalleeCanObserveStorage(
+                    constructor, parameter, argument, semanticModel, cancellationToken))
+            {
+                return true;
+            }
         }
 
         return false;
@@ -3418,6 +3431,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             if (!CanPreciselyAnalyzeCalleeBody(constructor))
                 return true;
+
+            if (MetadataOnlyCalleeCanObserveStorage(
+                    constructor, parameter, argument, semanticModel, cancellationToken))
+            {
+                return true;
+            }
         }
 
         return false;
@@ -3803,8 +3822,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// True when the statically bound <paramref name="method"/> is a single concrete
     /// target we can attribute this call to. Abstract/interface/open-virtual dispatch
     /// maps to the wrong parameter symbol for implementation bodies, so those escape.
-    /// Metadata-only ordinary methods still resolve a parameter mapping (existing
-    /// precise alias path); only uncertain dispatch is refused here.
+    /// Metadata-only callees are gated separately by
+    /// <see cref="MetadataOnlyCalleeCanObserveStorage"/>.
     /// </summary>
     private static bool CanPreciselyAnalyzeCalleeBody(IMethodSymbol method)
     {
@@ -3825,6 +3844,79 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         return true;
     }
+
+    /// <summary>
+    /// True when converted storage is handed to a callee that exists only in
+    /// metadata (no declaring syntax, so there is no body for alias propagation to
+    /// inspect) through a parameter that could keep observing the boxed tuple:
+    /// <c>ref</c>/<c>in</c>/<c>out</c>, <c>object</c>/<c>dynamic</c>/<c>ValueType</c>/
+    /// interface, or a generic type parameter. An external <c>Use(dynamic copy)</c>
+    /// doing <c>Bump(ref copy.Item1)</c> works on a boxed <c>ValueTuple</c> but fails
+    /// after conversion (Codex P1 on #3441, PRRT_kwDORD0nYs608hph). Arguments that
+    /// only pass a scalar element (<c>point.X</c>) and framework (BCL) callees are
+    /// not affected.
+    /// </summary>
+    private static bool MetadataOnlyCalleeCanObserveStorage(
+        IMethodSymbol method,
+        IParameterSymbol parameter,
+        ArgumentSyntax argument,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var original = (method.ReducedFrom ?? method).OriginalDefinition;
+        if (!original.DeclaringSyntaxReferences.IsDefaultOrEmpty ||
+            IsFrameworkAssembly(original.ContainingAssembly))
+        {
+            return false;
+        }
+
+        var argumentType = semanticModel.GetTypeInfo(argument.Expression, cancellationToken).Type;
+        if (argumentType != null &&
+            !argumentType.IsTupleType &&
+            !IsOpaqueCarrierType(argumentType) &&
+            argumentType is not ITypeParameterSymbol)
+        {
+            return false;
+        }
+
+        return parameter.RefKind != RefKind.None ||
+               IsOpaqueCarrierType(parameter.Type) ||
+               parameter.Type is ITypeParameterSymbol ||
+               parameter.OriginalDefinition.Type is ITypeParameterSymbol;
+    }
+
+    /// <summary>
+    /// Framework (BCL) assemblies: <c>Console.WriteLine(object)</c>,
+    /// <c>List&lt;object&gt;.Add</c>, string formatting and similar APIs observe
+    /// values only through <c>ToString</c>/<c>Equals</c>/<c>GetHashCode</c> or
+    /// return them through tracked containers, never by dynamically binding tuple
+    /// element fields by reference, so they keep converting.
+    /// </summary>
+    private static bool IsFrameworkAssembly(IAssemblySymbol? assembly)
+    {
+        var name = assembly?.Identity.Name;
+        if (string.IsNullOrEmpty(name))
+            return false;
+
+        return name is "mscorlib" or "netstandard" or "System" ||
+               name.StartsWith("System.", StringComparison.Ordinal) ||
+               name.StartsWith("Microsoft.", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>list.Add(point)</c>-style insertions are tracked precisely by
+    /// <see cref="TryAddCollectionInsertionReceiverAlias"/> (the receiver becomes an
+    /// alias), so the metadata-only refusal does not apply to them.
+    /// </summary>
+    private static bool IsCollectionInsertionInvocation(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol method) =>
+        invocation.Expression is MemberAccessExpressionSyntax
+        {
+            Name.Identifier.ValueText: "Add" or "AddRange" or "Insert" or "InsertRange"
+                or "Push" or "Enqueue" or "TryAdd" or "AddFirst" or "AddLast"
+        } &&
+        (method.ReducedFrom != null || !method.IsStatic);
 
     private static bool StoredDelegateArgumentMappingIsUnresolved(
         InvocationExpressionSyntax invocation,

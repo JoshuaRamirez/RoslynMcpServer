@@ -6992,6 +6992,53 @@ public class ConvertTupleToStructOperationTests
         }
 
 
+        /// <summary>
+        /// Single-project workspace whose project references a pre-compiled
+        /// <c>External.dll</c> built from <paramref name="externalSource"/>, so
+        /// callees declared there are metadata-only (no declaring syntax).
+        /// </summary>
+        public static async Task<TempWorkspace> CreateWithMetadataReferenceAsync(
+            string source,
+            string externalSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertTupleMeta_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+                .Split(Path.PathSeparator)
+                .Select(path => MetadataReference.CreateFromFile(path));
+            var compilation = CSharpCompilation.Create(
+                "External",
+                [CSharpSyntaxTree.ParseText(externalSource)],
+                references,
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            var externalPath = Path.Combine(directory, "External.dll");
+            var emit = compilation.Emit(externalPath);
+            Assert.True(emit.Success, string.Join(Environment.NewLine, emit.Diagnostics));
+
+            var projectPath = Path.Combine(directory, "TestApp.csproj");
+            await File.WriteAllTextAsync(projectPath, $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <ImplicitUsings>enable</ImplicitUsings>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Reference Include="External">
+                      <HintPath>{externalPath}</HintPath>
+                    </Reference>
+                  </ItemGroup>
+                </Project>
+                """);
+
+            var sourcePath = Path.Combine(directory, "Worker.cs");
+            await File.WriteAllTextAsync(sourcePath, source);
+            return await LoadAsync(directory, projectPath, sourcePath);
+        }
+
         public static async Task<TempWorkspace> CreateReferencingConsumerAsync(
             string originLangVersion,
             string consumerLangVersion)
@@ -10197,5 +10244,114 @@ public class ConvertTupleToStructOperationTests
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
         Assert.Contains("new Point", text, StringComparison.Ordinal);
+    }
+
+    private const string MetadataCalleeExternalSource = """
+        namespace ExternalLib;
+
+        public static class Ext
+        {
+            static void Bump(ref dynamic v) => v++;
+            public static void UseDynamic(dynamic copy) => Bump(ref copy.Item1);
+            public static void UseObject(object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); }
+            public static void UseGeneric<T>(T value) { dynamic copy = value!; Bump(ref copy.Item1); }
+            public static void UseRef(ref object boxed) { dynamic copy = boxed; Bump(ref copy.Item1); }
+            public static int Twice(int value) => value * 2;
+        }
+
+        public sealed class Holder
+        {
+            public Holder(dynamic copy) { Bump(ref copy.Item1); }
+            static void Bump(ref dynamic v) => v++;
+        }
+        """;
+
+    private const string MetadataCalleeTemplate = """
+        using ExternalLib;
+
+        namespace TestApp;
+
+        public static class Worker
+        {
+            public static object Run()
+            {
+                var point = (X: 1, Y: 2);
+                USE
+                return point;
+            }
+        }
+        """;
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs608hph): a non-virtual callee that exists only
+    // in metadata has no body for alias propagation to inspect. An external
+    // Use(dynamic copy) doing Bump(ref copy.Item1) works on a boxed ValueTuple but
+    // fails after conversion, so passing converted storage to an object / dynamic /
+    // generic / by-ref metadata parameter is refused.
+    [SkippableTheory]
+    [InlineData(false, "Ext.UseDynamic(point);")]
+    [InlineData(true, "Ext.UseDynamic(point);")]
+    [InlineData(false, "Ext.UseObject(point);")]
+    [InlineData(true, "Ext.UseObject(point);")]
+    [InlineData(false, "Ext.UseGeneric(point);")]
+    [InlineData(true, "Ext.UseGeneric(point);")]
+    [InlineData(false, "object box = point; Ext.UseRef(ref box);")]
+    [InlineData(true, "object box = point; Ext.UseRef(ref box);")]
+    [InlineData(false, "var holder = new Holder(point);")]
+    [InlineData(true, "var holder = new Holder(point);")]
+    public async Task ConvertTupleToStruct_MetadataOnlyCalleeOpaqueParameter_ThrowsAndWritesNothing(
+        bool asRecord,
+        string use)
+    {
+        var source = MetadataCalleeTemplate.Replace("USE", use);
+        await using var workspace = await TempWorkspace.CreateWithMetadataReferenceAsync(
+            source, MetadataCalleeExternalSource);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Companion to PRRT_kwDORD0nYs608hph: metadata-only callees that only receive a
+    // scalar element, and framework (BCL) callees such as Console.WriteLine(object) /
+    // List<object>.Add, still convert.
+    [SkippableTheory]
+    [InlineData(false, "var doubled = Ext.Twice(point.X);")]
+    [InlineData(true, "var doubled = Ext.Twice(point.X);")]
+    [InlineData(false, "System.Console.WriteLine(point.X);")]
+    [InlineData(true, "System.Console.WriteLine(point.X);")]
+    [InlineData(false, "System.Console.WriteLine(point);")]
+    [InlineData(true, "System.Console.WriteLine(point);")]
+    [InlineData(false, "var list = new List<object>(); list.Add(point);")]
+    [InlineData(true, "var list = new List<object>(); list.Add(point);")]
+    public async Task ConvertTupleToStruct_MetadataOnlyCalleeScalarElement_Succeeds(
+        bool asRecord,
+        string use)
+    {
+        var source = MetadataCalleeTemplate.Replace("USE", use);
+        await using var workspace = await TempWorkspace.CreateWithMetadataReferenceAsync(
+            source, MetadataCalleeExternalSource);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 9,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
     }
 }
