@@ -3087,6 +3087,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         foreach (var node in root.DescendantNodes())
         {
+            // Get(out values[0]) / Get(out span[0]) / Get(out Slot()): a tracked
+            // ref/out parameter writing into a destination with no trackable
+            // local/parameter/field symbol is refused conservatively (Codex P1 on
+            // #3441, PRRT_kwDORD0nYs608Lny).
+            if (HasUntrackableRefOutDestination(node, aliases, semanticModel, cancellationToken))
+                return true;
+
             if (node is not ExpressionSyntax expression ||
                 expression is InvocationExpressionSyntax)
             {
@@ -3109,6 +3116,94 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="node"/> is a call whose <c>ref</c>/<c>out</c> argument
+    /// maps onto a tracked parameter but the argument's destination is not a plain
+    /// local / parameter / field / non-indexer property (or <c>out var</c>
+    /// declaration), e.g. an array / span element or a ref-returning call.
+    /// </summary>
+    private static bool HasUntrackableRefOutDestination(
+        SyntaxNode node,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        SeparatedSyntaxList<ArgumentSyntax> arguments;
+        IMethodSymbol? method;
+        InvocationExpressionSyntax? invocationForDelegate = null;
+        switch (node)
+        {
+            case InvocationExpressionSyntax invocation:
+                if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out method) ||
+                    method == null)
+                {
+                    return false;
+                }
+
+                arguments = invocation.ArgumentList.Arguments;
+                invocationForDelegate = invocation;
+                break;
+            case BaseObjectCreationExpressionSyntax { ArgumentList: { } argumentList } objectCreation:
+                method = semanticModel.GetSymbolInfo(objectCreation, cancellationToken).Symbol as IMethodSymbol;
+                arguments = argumentList.Arguments;
+                break;
+            case ConstructorInitializerSyntax constructorInitializer:
+                method = semanticModel.GetSymbolInfo(constructorInitializer, cancellationToken).Symbol as IMethodSymbol;
+                arguments = constructorInitializer.ArgumentList.Arguments;
+                break;
+            default:
+                return false;
+        }
+
+        if (method == null)
+            return false;
+
+        for (var i = 0; i < arguments.Count; i++)
+        {
+            var argument = arguments[i];
+            if (!IsRefOrOutArgument(argument))
+                continue;
+
+            ISymbol? parameter = ResolveInvocationParameter(method, argument, i);
+            if (method.MethodKind == MethodKind.DelegateInvoke && invocationForDelegate != null)
+            {
+                var mapped = TryMapStoredDelegateParameter(
+                    invocationForDelegate, method, i, semanticModel, cancellationToken);
+                if (mapped != null)
+                    parameter = mapped;
+            }
+            else if (parameter is IParameterSymbol parameterSymbol)
+            {
+                parameter = parameterSymbol.OriginalDefinition;
+            }
+
+            if (parameter == null || !aliases.Contains(parameter))
+                continue;
+
+            if (!IsTrackableRefOutDestination(argument, semanticModel, cancellationToken))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsTrackableRefOutDestination(
+        ArgumentSyntax argument,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var expr = SkipTransparentWrappers(argument.Expression);
+        if (expr is DeclarationExpressionSyntax)
+            return true;
+
+        if (expr is not (IdentifierNameSyntax or MemberAccessExpressionSyntax))
+            return false;
+
+        return semanticModel.GetSymbolInfo(expr, cancellationToken).Symbol is
+            ILocalSymbol or IParameterSymbol or IFieldSymbol or IPropertySymbol { IsIndexer: false }
+            or IDiscardSymbol;
     }
 
     private static bool MethodHasTrackedRefOutParameter(IMethodSymbol method, HashSet<ISymbol> aliases)

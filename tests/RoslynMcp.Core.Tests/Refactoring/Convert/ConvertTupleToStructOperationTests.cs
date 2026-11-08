@@ -10017,6 +10017,47 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs608Lny): a tracked ref/out parameter that
+    // writes into an indexed / ref-returning destination (Get(out values[0]),
+    // Get(out span[0]), Get(out Slot())) has no trackable local/parameter/field
+    // symbol, so the conversion is conservatively refused.
+    [SkippableTheory]
+    [InlineData(false, "static void Get(out dynamic p) { p = (1, 2); }", "dynamic[] values = new dynamic[1]; Get(out values[0]); Bump(ref values[0].Item1);")]
+    [InlineData(true, "static void Get(out dynamic p) { p = (1, 2); }", "dynamic[] values = new dynamic[1]; Get(out values[0]); Bump(ref values[0].Item1);")]
+    [InlineData(false, "static void Get(ref dynamic p) { p = (1, 2); }", "dynamic[] values = new dynamic[1]; Get(ref values[0]); Bump(ref values[0].Item1);")]
+    [InlineData(true, "static void Get(ref dynamic p) { p = (1, 2); }", "dynamic[] values = new dynamic[1]; Get(ref values[0]); Bump(ref values[0].Item1);")]
+    [InlineData(false, "static void Get(out dynamic p) { p = (1, 2); }", "dynamic[][] values = { new dynamic[1] }; Get(out values[0][0]); Bump(ref values[0][0].Item1);")]
+    [InlineData(true, "static void Get(out dynamic p) { p = (1, 2); }", "dynamic[][] values = { new dynamic[1] }; Get(out values[0][0]); Bump(ref values[0][0].Item1);")]
+    [InlineData(false, "static void Get(out dynamic p) { p = (1, 2); }", "dynamic[] values = new dynamic[1]; Span<dynamic> span = values; Get(out span[0]); Bump(ref values[0].Item1);")]
+    [InlineData(true, "static void Get(out dynamic p) { p = (1, 2); }", "dynamic[] values = new dynamic[1]; Span<dynamic> span = values; Get(out span[0]); Bump(ref values[0].Item1);")]
+    [InlineData(false, "static void Get(out dynamic p) { p = (1, 2); } static dynamic slot; static ref dynamic Slot() => ref slot;", "Get(out Slot()); Bump(ref slot.Item1);")]
+    [InlineData(true, "static void Get(out dynamic p) { p = (1, 2); } static dynamic slot; static ref dynamic Slot() => ref slot;", "Get(out Slot()); Bump(ref slot.Item1);")]
+    [InlineData(false, "sealed class Holder { public Holder(out dynamic p) { p = (1, 2); } }", "dynamic[] values = new dynamic[1]; var holder = new Holder(out values[0]); Bump(ref values[0].Item1);")]
+    [InlineData(true, "sealed class Holder { public Holder(out dynamic p) { p = (1, 2); } }", "dynamic[] values = new dynamic[1]; var holder = new Holder(out values[0]); Bump(ref values[0].Item1);")]
+    public async Task ConvertTupleToStruct_IndexedOutDestinationRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string declaration,
+        string use)
+    {
+        var source = OpaqueReturnTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 8,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     // Companion to PRRT_kwDORD0nYs6071da: ref/out destinations that are only read convert.
     [SkippableTheory]
     [InlineData(false, "static void Get(out dynamic p) { p = (1, 2); }", "Get(out dynamic p); Console.WriteLine(p.Item1);")]
