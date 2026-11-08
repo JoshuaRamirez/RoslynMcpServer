@@ -9630,10 +9630,10 @@ public class ConvertTupleToStructOperationTests
     // Companion to PRRT_kwDORD0nYs605DwK: object / dynamic returns whose call-site
     // results are only read (no by-ref element use) still convert.
     [SkippableTheory]
-    [InlineData(false, "static object Get() => (1, 2);", "object copy = Get(); Console.WriteLine(copy);")]
-    [InlineData(true, "static object Get() => (1, 2);", "object copy = Get(); Console.WriteLine(copy);")]
-    [InlineData(false, "static object Get() => (1, 2);", "Console.WriteLine(Get());")]
-    [InlineData(true, "static object Get() => (1, 2);", "Console.WriteLine(Get());")]
+    [InlineData(false, "static object Get() => (1, 2);", "object copy = Get(); Console.WriteLine(copy.ToString());")]
+    [InlineData(true, "static object Get() => (1, 2);", "object copy = Get(); Console.WriteLine(copy.ToString());")]
+    [InlineData(false, "static object Get() => (1, 2);", "Console.WriteLine(Get().ToString());")]
+    [InlineData(true, "static object Get() => (1, 2);", "Console.WriteLine(Get().ToString());")]
     [InlineData(false, "static dynamic Get() => (1, 2);", "dynamic copy = Get(); int x = copy.Item1; Console.WriteLine(x);")]
     [InlineData(true, "static dynamic Get() => (1, 2);", "dynamic copy = Get(); int x = copy.Item1; Console.WriteLine(x);")]
     public async Task ConvertTupleToStruct_ObjectReturnNoRefUse_Succeeds(
@@ -9723,10 +9723,10 @@ public class ConvertTupleToStructOperationTests
 
     // Companion to PRRT_kwDORD0nYs605hQG: iterator elements only read still convert.
     [SkippableTheory]
-    [InlineData(false, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "foreach (object copy in Get()) Console.WriteLine(copy);")]
-    [InlineData(true, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "foreach (object copy in Get()) Console.WriteLine(copy);")]
-    [InlineData(false, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "var items = Get(); foreach (var copy in items) Console.WriteLine(copy);")]
-    [InlineData(true, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "var items = Get(); foreach (var copy in items) Console.WriteLine(copy);")]
+    [InlineData(false, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "foreach (object copy in Get()) Console.WriteLine(copy.ToString());")]
+    [InlineData(true, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "foreach (object copy in Get()) Console.WriteLine(copy.ToString());")]
+    [InlineData(false, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "var items = Get(); foreach (var copy in items) Console.WriteLine(copy.ToString());")]
+    [InlineData(true, 11, "static IEnumerable<object> Get() { yield return (1, 2); }", "var items = Get(); foreach (var copy in items) Console.WriteLine(copy.ToString());")]
     public async Task ConvertTupleToStruct_IteratorYieldNoRefUse_Succeeds(
         bool asRecord,
         int line,
@@ -9795,10 +9795,10 @@ public class ConvertTupleToStructOperationTests
 
     // Companion to PRRT_kwDORD0nYs605hQL: auto-properties / setters that only read convert.
     [SkippableTheory]
-    [InlineData(false, 14, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point; Console.WriteLine(holder.Value);")]
-    [InlineData(true, 14, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point; Console.WriteLine(holder.Value);")]
-    [InlineData(false, 14, "sealed class Holder { public object Value { set { Console.WriteLine(value); } } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point;")]
-    [InlineData(true, 14, "sealed class Holder { public object Value { set { Console.WriteLine(value); } } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point;")]
+    [InlineData(false, 14, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point; Console.WriteLine(holder.Value.ToString());")]
+    [InlineData(true, 14, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point; Console.WriteLine(holder.Value.ToString());")]
+    [InlineData(false, 14, "sealed class Holder { public object Value { set { Console.WriteLine(value.ToString()); } } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point;")]
+    [InlineData(true, 14, "sealed class Holder { public object Value { set { Console.WriteLine(value.ToString()); } } }", "var holder = new Holder(); var point = (1, 2); holder.Value = point;")]
     public async Task ConvertTupleToStruct_PropertySetterNoRefUse_Succeeds(
         bool asRecord,
         int line,
@@ -9866,8 +9866,8 @@ public class ConvertTupleToStructOperationTests
 
     // Companion to PRRT_kwDORD0nYs605hQM: operator / conversion bodies that only read convert.
     [SkippableTheory]
-    [InlineData(false, 14, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed); return c; } }", "var consumer = new Consumer(); var point = (1, 2); var result = consumer + point;")]
-    [InlineData(true, 14, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed); return c; } }", "var consumer = new Consumer(); var point = (1, 2); var result = consumer + point;")]
+    [InlineData(false, 14, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed.ToString()); return c; } }", "var consumer = new Consumer(); var point = (1, 2); var result = consumer + point;")]
+    [InlineData(true, 14, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed.ToString()); return c; } }", "var consumer = new Consumer(); var point = (1, 2); var result = consumer + point;")]
     [InlineData(false, 14, "sealed class Wrapper { public static implicit operator Wrapper((int, int) boxed) { Console.WriteLine(boxed.Item1); return new Wrapper(); } }", "var point = (1, 2); Wrapper wrapper = point;")]
     [InlineData(true, 14, "sealed class Wrapper { public static implicit operator Wrapper((int, int) boxed) { Console.WriteLine(boxed.Item1); return new Wrapper(); } }", "var point = (1, 2); Wrapper wrapper = point;")]
     public async Task ConvertTupleToStruct_UserDefinedOperatorNoRefUse_Succeeds(
@@ -9988,18 +9988,18 @@ public class ConvertTupleToStructOperationTests
     // Companion to PRRT_kwDORD0nYs605__Q / …605__Y / …605__c: direct creations
     // flowing into concrete, read-only setters / callees / operators still convert.
     [SkippableTheory]
-    [InlineData(false, "sealed class Holder { public object Value { set { Console.WriteLine(value); } } }", "var holder = new Holder(); holder.Value = (1, 2);")]
-    [InlineData(true, "sealed class Holder { public object Value { set { Console.WriteLine(value); } } }", "var holder = new Holder(); holder.Value = (1, 2);")]
-    [InlineData(false, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); holder.Value = (1, 2); Console.WriteLine(holder.Value);")]
-    [InlineData(true, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); holder.Value = (1, 2); Console.WriteLine(holder.Value);")]
-    [InlineData(false, "sealed class Consumer { public void Use(object boxed) => Console.WriteLine(boxed); }", "var consumer = new Consumer(); consumer.Use((1, 2));")]
-    [InlineData(true, "sealed class Consumer { public void Use(object boxed) => Console.WriteLine(boxed); }", "var consumer = new Consumer(); consumer.Use((1, 2));")]
-    [InlineData(false, "static void Use(object boxed) => Console.WriteLine(boxed);", "Use((1, 2));")]
-    [InlineData(true, "static void Use(object boxed) => Console.WriteLine(boxed);", "Use((1, 2));")]
-    [InlineData(false, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed); return c; } }", "var consumer = new Consumer(); var result = consumer + (1, 2);")]
-    [InlineData(true, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed); return c; } }", "var consumer = new Consumer(); var result = consumer + (1, 2);")]
-    [InlineData(false, "static void Unused() { }", "var list = new List<object>(); list.Add((1, 2)); Console.WriteLine(list[0]);")]
-    [InlineData(true, "static void Unused() { }", "var list = new List<object>(); list.Add((1, 2)); Console.WriteLine(list[0]);")]
+    [InlineData(false, "sealed class Holder { public object Value { set { Console.WriteLine(value.ToString()); } } }", "var holder = new Holder(); holder.Value = (1, 2);")]
+    [InlineData(true, "sealed class Holder { public object Value { set { Console.WriteLine(value.ToString()); } } }", "var holder = new Holder(); holder.Value = (1, 2);")]
+    [InlineData(false, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); holder.Value = (1, 2); Console.WriteLine(holder.Value.ToString());")]
+    [InlineData(true, "sealed class Holder { public object Value { get; set; } }", "var holder = new Holder(); holder.Value = (1, 2); Console.WriteLine(holder.Value.ToString());")]
+    [InlineData(false, "sealed class Consumer { public void Use(object boxed) => Console.WriteLine(boxed.ToString()); }", "var consumer = new Consumer(); consumer.Use((1, 2));")]
+    [InlineData(true, "sealed class Consumer { public void Use(object boxed) => Console.WriteLine(boxed.ToString()); }", "var consumer = new Consumer(); consumer.Use((1, 2));")]
+    [InlineData(false, "static void Use(object boxed) => Console.WriteLine(boxed.ToString());", "Use((1, 2));")]
+    [InlineData(true, "static void Use(object boxed) => Console.WriteLine(boxed.ToString());", "Use((1, 2));")]
+    [InlineData(false, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed.ToString()); return c; } }", "var consumer = new Consumer(); var result = consumer + (1, 2);")]
+    [InlineData(true, "sealed class Consumer { public static Consumer operator +(Consumer c, object boxed) { Console.WriteLine(boxed.ToString()); return c; } }", "var consumer = new Consumer(); var result = consumer + (1, 2);")]
+    [InlineData(false, "static void Unused() { }", "var list = new List<object>(); list.Add((1, 2)); Console.WriteLine(list[0].ToString());")]
+    [InlineData(true, "static void Unused() { }", "var list = new List<object>(); list.Add((1, 2)); Console.WriteLine(list[0].ToString());")]
     public async Task ConvertTupleToStruct_DirectCreationNoRefUse_Succeeds(
         bool asRecord,
         string declaration,
@@ -10325,15 +10325,16 @@ public class ConvertTupleToStructOperationTests
     }
 
     // Companion to PRRT_kwDORD0nYs608hph: metadata-only callees that only receive a
-    // scalar element, allowlisted read-only observers such as Console.WriteLine(object),
+    // scalar element, allowlisted read-only observers such as point.ToString() (Console
+    // writes of the boxed tuple itself refuse, PRRT_kwDORD0nYs609oBO),
     // and modeled carrier stores such as List<object>.Add on a tracked local still convert.
     [SkippableTheory]
     [InlineData(false, "var doubled = Ext.Twice(point.X);")]
     [InlineData(true, "var doubled = Ext.Twice(point.X);")]
     [InlineData(false, "System.Console.WriteLine(point.X);")]
     [InlineData(true, "System.Console.WriteLine(point.X);")]
-    [InlineData(false, "System.Console.WriteLine(point);")]
-    [InlineData(true, "System.Console.WriteLine(point);")]
+    [InlineData(false, "System.Console.WriteLine(point.ToString());")]
+    [InlineData(true, "System.Console.WriteLine(point.ToString());")]
     [InlineData(false, "var list = new List<object>(); list.Add(point);")]
     [InlineData(true, "var list = new List<object>(); list.Add(point);")]
     public async Task ConvertTupleToStruct_MetadataOnlyCalleeScalarElement_Succeeds(
@@ -10628,19 +10629,46 @@ public class ConvertTupleToStructOperationTests
     public async Task ConvertTupleToStruct_FrameworkOpaqueStoreOrForward_ThrowsAndWritesNothing(bool asRecord, string use) =>
         await AssertFrameworkMetadataUseRefusedAsync(asRecord, use);
 
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs609oBO): Console.Write/WriteLine(object) forwards
+    // the boxed tuple to Console.Out, which Console.SetOut can replace with a user TextWriter
+    // whose WriteLine(object) override does dynamic + Bump(ref value.Item1). Debug writes
+    // and Trace writes likewise reach user TraceListeners, and object.Equals(a, b) / a
+    // non-tuple receiver's Equals(object) or ValueType.Equals(object) dispatches to a
+    // user override that receives the boxed tuple.
+    [SkippableTheory]
+    [InlineData(false, "Console.WriteLine(point);")]
+    [InlineData(true, "Console.WriteLine(point);")]
+    [InlineData(false, "Console.Write(point);")]
+    [InlineData(true, "Console.Write(point);")]
+    [InlineData(false, "Console.WriteLine(\"{0} {1}\", point, point);")]
+    [InlineData(true, "Console.Write(\"{0}\", point);")]
+    [InlineData(false, "Console.SetOut(new System.IO.StringWriter()); Console.Out.WriteLine(point);")]
+    [InlineData(false, "Debug.WriteLine(point);")]
+    [InlineData(true, "Debug.WriteLine(point);")]
+    [InlineData(false, "Debug.Write(point);")]
+    [InlineData(true, "Debug.WriteIf(true, point);")]
+    [InlineData(false, "Debug.WriteLineIf(true, point);")]
+    [InlineData(true, "Debug.Print(\"{0}\", point);")]
+    [InlineData(false, "var same = object.Equals(new object(), point);")]
+    [InlineData(true, "object other = new object(); var same = other.Equals(point);")]
+    [InlineData(false, "Trace.WriteLine(point);")]
+    [InlineData(true, "Trace.Write(point);")]
+    [InlineData(false, "Trace.WriteLineIf(true, point);")]
+    [InlineData(true, "ValueType other = 0; var same = other.Equals(point);")]
+    public async Task ConvertTupleToStruct_ConsoleOrDebugWriteOpaque_ThrowsAndWritesNothing(bool asRecord, string use) =>
+        await AssertFrameworkMetadataUseRefusedAsync(asRecord, use);
+
     // Allowlist guard for the sound metadata rule: read-only, non-storing,
     // non-forwarding framework observers and modeled carrier stores still convert.
     [SkippableTheory]
-    [InlineData(false, "Console.WriteLine(point);")]
-    [InlineData(true, "Console.Write(point);")]
-    [InlineData(false, "Console.WriteLine(\"{0} {1}\", point, point);")]
+    [InlineData(false, "Console.WriteLine(point.X);")]
     [InlineData(true, "var text = string.Format(\"{0}\", point);")]
     [InlineData(false, "var text = string.Concat(point, \"!\");")]
     [InlineData(true, "var text = string.Join(\", \", point, point);")]
     [InlineData(false, "var text = $\"{point}\";")]
-    [InlineData(true, "Debug.WriteLine(point);")]
+    [InlineData(true, "Console.WriteLine(point.ToString());")]
     [InlineData(false, "var builder = new StringBuilder().Append(point);")]
-    [InlineData(true, "var same = object.Equals(point, point);")]
+    [InlineData(true, "var same = object.ReferenceEquals(point, point);")]
     [InlineData(false, "var same = point.Equals((object)point);")]
     [InlineData(true, "var hash = point.GetHashCode(); var text = point.ToString();")]
     [InlineData(false, "var list = new List<object>(); list.Add(point);")]

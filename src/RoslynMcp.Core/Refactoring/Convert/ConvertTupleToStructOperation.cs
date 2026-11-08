@@ -3306,10 +3306,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return true;
         }
 
-        // Known-safe read-only framework observers (Console.WriteLine,
-        // string.Format/Concat/Join, Debug.WriteLine, StringBuilder.Append,
-        // object/ValueType/ValueTuple Equals/GetHashCode/ToString) only format or
-        // compare the value and never store or forward it.
+        // Known-safe read-only framework observers (string.Format/Concat/Join,
+        // StringBuilder.Append, object/ValueType ToString/GetHashCode, ValueTuple
+        // Equals/GetHashCode/ToString, object.ReferenceEquals) only format or compare
+        // the value and never store or forward it to user code. Console/Debug writes
+        // and object.Equals(object) are excluded: they can reach a user TextWriter /
+        // TraceListener / Equals override that receives the boxed tuple.
         if (IsKnownSafeMetadataObserver(method))
             return false;
 
@@ -4113,13 +4115,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// Small explicit allowlist of metadata APIs that only read a value (format it,
-    /// compare it, hash it) and never store or forward the instance itself:
-    /// <c>Console.Write/WriteLine</c>, <c>string.Format</c> (without an
-    /// <c>IFormatProvider</c>, whose custom formatter would receive the object),
-    /// <c>string.Concat/Join</c>, <c>Debug.Write/WriteLine/WriteIf/WriteLineIf/Print</c>,
-    /// <c>StringBuilder.Append</c>, and <c>ToString/Equals/GetHashCode</c> on
-    /// <c>object</c>/<c>ValueType</c>/<c>ValueTuple</c> plus <c>object.ReferenceEquals</c>.
-    /// <c>Trace</c> is excluded because it forwards the object to listeners.
+    /// compare it, hash it) and never store or forward the instance itself to user code:
+    /// <c>string.Format</c> (without an <c>IFormatProvider</c>, whose custom formatter
+    /// would receive the object), <c>string.Concat/Join</c>, <c>StringBuilder.Append</c>
+    /// (without a provider), <c>ToString/GetHashCode</c> on <c>object</c>/<c>ValueType</c>,
+    /// <c>ToString/Equals/GetHashCode</c> on <c>ValueTuple</c>, and <c>object.ReferenceEquals</c>.
+    /// Excluded because they forward the object instance to replaceable user code:
+    /// <c>Console.Write/WriteLine</c> (a custom <c>TextWriter</c> installed with
+    /// <c>Console.SetOut</c> receives it in its <c>Write(object)</c> override),
+    /// <c>Debug</c>/<c>Trace</c> writes (custom <c>TraceListener</c>s receive it), and
+    /// <c>object/ValueType.Equals(object)</c> (static <c>object.Equals(a, b)</c> or a
+    /// non-tuple receiver dispatches to a user <c>Equals(object)</c> override that
+    /// receives the boxed tuple as its parameter).
     /// </summary>
     private static bool IsKnownSafeMetadataObserver(IMethodSymbol method)
     {
@@ -4134,13 +4141,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var name = original.Name;
         return typeName switch
         {
-            "System.Console" => name is "Write" or "WriteLine",
             "System.String" => name is "Concat" or "Join" ||
                                (name == "Format" && !original.Parameters.Any(IsFormatProviderParameter)),
-            "System.Diagnostics.Debug" => name is "Write" or "WriteLine" or "WriteIf" or "WriteLineIf" or "Print",
             "System.Text.StringBuilder" => name == "Append" && !original.Parameters.Any(IsFormatProviderParameter),
-            "System.Object" => name is "ToString" or "Equals" or "GetHashCode" or "ReferenceEquals",
-            "System.ValueType" => name is "ToString" or "Equals" or "GetHashCode",
+            "System.Object" => name is "ToString" or "GetHashCode" or "ReferenceEquals",
+            "System.ValueType" => name is "ToString" or "GetHashCode",
             _ when typeName != null && typeName.StartsWith("System.ValueTuple", StringComparison.Ordinal) =>
                 name is "ToString" or "Equals" or "GetHashCode",
             _ => false
