@@ -9973,4 +9973,188 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
         Assert.Contains("new Point", text, StringComparison.Ordinal);
     }
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs6071da): a creation assigned to a ref/out
+    // parameter must flow back to every corresponding call-site argument.
+    [SkippableTheory]
+    [InlineData(false, 8, "static void Get(out dynamic p) { p = (1, 2); }", "Get(out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(true, 8, "static void Get(out dynamic p) { p = (1, 2); }", "Get(out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(false, 8, "static void Get(out dynamic p) { p = (1, 2); }", "dynamic p; Get(out p); Bump(ref p.Item1);")]
+    [InlineData(true, 8, "static void Get(out dynamic p) { p = (1, 2); }", "dynamic p; Get(out p); Bump(ref p.Item1);")]
+    [InlineData(false, 8, "static void Get(out dynamic p) { p = (1, 2); }", "Get(p: out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(true, 8, "static void Get(out dynamic p) { p = (1, 2); }", "Get(p: out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(false, 8, "static void Get(ref dynamic p) { p = (1, 2); }", "dynamic p = 0; Get(ref p); Bump(ref p.Item1);")]
+    [InlineData(true, 8, "static void Get(ref dynamic p) { p = (1, 2); }", "dynamic p = 0; Get(ref p); Bump(ref p.Item1);")]
+    [InlineData(false, 8, "static void Get(out dynamic p) { dynamic tmp = (1, 2); p = tmp; }", "Get(out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(true, 8, "static void Get(out dynamic p) { dynamic tmp = (1, 2); p = tmp; }", "Get(out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(false, 8, "sealed class Holder { public Holder(out dynamic p) { p = (1, 2); } }", "var holder = new Holder(out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(true, 8, "sealed class Holder { public Holder(out dynamic p) { p = (1, 2); } }", "var holder = new Holder(out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(false, 8, "delegate void Getter(out dynamic p); static void Get(out dynamic p) { p = (1, 2); }", "Getter g = Get; g(out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(true, 8, "delegate void Getter(out dynamic p); static void Get(out dynamic p) { p = (1, 2); }", "Getter g = Get; g(out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(false, 8, "public class Base { public virtual void Get(out dynamic p) { p = (1, 2); } }", "var b = new Base(); b.Get(out dynamic p); Bump(ref p.Item1);")]
+    [InlineData(true, 8, "public class Base { public virtual void Get(out dynamic p) { p = (1, 2); } }", "var b = new Base(); b.Get(out dynamic p); Bump(ref p.Item1);")]
+    public async Task ConvertTupleToStruct_OutParameterAliasRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        int line,
+        string declaration,
+        string use)
+    {
+        var source = OpaqueReturnTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Companion to PRRT_kwDORD0nYs6071da: ref/out destinations that are only read convert.
+    [SkippableTheory]
+    [InlineData(false, "static void Get(out dynamic p) { p = (1, 2); }", "Get(out dynamic p); Console.WriteLine(p.Item1);")]
+    [InlineData(true, "static void Get(out dynamic p) { p = (1, 2); }", "Get(out dynamic p); Console.WriteLine(p.Item1);")]
+    [InlineData(false, "static void Get(ref dynamic p) { p = (1, 2); }", "dynamic p = 0; Get(ref p); Console.WriteLine(p.Item1);")]
+    [InlineData(true, "static void Get(ref dynamic p) { p = (1, 2); }", "dynamic p = 0; Get(ref p); Console.WriteLine(p.Item1);")]
+    public async Task ConvertTupleToStruct_OutParameterAliasNoRefUse_Succeeds(
+        bool asRecord,
+        string declaration,
+        string use)
+    {
+        var source = OpaqueReturnTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 8,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("new Point", text, StringComparison.Ordinal);
+    }
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs6071de): ordinary methods / properties /
+    // indexers / iterators that return an existing alias (not a fresh creation)
+    // must be followed to their call sites.
+    [SkippableTheory]
+    [InlineData(false, 8, "static dynamic point = (1, 2); static dynamic Get() => point;", "dynamic copy = Get(); Bump(ref copy.Item1);")]
+    [InlineData(true, 8, "static dynamic point = (1, 2); static dynamic Get() => point;", "dynamic copy = Get(); Bump(ref copy.Item1);")]
+    [InlineData(false, 8, "static dynamic point = (1, 2); static dynamic Get() { return point; }", "dynamic copy = Get(); Bump(ref copy.Item1);")]
+    [InlineData(true, 8, "static dynamic point = (1, 2); static dynamic Get() { return point; }", "dynamic copy = Get(); Bump(ref copy.Item1);")]
+    [InlineData(false, 8, "static dynamic point = (1, 2); static dynamic Get() => point;", "Bump(ref Get().Item1);")]
+    [InlineData(true, 8, "static dynamic point = (1, 2); static dynamic Get() => point;", "Bump(ref Get().Item1);")]
+    [InlineData(false, 8, "static dynamic point = (1, 2); static dynamic Get() => point;", "Func<dynamic> get = Get; dynamic copy = get(); Bump(ref copy.Item1);")]
+    [InlineData(true, 8, "static dynamic point = (1, 2); static dynamic Get() => point;", "Func<dynamic> get = Get; dynamic copy = get(); Bump(ref copy.Item1);")]
+    [InlineData(false, 8, "static dynamic point = (1, 2); static dynamic Value => point;", "dynamic copy = Value; Bump(ref copy.Item1);")]
+    [InlineData(true, 8, "static dynamic point = (1, 2); static dynamic Value => point;", "dynamic copy = Value; Bump(ref copy.Item1);")]
+    [InlineData(false, 8, "static dynamic point = (1, 2); static dynamic Value { get => point; }", "dynamic copy = Value; Bump(ref copy.Item1);")]
+    [InlineData(true, 8, "static dynamic point = (1, 2); static dynamic Value { get => point; }", "dynamic copy = Value; Bump(ref copy.Item1);")]
+    [InlineData(false, 8, "static dynamic point = (1, 2); static dynamic Value { get { return point; } }", "dynamic copy = Value; Bump(ref copy.Item1);")]
+    [InlineData(true, 8, "static dynamic point = (1, 2); static dynamic Value { get { return point; } }", "dynamic copy = Value; Bump(ref copy.Item1);")]
+    [InlineData(false, 8, "sealed class Holder { public dynamic point = (1, 2); public dynamic this[int i] => point; }", "var holder = new Holder(); dynamic copy = holder[0]; Bump(ref copy.Item1);")]
+    [InlineData(true, 8, "sealed class Holder { public dynamic point = (1, 2); public dynamic this[int i] => point; }", "var holder = new Holder(); dynamic copy = holder[0]; Bump(ref copy.Item1);")]
+    [InlineData(false, 8, "static dynamic point = (1, 2); static ref dynamic Get() => ref point;", "ref dynamic copy = ref Get(); Bump(ref copy.Item1);")]
+    [InlineData(true, 8, "static dynamic point = (1, 2); static ref dynamic Get() => ref point;", "ref dynamic copy = ref Get(); Bump(ref copy.Item1);")]
+    [InlineData(false, 8, "public class Base { public dynamic point = (1, 2); public virtual dynamic Get() => point; }", "var b = new Base(); dynamic copy = b.Get(); Bump(ref copy.Item1);")]
+    [InlineData(true, 8, "public class Base { public dynamic point = (1, 2); public virtual dynamic Get() => point; }", "var b = new Base(); dynamic copy = b.Get(); Bump(ref copy.Item1);")]
+    public async Task ConvertTupleToStruct_ReturnedAliasRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        int line,
+        string declaration,
+        string use)
+    {
+        var source = OpaqueReturnTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Iterator yield of an existing alias (needs System.Collections.Generic).
+    [SkippableTheory]
+    [InlineData(false, 11, "static dynamic point = (1, 2); static IEnumerable<dynamic> Get() { yield return point; }", "foreach (dynamic copy in Get()) Bump(ref copy.Item1);")]
+    [InlineData(true, 11, "static dynamic point = (1, 2); static IEnumerable<dynamic> Get() { yield return point; }", "foreach (dynamic copy in Get()) Bump(ref copy.Item1);")]
+    public async Task ConvertTupleToStruct_IteratorYieldAliasRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        int line,
+        string declaration,
+        string use)
+    {
+        var source = CalleeFlowTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Companion to PRRT_kwDORD0nYs6071de: returning an existing alias is fine
+    // when the call-site result is only read.
+    [SkippableTheory]
+    [InlineData(false, "static dynamic point = (1, 2); static dynamic Get() => point;", "dynamic copy = Get(); int x = copy.Item1; Console.WriteLine(x);")]
+    [InlineData(true, "static dynamic point = (1, 2); static dynamic Get() => point;", "dynamic copy = Get(); int x = copy.Item1; Console.WriteLine(x);")]
+    [InlineData(false, "static dynamic point = (1, 2); static dynamic Value => point;", "dynamic copy = Value; Console.WriteLine(copy.Item1);")]
+    [InlineData(true, "static dynamic point = (1, 2); static dynamic Value => point;", "dynamic copy = Value; Console.WriteLine(copy.Item1);")]
+    [InlineData(false, "static dynamic point = (1, 2); static dynamic Get() => point;", "Func<dynamic> get = Get; dynamic copy = get(); Console.WriteLine(copy.Item1);")]
+    [InlineData(true, "static dynamic point = (1, 2); static dynamic Get() => point;", "Func<dynamic> get = Get; dynamic copy = get(); Console.WriteLine(copy.Item1);")]
+    public async Task ConvertTupleToStruct_ReturnedAliasNoRefUse_Succeeds(
+        bool asRecord,
+        string declaration,
+        string use)
+    {
+        var source = OpaqueReturnTemplate.Replace("DECL", declaration).Replace("USE", use);
+        AssertTupleContainerCompiles(source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 8,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+        Assert.Contains("new Point", text, StringComparison.Ordinal);
+    }
 }

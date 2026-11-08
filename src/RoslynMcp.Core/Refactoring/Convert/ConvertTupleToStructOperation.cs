@@ -961,7 +961,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// declaring document is scanned too (Codex P1 on #3441, PRRT_kwDORD0nYs604Ela).
     /// </summary>
     private static bool RequiresCrossDocumentStorageScan(ISymbol storage) =>
-        storage is IFieldSymbol or IPropertySymbol;
+        storage is IFieldSymbol or IPropertySymbol
+            or IParameterSymbol { RefKind: RefKind.Ref or RefKind.Out };
 
     /// <summary>
     /// The single escape / propagation routine shared by the record-init and by-ref
@@ -994,12 +995,26 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             aliases.Add(storage);
         RegisterSeedValue(aliases, seedValue);
 
-        var documents = storage != null && RequiresCrossDocumentStorageScan(storage)
+        var didFullScan = storage != null && RequiresCrossDocumentStorageScan(storage);
+        var documents = didFullScan
             ? await CollectCrossDocumentStorageAliasesAsync(
                 originatingDocument, aliases, cancellationToken).ConfigureAwait(false)
             : await CollectPropagatedAliasDocumentsAsync(
                 originatingDocument, originatingRoot, originatingModel, aliases, cancellationToken)
                 .ConfigureAwait(false);
+
+        // A local seed can later escape through a ref/out parameter or a
+        // source-declared method / property / indexer return whose call sites
+        // live in another document (Codex P1s on #3441, PRRT_kwDORD0nYs6071da /
+        // …6071de). Expand to the same project set as field storage, but keep
+        // already-loaded callee declaring documents (those may live in a
+        // referenced project that ProjectCanReference does not include).
+        if (!didFullScan && AliasSetRequiresExpandedScan(aliases))
+        {
+            var expanded = await CollectCrossDocumentStorageAliasesAsync(
+                originatingDocument, aliases, cancellationToken).ConfigureAwait(false);
+            documents = MergeAliasDocuments(documents, expanded);
+        }
 
         foreach (var (root, model) in documents)
         {
@@ -1015,8 +1030,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // use / element write (Codex P1s on #3441 — reduced extension receivers,
             // virtual/interface dispatch, reassigned delegates, params expansion,
             // unknown callees, accessors, operators).
-            if (HasUnresolvedCalleeEscape(root, model, aliases, cancellationToken))
+            if (HasUnresolvedCalleeEscape(root, model, aliases, cancellationToken) ||
+                HasUnresolvedReturnOrRefOutEscape(root, model, aliases, cancellationToken))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -1415,7 +1433,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 // on #3441, PRRT_kwDORD0nYs605hQM). No `continue`: the ordinary
                 // branches below still run for the same node.
                 if (TryAddAccessorParameterAliases(node, aliases, semanticModel, cancellationToken) |
-                    TryAddUserDefinedOperatorParameterAliases(node, aliases, semanticModel, cancellationToken))
+                    TryAddUserDefinedOperatorParameterAliases(node, aliases, semanticModel, cancellationToken) |
+                    TryAddReturningMemberAlias(node, aliases, semanticModel, cancellationToken))
                 {
                     changed = true;
                 }
@@ -1604,7 +1623,12 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     // PRRT_kwDORD0nYs603sqw).
                     var calleeAdded = TryAddOrdinaryCalleeParameterAliasesFromInvocation(
                         invocation, aliases, semanticModel, root, cancellationToken);
-                    if (lambdaAdded || outVarAdded || insertionAdded || calleeAdded)
+                    // Get(out dynamic p) / Get(ref p): a tracked ref/out parameter
+                    // writes back to the caller argument (Codex P1 on #3441,
+                    // PRRT_kwDORD0nYs6071da).
+                    var refOutDestAdded = TryAddRefOutParameterDestinationAliasesFromInvocation(
+                        invocation, aliases, semanticModel, cancellationToken);
+                    if (lambdaAdded || outVarAdded || insertionAdded || calleeAdded || refOutDestAdded)
                     {
                         changed = true;
                         continue;
@@ -1616,6 +1640,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     // converted storage (sibling of invocation callees; bodies may live
                     // in another partial document — Codex P1 on #3441, PRRT_kwDORD0nYs604Ela).
                     if (TryAddOrdinaryCalleeParameterAliasesFromObjectCreation(
+                            objectCreation, aliases, semanticModel, cancellationToken) |
+                        TryAddRefOutParameterDestinationAliasesFromObjectCreation(
                             objectCreation, aliases, semanticModel, cancellationToken))
                     {
                         changed = true;
@@ -1629,6 +1655,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     // so by-ref uses in the chained body are gated (Codex P1 on #3441,
                     // PRRT_kwDORD0nYs606U0Z).
                     if (TryAddOrdinaryCalleeParameterAliasesFromConstructorInitializer(
+                            constructorInitializer, aliases, semanticModel, cancellationToken) |
+                        TryAddRefOutParameterDestinationAliasesFromConstructorInitializer(
                             constructorInitializer, aliases, semanticModel, cancellationToken))
                     {
                         changed = true;
@@ -2622,6 +2650,298 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// True when a collected alias escapes the originating document through a
+    /// <c>ref</c>/<c>out</c> parameter or a source-declared method / property /
+    /// indexer that returns the alias, so call sites in other files must be scanned
+    /// (Codex P1s on #3441, PRRT_kwDORD0nYs6071da / …6071de).
+    /// </summary>
+    private static bool AliasSetRequiresExpandedScan(HashSet<ISymbol> aliases)
+    {
+        foreach (var alias in aliases)
+        {
+            if (alias is IParameterSymbol { RefKind: RefKind.Ref or RefKind.Out })
+                return true;
+
+            if (alias is IPropertySymbol)
+                return true;
+
+            if (alias is IMethodSymbol method &&
+                method.MethodKind is not (MethodKind.LocalFunction or MethodKind.AnonymousFunction
+                    or MethodKind.DelegateInvoke))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static List<(SyntaxNode Root, SemanticModel Model)> MergeAliasDocuments(
+        List<(SyntaxNode Root, SemanticModel Model)> existing,
+        List<(SyntaxNode Root, SemanticModel Model)> extra)
+    {
+        var trees = new HashSet<SyntaxTree>();
+        var merged = new List<(SyntaxNode Root, SemanticModel Model)>(existing.Count + extra.Count);
+        foreach (var item in existing)
+        {
+            if (trees.Add(item.Root.SyntaxTree))
+                merged.Add(item);
+        }
+
+        foreach (var item in extra)
+        {
+            if (trees.Add(item.Root.SyntaxTree))
+                merged.Add(item);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// When a local function, ordinary method, property, indexer, or user-defined
+    /// operator / conversion returns converted storage (including <c>yield return</c>
+    /// and <c>ref return</c>), tracks that member so invocations / accesses alias
+    /// the result — not only local functions (Codex P1 on #3441, PRRT_kwDORD0nYs6071de).
+    /// </summary>
+    private static bool TryAddReturningMemberAlias(
+        SyntaxNode node,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        ISymbol? member;
+        ExpressionSyntax? expressionBody;
+        BlockSyntax? block;
+
+        switch (node)
+        {
+            case LocalFunctionStatementSyntax localFunction:
+                member = semanticModel.GetDeclaredSymbol(localFunction, cancellationToken);
+                expressionBody = localFunction.ExpressionBody?.Expression;
+                block = localFunction.Body;
+                break;
+            case MethodDeclarationSyntax method:
+                member = semanticModel.GetDeclaredSymbol(method, cancellationToken);
+                expressionBody = method.ExpressionBody?.Expression;
+                block = method.Body;
+                break;
+            case OperatorDeclarationSyntax op:
+                member = semanticModel.GetDeclaredSymbol(op, cancellationToken);
+                expressionBody = op.ExpressionBody?.Expression;
+                block = op.Body;
+                break;
+            case ConversionOperatorDeclarationSyntax conversion:
+                member = semanticModel.GetDeclaredSymbol(conversion, cancellationToken);
+                expressionBody = conversion.ExpressionBody?.Expression;
+                block = conversion.Body;
+                break;
+            case PropertyDeclarationSyntax property:
+                member = semanticModel.GetDeclaredSymbol(property, cancellationToken);
+                if (!TryGetMemberReturnBodies(
+                        property.ExpressionBody, property.AccessorList, out expressionBody, out block))
+                {
+                    return false;
+                }
+
+                break;
+            case IndexerDeclarationSyntax indexer:
+                member = semanticModel.GetDeclaredSymbol(indexer, cancellationToken);
+                if (!TryGetMemberReturnBodies(
+                        indexer.ExpressionBody, indexer.AccessorList, out expressionBody, out block))
+                {
+                    return false;
+                }
+
+                break;
+            default:
+                return false;
+        }
+
+        if (member == null || aliases.Contains(member))
+            return false;
+
+        if (!FunctionReturnsConvertedStorage(
+                expressionBody, block, aliases, semanticModel, cancellationToken))
+        {
+            return false;
+        }
+
+        aliases.Add(member);
+        return true;
+    }
+
+    private static bool TryGetMemberReturnBodies(
+        ArrowExpressionClauseSyntax? expressionBodyClause,
+        AccessorListSyntax? accessorList,
+        out ExpressionSyntax? expressionBody,
+        out BlockSyntax? block)
+    {
+        if (expressionBodyClause != null)
+        {
+            expressionBody = expressionBodyClause.Expression;
+            block = null;
+            return true;
+        }
+
+        expressionBody = null;
+        block = null;
+        if (accessorList == null)
+            return false;
+
+        foreach (var accessor in accessorList.Accessors)
+        {
+            if (!accessor.IsKind(SyntaxKind.GetAccessorDeclaration))
+                continue;
+
+            expressionBody = accessor.ExpressionBody?.Expression;
+            block = accessor.Body;
+            return expressionBody != null || block != null;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// When a tracked <c>ref</c>/<c>out</c> parameter is written (or already carries
+    /// converted storage), map that parameter back onto the corresponding call-site
+    /// argument so <c>Get(out dynamic p); Bump(ref p.Item1);</c> is gated
+    /// (Codex P1 on #3441, PRRT_kwDORD0nYs6071da).
+    /// </summary>
+    private static bool TryAddRefOutParameterDestinationAliasesFromInvocation(
+        InvocationExpressionSyntax invocation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (!TryResolveInvocationMethod(invocation, semanticModel, cancellationToken, out var method) ||
+            method == null)
+        {
+            return false;
+        }
+
+        return TryAddRefOutParameterDestinationAliasesFromArguments(
+            invocation.ArgumentList.Arguments,
+            method,
+            invocation,
+            aliases,
+            semanticModel,
+            cancellationToken);
+    }
+
+    private static bool TryAddRefOutParameterDestinationAliasesFromObjectCreation(
+        BaseObjectCreationExpressionSyntax objectCreation,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (objectCreation.ArgumentList == null ||
+            objectCreation.ArgumentList.Arguments.Count == 0)
+        {
+            return false;
+        }
+
+        if (semanticModel.GetSymbolInfo(objectCreation, cancellationToken).Symbol is not IMethodSymbol constructor)
+            return false;
+
+        return TryAddRefOutParameterDestinationAliasesFromArguments(
+            objectCreation.ArgumentList.Arguments,
+            constructor,
+            invocationForDelegate: null,
+            aliases,
+            semanticModel,
+            cancellationToken);
+    }
+
+    private static bool TryAddRefOutParameterDestinationAliasesFromConstructorInitializer(
+        ConstructorInitializerSyntax constructorInitializer,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (constructorInitializer.ArgumentList.Arguments.Count == 0)
+            return false;
+
+        if (semanticModel.GetSymbolInfo(constructorInitializer, cancellationToken).Symbol
+            is not IMethodSymbol constructor)
+        {
+            return false;
+        }
+
+        return TryAddRefOutParameterDestinationAliasesFromArguments(
+            constructorInitializer.ArgumentList.Arguments,
+            constructor,
+            invocationForDelegate: null,
+            aliases,
+            semanticModel,
+            cancellationToken);
+    }
+
+    private static bool TryAddRefOutParameterDestinationAliasesFromArguments(
+        SeparatedSyntaxList<ArgumentSyntax> arguments,
+        IMethodSymbol method,
+        InvocationExpressionSyntax? invocationForDelegate,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var added = false;
+        for (var i = 0; i < arguments.Count; i++)
+        {
+            var argument = arguments[i];
+            if (!IsRefOrOutArgument(argument))
+                continue;
+
+            ISymbol? parameter = ResolveInvocationParameter(method, argument, i);
+            if (method.MethodKind == MethodKind.DelegateInvoke && invocationForDelegate != null)
+            {
+                var mapped = TryMapStoredDelegateParameter(
+                    invocationForDelegate, method, i, semanticModel, cancellationToken);
+                if (mapped != null)
+                    parameter = mapped;
+            }
+            else if (parameter is IParameterSymbol parameterSymbol)
+            {
+                parameter = parameterSymbol.OriginalDefinition;
+            }
+
+            if (parameter == null || !aliases.Contains(parameter))
+                continue;
+
+            if (TryAddRefOutArgumentDestination(argument, aliases, semanticModel, cancellationToken))
+                added = true;
+        }
+
+        return added;
+    }
+
+    private static bool IsRefOrOutArgument(ArgumentSyntax argument) =>
+        argument.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
+        argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword) ||
+        argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) ||
+        argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword);
+
+    private static bool TryAddRefOutArgumentDestination(
+        ArgumentSyntax argument,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var expr = SkipTransparentWrappers(argument.Expression);
+        if (expr is DeclarationExpressionSyntax { Designation: { } designation })
+            return TryAddDesignationAlias(designation, aliases, semanticModel, cancellationToken);
+
+        var symbol = semanticModel.GetSymbolInfo(expr, cancellationToken).Symbol;
+        if (symbol is not (ILocalSymbol or IParameterSymbol or IFieldSymbol or IPropertySymbol) ||
+            aliases.Contains(symbol))
+        {
+            return false;
+        }
+
+        aliases.Add(symbol);
+        return true;
+    }
+
+    /// <summary>
     /// Maps a stored-delegate invocation argument ordinal onto the source lambda /
     /// anonymous-method / method-group parameter the delegate was assigned from
     /// (e.g. <c>Action&lt;dynamic&gt; use = copy =&gt; …; use(point)</c>).
@@ -2719,6 +3039,115 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // (Codex P1s on #3441, PRRT_kwDORD0nYs605hQL / …605hQM).
             if (AccessorHasUnresolvedCalleeEscape(node, aliases, semanticModel, cancellationToken) ||
                 OperatorHasUnresolvedCalleeEscape(node, aliases, semanticModel, cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Conservative refusal when tracked storage leaves a member through a return
+    /// or a <c>ref</c>/<c>out</c> parameter whose call sites cannot all be mapped:
+    /// overridable / interface members, conversion operators (implicit sites are
+    /// easy to miss), and method-group uses of a method that writes a tracked
+    /// <c>ref</c>/<c>out</c> parameter (Codex P1s on #3441, PRRT_kwDORD0nYs6071da /
+    /// …6071de).
+    /// </summary>
+    private static bool HasUnresolvedReturnOrRefOutEscape(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        HashSet<ISymbol> aliases,
+        CancellationToken cancellationToken)
+    {
+        foreach (var alias in aliases)
+        {
+            if (alias is IMethodSymbol { MethodKind: MethodKind.Conversion })
+                return true;
+
+            if (alias is IMethodSymbol method &&
+                method.MethodKind is not (MethodKind.LocalFunction or MethodKind.AnonymousFunction
+                    or MethodKind.DelegateInvoke) &&
+                IsOverridableOrInterfaceMember(method))
+            {
+                return true;
+            }
+
+            if (alias is IPropertySymbol property && IsOverridableOrInterfaceMember(property))
+                return true;
+
+            if (alias is IParameterSymbol { RefKind: RefKind.Ref or RefKind.Out } parameter &&
+                parameter.ContainingSymbol is ISymbol containing &&
+                IsOverridableOrInterfaceMember(containing))
+            {
+                return true;
+            }
+        }
+
+        foreach (var node in root.DescendantNodes())
+        {
+            if (node is not ExpressionSyntax expression ||
+                expression is InvocationExpressionSyntax)
+            {
+                continue;
+            }
+
+            var info = semanticModel.GetSymbolInfo(expression, cancellationToken);
+            var symbol = info.Symbol ??
+                         (info.CandidateSymbols.Length == 1 ? info.CandidateSymbols[0] : null);
+            if (symbol is not IMethodSymbol referenced ||
+                !MethodHasTrackedRefOutParameter(referenced, aliases))
+            {
+                continue;
+            }
+
+            if (IsNameofReference(expression) || IsInvocationCallee(expression))
+                continue;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool MethodHasTrackedRefOutParameter(IMethodSymbol method, HashSet<ISymbol> aliases)
+    {
+        var original = (method.ReducedFrom ?? method).OriginalDefinition;
+        foreach (var parameter in original.Parameters)
+        {
+            if (parameter.RefKind is RefKind.Ref or RefKind.Out && aliases.Contains(parameter))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsInvocationCallee(ExpressionSyntax expression)
+    {
+        if (expression.Parent is InvocationExpressionSyntax invocation &&
+            invocation.Expression == expression)
+        {
+            return true;
+        }
+
+        if (expression.Parent is MemberAccessExpressionSyntax member &&
+            member.Name == expression &&
+            member.Parent is InvocationExpressionSyntax memberInvocation &&
+            memberInvocation.Expression == member)
+        {
+            return true;
+        }
+
+        return expression.Parent is ConstructorInitializerSyntax or BaseObjectCreationExpressionSyntax;
+    }
+
+    private static bool IsNameofReference(ExpressionSyntax expression)
+    {
+        foreach (var ancestor in expression.Ancestors().OfType<InvocationExpressionSyntax>())
+        {
+            if (ancestor.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" } &&
+                ancestor.ArgumentList.Span.Contains(expression.Span))
             {
                 return true;
             }
@@ -5946,20 +6375,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         AnonymousFunctionExpressionSyntax anonymousFunction,
         HashSet<ISymbol> aliases,
         SemanticModel semanticModel,
-        CancellationToken cancellationToken)
-    {
-        foreach (var returned in EnumerateFunctionReturnExpressions(
-                     anonymousFunction.ExpressionBody, anonymousFunction.Block))
-        {
-            if (ExpressionReferencesStorageAlias(
-                    returned, aliases, semanticModel, cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+        CancellationToken cancellationToken) =>
+        FunctionReturnsConvertedStorage(
+            anonymousFunction.ExpressionBody,
+            anonymousFunction.Block,
+            aliases,
+            semanticModel,
+            cancellationToken);
 
     /// <summary>
     /// True when a local function returns converted storage
@@ -5969,11 +6391,26 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         LocalFunctionStatementSyntax localFunction,
         HashSet<ISymbol> aliases,
         SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        FunctionReturnsConvertedStorage(
+            localFunction.ExpressionBody?.Expression,
+            localFunction.Body,
+            aliases,
+            semanticModel,
+            cancellationToken);
+
+    /// <summary>
+    /// True when a function body returns (or <c>yield return</c>s) converted storage,
+    /// including <c>ref return</c> expressions.
+    /// </summary>
+    private static bool FunctionReturnsConvertedStorage(
+        ExpressionSyntax? expressionBody,
+        BlockSyntax? block,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        foreach (var returned in EnumerateFunctionReturnExpressions(
-                     localFunction.ExpressionBody?.Expression,
-                     localFunction.Body))
+        foreach (var returned in EnumerateFunctionReturnExpressions(expressionBody, block))
         {
             if (ExpressionReferencesStorageAlias(
                     returned, aliases, semanticModel, cancellationToken))
@@ -5996,13 +6433,23 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             yield break;
 
         // Skip nested lambdas / local functions so their returns are not
-        // attributed to the outer function (Codex P2 on #3441).
-        foreach (var statement in block
-                     .DescendantNodes(n => n is not (AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))
-                     .OfType<ReturnStatementSyntax>())
+        // attributed to the outer function (Codex P2 on #3441). Also pick up
+        // iterator `yield return` so an existing alias leaving via an iterator
+        // is tracked (Codex P1 on #3441, PRRT_kwDORD0nYs6071de).
+        foreach (var node in block.DescendantNodes(
+                     n => n is not (AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax)))
         {
-            if (statement.Expression != null)
-                yield return statement.Expression;
+            switch (node)
+            {
+                case ReturnStatementSyntax { Expression: { } returned }:
+                    yield return returned;
+                    break;
+                case YieldStatementSyntax yieldStatement
+                    when yieldStatement.IsKind(SyntaxKind.YieldReturnStatement) &&
+                         yieldStatement.Expression != null:
+                    yield return yieldStatement.Expression;
+                    break;
+            }
         }
     }
 
