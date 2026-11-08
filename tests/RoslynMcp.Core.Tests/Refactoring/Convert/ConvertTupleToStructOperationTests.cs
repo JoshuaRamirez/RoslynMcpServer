@@ -10354,4 +10354,177 @@ public class ConvertTupleToStructOperationTests
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
     }
+
+    private const string SequenceExtensionTemplate = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public static class SequenceExtensions
+        {
+            public static void Bump(ref dynamic v) => v++;
+
+            public static void Use(this IEnumerable<dynamic> values)
+            {
+                dynamic copy = values.First();
+                Bump(ref copy.Item1);
+            }
+
+            public static void UseObjects(this IEnumerable<object> values)
+            {
+                foreach (var boxed in values)
+                {
+                    dynamic copy = boxed;
+                    Bump(ref copy.Item1);
+                }
+            }
+
+            public static void UseGeneric<T>(this IEnumerable<T> values)
+            {
+                dynamic copy = values.First()!;
+                Bump(ref copy.Item1);
+            }
+
+            public static void UseWith(this List<int> values, dynamic copy)
+            {
+                Bump(ref copy.Item1);
+            }
+
+            public static void Read(this IEnumerable<dynamic> values)
+            {
+                dynamic copy = values.First();
+                Console.WriteLine(copy.Item1);
+            }
+        }
+
+        public static class Worker
+        {
+            static void Bump(ref dynamic v) => v++;
+
+            public static object Run()
+            {
+                var point = (X: 1, Y: 2);
+                USE
+                return point;
+            }
+        }
+        """;
+
+    // Codex P1 on #3441 (PRRT_kwDORD0nYs608u-W): a reduced extension's hidden `this`
+    // parameter must be aliased like argument 0. points.Use() on a source extension
+    // Use(this IEnumerable<dynamic> values) that does Bump(ref values.First().Item1)
+    // works on a boxed ValueTuple but fails after conversion — the sequence-receiver
+    // exemption used to skip both the refusal and the body analysis.
+    [SkippableTheory]
+    [InlineData(false, "dynamic[] points = { point }; points.Use();")]
+    [InlineData(true, "dynamic[] points = { point }; points.Use();")]
+    [InlineData(false, "var points = new List<object> { point }; points.UseObjects();")]
+    [InlineData(true, "var points = new List<object> { point }; points.UseObjects();")]
+    [InlineData(false, "var points = new[] { point }; points.UseGeneric();")]
+    [InlineData(true, "var points = new[] { point }; points.UseGeneric();")]
+    [InlineData(false, "object[] points = { point }; SequenceExtensions.UseObjects(points);")]
+    [InlineData(true, "object[] points = { point }; SequenceExtensions.UseObjects(points);")]
+    [InlineData(false, "var points = new List<object> { point }; SequenceExtensions.UseObjects(points);")]
+    [InlineData(true, "var points = new List<object> { point }; SequenceExtensions.UseObjects(points);")]
+    [InlineData(false, "var points = new List<object> { point }; dynamic copy = points[0]; Bump(ref copy.Item1);")]
+    [InlineData(true, "var points = new List<object> { point }; dynamic copy = points[0]; Bump(ref copy.Item1);")]
+    [InlineData(false, "var points = new List<object>(); points.Add(point); points.UseObjects();")]
+    [InlineData(true, "var points = new List<object>(); points.Add(point); points.UseObjects();")]
+    [InlineData(false, "var other = new List<int>(); other.UseWith(point);")]
+    [InlineData(true, "var other = new List<int>(); other.UseWith(point);")]
+    public async Task ConvertTupleToStruct_SequenceExtensionReceiverRefElement_ThrowsAndWritesNothing(
+        bool asRecord,
+        string use)
+    {
+        var source = SequenceExtensionTemplate.Replace("USE", use);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 50,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    // Over-refusal guard for PRRT_kwDORD0nYs608u-W: source sequence extensions that
+    // only read by value and BCL sequence extensions (LINQ) still convert.
+    [SkippableTheory]
+    [InlineData(false, "dynamic[] points = { point }; points.Read();")]
+    [InlineData(true, "dynamic[] points = { point }; points.Read();")]
+    [InlineData(false, "var points = new[] { point }; var count = points.Count();")]
+    [InlineData(true, "var points = new[] { point }; var count = points.Count();")]
+    public async Task ConvertTupleToStruct_SequenceExtensionReceiverByValue_Succeeds(
+        bool asRecord,
+        string use)
+    {
+        var source = SequenceExtensionTemplate.Replace("USE", use);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 50,
+            NewTypeName = "Point",
+            AsRecord = asRecord
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains(asRecord ? "public record struct Point" : "public struct Point", text, StringComparison.Ordinal);
+    }
+
+    private const string MetadataSequenceExtensionExternalSource = """
+        using System.Collections.Generic;
+
+        namespace ExternalLib;
+
+        public static class SeqExt
+        {
+            static void Bump(ref dynamic v) => v++;
+            public static void UseAll(this IEnumerable<object> values)
+            {
+                foreach (var boxed in values) { dynamic copy = boxed; Bump(ref copy.Item1); }
+            }
+        }
+        """;
+
+    // PRRT_kwDORD0nYs608u-W sibling: a metadata-only, non-framework sequence extension
+    // has no body to analyze, so a storage-carrying receiver falls under the
+    // metadata-only refusal instead of the sequence exemption.
+    [SkippableTheory]
+    [InlineData(false, "var points = new List<object> { point }; points.UseAll();")]
+    [InlineData(true, "var points = new List<object> { point }; points.UseAll();")]
+    public async Task ConvertTupleToStruct_MetadataOnlySequenceExtensionReceiver_ThrowsAndWritesNothing(
+        bool asRecord,
+        string use)
+    {
+        var source = MetadataCalleeTemplate.Replace("using ExternalLib;", "using System.Collections.Generic;\nusing ExternalLib;").Replace("USE", use);
+        await using var workspace = await TempWorkspace.CreateWithMetadataReferenceAsync(
+            source, MetadataSequenceExtensionExternalSource);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 10,
+                NewTypeName = "Point",
+                AsRecord = asRecord
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
 }

@@ -2506,6 +2506,21 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         var added = false;
+
+        // Reduced extension: points.Use() binds the receiver to the hidden `this`
+        // parameter, which never appears in ArgumentList. Alias it like argument 0
+        // so the extension body is analyzed (Codex P1 on #3441, PRRT_kwDORD0nYs608u-W).
+        if (method.ReducedFrom is { } reducedFrom &&
+            invocation.Expression is MemberAccessExpressionSyntax extensionAccess &&
+            !reducedFrom.Parameters.IsDefaultOrEmpty &&
+            ExpressionReferencesStorageAlias(
+                extensionAccess.Expression, aliases, semanticModel, cancellationToken))
+        {
+            var thisParameter = reducedFrom.OriginalDefinition.Parameters[0];
+            if (aliases.Add(thisParameter))
+                added = true;
+        }
+
         for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
         {
             var argument = invocation.ArgumentList.Arguments[i];
@@ -2535,7 +2550,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 // Prefer the unbound generic / source declaration parameter so
                 // Use<object>(point) still matches Use<T>(T copy) body references.
-                parameter = parameterSymbol.OriginalDefinition;
+                // Reduced extension parameters are shifted by the hidden `this`.
+                parameter = MapToDeclaredParameter(method, parameterSymbol);
             }
 
             if (aliases.Contains(parameter))
@@ -3269,11 +3285,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // ordinary argument mapper cannot bind `this`. Refuse when the receiver
         // carries converted storage and is not a sequence/container this (those
         // keep existing ToArray/AsSpan/LINQ precise paths).
+        //
+        // Sequence/container receivers are only exempt when the extension body can
+        // be analyzed (source-declared: the hidden `this` parameter is aliased by
+        // TryAddOrdinaryCalleeParameterAliasesFromInvocation) or is a framework
+        // (BCL/LINQ) forwarding method. A metadata-only non-framework sequence
+        // extension has no body to inspect, so it is refused (Codex P1 on #3441,
+        // PRRT_kwDORD0nYs608u-W).
         if (method.ReducedFrom is { } reduced &&
             invocation.Expression is MemberAccessExpressionSyntax extensionAccess &&
             ExpressionReferencesStorageAlias(
                 extensionAccess.Expression, aliases, semanticModel, cancellationToken) &&
-            !ExtensionThisIsSequenceContainer(reduced))
+            (!ExtensionThisIsSequenceContainer(reduced) ||
+             IsMetadataOnlyNonFrameworkMethod(reduced)))
         {
             return true;
         }
@@ -3813,6 +3837,35 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return false;
 
         return TryGetSequenceElementType(unreducedExtension.Parameters[0].Type) != null;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> has no declaring syntax (no body for alias
+    /// propagation to inspect) and does not come from a framework assembly.
+    /// </summary>
+    private static bool IsMetadataOnlyNonFrameworkMethod(IMethodSymbol method)
+    {
+        var original = (method.ReducedFrom ?? method).OriginalDefinition;
+        return original.DeclaringSyntaxReferences.IsDefaultOrEmpty &&
+               !IsFrameworkAssembly(original.ContainingAssembly);
+    }
+
+    /// <summary>
+    /// Maps a call-site parameter to the declaration parameter whose body references
+    /// alias propagation must match: the unbound generic definition, shifted past the
+    /// hidden <c>this</c> parameter for reduced extensions.
+    /// </summary>
+    private static IParameterSymbol MapToDeclaredParameter(IMethodSymbol method, IParameterSymbol parameter)
+    {
+        if (method.ReducedFrom is { } reducedFrom)
+        {
+            var declared = reducedFrom.OriginalDefinition;
+            var ordinal = parameter.Ordinal + 1;
+            if (ordinal < declared.Parameters.Length)
+                return declared.Parameters[ordinal];
+        }
+
+        return parameter.OriginalDefinition;
     }
 
     private static bool MethodHasParamsParameter(IMethodSymbol method) =>
@@ -5409,6 +5462,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (objectCreation.Initializer is { } initializer &&
                 initializer.IsKind(SyntaxKind.CollectionInitializerExpression))
             {
+                // new List<object> { point } / new ArrayList { point } box the converted
+                // value and hand it back as object / dynamic, so opaque element
+                // collections carry storage too — mirrors the explicit list.Add(point)
+                // rule in TryAddCollectionInsertionReceiverAlias (Codex P1 audit on
+                // #3441, PRRT_kwDORD0nYs608u-W: points.UseObjects() on such a list).
+                var collectionIsOpaque = ReceiverElementTypesAreOpaque(
+                    objectCreation, semanticModel, cancellationToken);
                 foreach (var element in initializer.Expressions)
                 {
                     // Bind each entry to the collection initializer's Add method and only
@@ -5425,7 +5485,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     {
                         for (var i = 0; i < complexElement.Expressions.Count; i++)
                         {
-                            if (!CollectionInitializerPartMayCarryStorage(addMethod, i, aliases))
+                            if (!CollectionInitializerPartMayCarryStorage(addMethod, i, aliases, collectionIsOpaque))
                                 continue;
 
                             if (ExpressionReferencesStorageAlias(
@@ -5438,7 +5498,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         continue;
                     }
 
-                    if (CollectionInitializerPartMayCarryStorage(addMethod, 0, aliases) &&
+                    if (CollectionInitializerPartMayCarryStorage(addMethod, 0, aliases, collectionIsOpaque) &&
                         ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
                     {
                         return true;
@@ -5756,7 +5816,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     private static bool CollectionInitializerPartMayCarryStorage(
         IMethodSymbol? addMethod,
         int index,
-        HashSet<ISymbol> aliases)
+        HashSet<ISymbol> aliases,
+        bool collectionIsOpaque)
     {
         if (addMethod == null)
             return true;
@@ -5782,7 +5843,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (parameter.IsParams)
             return true;
 
-        return TypeInvolvesStorageAliasType(parameter.Type, aliases);
+        return TypeInvolvesStorageAliasType(parameter.Type, aliases) ||
+               (collectionIsOpaque && IsOpaqueCarrierType(parameter.Type));
     }
 
     /// <summary>
