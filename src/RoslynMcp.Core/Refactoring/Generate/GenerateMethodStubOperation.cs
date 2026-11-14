@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Operations;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -483,8 +484,21 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         GenerateMethodStubParams @params,
         CancellationToken cancellationToken)
     {
+        if (semanticModel.GetOperation(invocation, cancellationToken) is INameOfOperation)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MethodNotFound,
+                "The selected nameof expression is an operator, not a method invocation.");
+        }
+
         var invokedName = GetInvokedName(invocation);
         var methodName = ResolveMethodName(@params, invokedName);
+        if (SyntaxIdentifierValidation.NormalizeIdentifier(methodName) == "nameof")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolName,
+                "Generating a method named nameof can change the meaning of nameof expressions.");
+        }
         var typeParameters = InferTypeParameters(invokedName);
         var rewriteCallSite = ShouldRewriteCallSite(@params.MethodName, invokedName, methodName);
         var callSiteType = GetEnclosingType(invocation, semanticModel, cancellationToken);

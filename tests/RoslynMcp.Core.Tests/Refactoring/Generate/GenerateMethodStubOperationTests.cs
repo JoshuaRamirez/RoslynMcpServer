@@ -1439,6 +1439,81 @@ public class GenerateMethodStubOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableTheory]
+    [InlineData("List<int>")]
+    [InlineData("List<>")]
+    [InlineData("Owner")]
+    public async Task GenerateMethodStub_NameofOperator_ThrowsWithoutWriting(string argument)
+    {
+        const string source = """
+            using System.Collections.Generic;
+
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string Owner { get; } = "ann";
+
+                public string Validate() => nameof(ARGUMENT);
+            }
+            """;
+
+        var input = source.Replace("ARGUMENT", argument, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(input);
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath)!;
+        var parseOptions = ((CSharpParseOptions)document.Project.ParseOptions!).WithLanguageVersion(LanguageVersion.CSharp14);
+        workspace.Context.UpdateSolution(document.Project.Solution.WithProjectParseOptions(document.Project.Id, parseOptions));
+        AssertCompiles(input);
+        var (line, column) = FindIdentifier(input, "nameof");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateMethodStubParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                Column = column,
+                ThrowNotImplemented = false
+            }));
+
+        Assert.Equal(ErrorCodes.MethodNotFound, ex.ErrorCode);
+        Assert.Contains("nameof", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_NameofOperatorPreview_ThrowsWithoutWriting()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string Owner { get; } = "ann";
+
+                public string Validate() => nameof(Owner);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "nameof");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateMethodStubParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                Column = column,
+                Preview = true
+            }));
+
+        Assert.Equal(ErrorCodes.MethodNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     [SkippableFact]
     public async Task GenerateMethodStub_CannotInferReturnType_Throws()
     {
@@ -2016,6 +2091,36 @@ public class GenerateMethodStubOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("private static void Init()", updated);
+    }
+
+    [SkippableTheory]
+    [InlineData("nameof")]
+    [InlineData("@nameof")]
+    public async Task GenerateMethodStub_NameofOverride_ThrowsWithoutWriting(string methodName)
+    {
+        const string source = """
+            public class Widget
+            {
+                public string Name { get; } = "ann";
+                public string Run() => Missing() + nameof(Name);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Missing");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateMethodStubParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                Column = column,
+                MethodName = methodName
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
     [SkippableFact]
@@ -3190,6 +3295,43 @@ public class GenerateMethodStubOperationTests
         Assert.Equal(beforeA, await File.ReadAllTextAsync(pathA));
         Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
         Assert.Equal(beforeAlready, await File.ReadAllTextAsync(pathAlready));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_SkipsNameofAndGeneratesUnresolvedCall()
+    {
+        const string source = """
+            using System.Collections.Generic;
+
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string Owner { get; } = "ann";
+
+                public string Validate()
+                {
+                    Missing();
+                    return nameof(List<int>) + nameof(Owner);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            AllFiles = true,
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private void Missing()", updated, StringComparison.Ordinal);
+        Assert.Contains("return nameof(List<int>) + nameof(Owner);", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private string nameof", updated, StringComparison.Ordinal);
+        AssertCompiles(updated);
     }
 
     [SkippableFact]
