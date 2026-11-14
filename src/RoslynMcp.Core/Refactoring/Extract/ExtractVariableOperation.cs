@@ -670,6 +670,18 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         variableDeclaration = null;
         replacementCount = 0;
 
+        // Peer of ExtractConstantOperation: the bare operand of a special min-value
+        // negation (-2147483648, -0x80000000, -9223372036854775808, ...) is typed
+        // uint/ulong while the negation is int/long; extracting it alone reports
+        // SUCCESS but yields CS0266 / CS0023 or a silent int→long change (#3355).
+        if (expression is LiteralExpressionSyntax literal &&
+            ExtractConstantOperation.IsSpecialMinValueUnaryOperand(literal, semanticModel, cancellationToken))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidTargetType,
+                "Cannot extract the operand of a special minimum-value unary expression (e.g. -2147483648 / -9223372036854775808 / -0x80000000); extract the full expression or choose another literal.");
+        }
+
         var typeInfo = semanticModel.GetTypeInfo(expression, cancellationToken);
         if (typeInfo.Type == null)
             return null;
@@ -708,6 +720,16 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             ? FindEquivalentExpressions(expression, semanticModel, cancellationToken)
             : new List<ExpressionSyntax> { expression };
 
+        // ReplaceAll from a plain 2147483648 must not also rewrite the operand
+        // of a -2147483648 site (CS0266 / CS0023); skip those like extract_constant (#3355).
+        if (replaceAll)
+        {
+            replacements = replacements
+                .Where(r => r is not LiteralExpressionSyntax lit ||
+                            !ExtractConstantOperation.IsSpecialMinValueUnaryOperand(lit, semanticModel, cancellationToken))
+                .ToList();
+        }
+
         // Implicit `new()` cannot be the initializer of a `var` local (no
         // target type). Prefer the explicit converted/type display, or skip
         // when the type cannot be spelled (Copilot P1).
@@ -735,7 +757,10 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             SyntaxFactory.VariableDeclaration(typeSyntax.WithTrailingTrivia(SyntaxFactory.Space))
                 .WithVariables(SyntaxFactory.SingletonSeparatedList(
                     SyntaxFactory.VariableDeclarator(variableName)
-                        .WithInitializer(SyntaxFactory.EqualsValueClause(expression)))));
+                        .WithInitializer(SyntaxFactory.EqualsValueClause(
+                            // The reference keeps the expression's outer trivia (#3295),
+                            // so strip it here to avoid copying comments twice.
+                            expression.WithoutTrivia())))));
 
         SyntaxNode newRoot;
         if (replacements.Count <= 1)
@@ -927,7 +952,9 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         {
             variableDeclaration.NormalizeWhitespace()
                 .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed),
-            containingStatement.ReplaceNode(expression, variableRef)
+            // Keep the expression's trivia so a following keyword (is / as /
+            // switch / with) stays separated from the new local (#3295).
+            containingStatement.ReplaceNode(expression, variableRef.WithTriviaFrom(expression))
         };
 
         if (containingBlock != null)

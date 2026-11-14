@@ -94,6 +94,15 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         if (SyntaxFacts.GetKeywordKind(@params.MethodName!) != SyntaxKind.None)
             throw new RefactoringException(ErrorCodes.ReservedKeyword, $"'{@params.MethodName}' is a C# reserved keyword.");
 
+        // "_" is a legal identifier, but a method named "_" captures every discard in the
+        // containing type (_ = Log(7) / out _ become the method group: CS1656 / CS1657).
+        if (@params.MethodName == "_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidNewName,
+                "'_' is not a valid method name: existing discards (_ = ... / out _) would bind to the new method.");
+        }
+
         if (@params.StartLine.Value < 1 || @params.EndLine.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line numbers must be >= 1.");
 
@@ -678,6 +687,11 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
     private static string? FinalizeMethodName(string? seed)
     {
         if (string.IsNullOrEmpty(seed))
+            return null;
+
+        // A derived "_" (e.g. from `_ = s.Length;`) would capture the extracted discards and
+        // every other discard in the type (CS1656 / CS1657), so skip the run (#3299).
+        if (seed is "_" or "@_")
             return null;
 
         var name = seed;

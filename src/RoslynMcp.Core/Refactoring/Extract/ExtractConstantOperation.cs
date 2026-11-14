@@ -100,6 +100,15 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (!IdentifierValidation.IsValidIdentifier(@params.ConstantName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid constant name: {@params.ConstantName}");
 
+        // "_" is a legal identifier, but a constant named "_" captures every discard in the
+        // type (_ = Log(v) / out _ now target the constant: CS0131 / CS1510).
+        if (@params.ConstantName is "_" or "@_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolName,
+                "'_' is not a valid constant name: existing discards (_ = ... / out _) would bind to the new constant.");
+        }
+
         if (!VisibilityTokenHelpers.IsValidVisibility(@params.Visibility))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
     }
@@ -169,11 +178,11 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         // Interfaces remain valid single-site targets (public const is legal in
         // default interface members). Bulk allFiles allows public const into
         // interfaces and skips non-public visibility there (Codex P2).
-        if (IsSpecialMinValueUnaryOperand(literal))
+        if (IsSpecialMinValueUnaryOperand(literal, semanticModel, cancellationToken))
         {
             throw new RefactoringException(
                 ErrorCodes.InvalidTargetType,
-                "Cannot extract the operand of a special minimum-value unary expression (-2147483648 / -9223372036854775808); extract the full expression or choose another literal.");
+                "Cannot extract the operand of a special minimum-value unary expression (e.g. -2147483648 / -9223372036854775808 / -0x80000000); extract the full expression or choose another literal.");
         }
 
         if (IsVisibilityIncompatibleWithContainingType(@params.Visibility, containingType))
@@ -530,7 +539,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 if (literal.Ancestors().OfType<EnumDeclarationSyntax>().Any())
                     return false;
 
-                if (IsSpecialMinValueUnaryOperand(literal))
+                if (IsSpecialMinValueUnaryOperand(literal, semanticModel, cancellationToken))
                     return false;
 
                 if (literal.Ancestors().OfType<AttributeSyntax>().Any())
@@ -592,7 +601,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (literal.Ancestors().OfType<EnumDeclarationSyntax>().Any())
             return null;
 
-        if (IsSpecialMinValueUnaryOperand(literal))
+        if (IsSpecialMinValueUnaryOperand(literal, semanticModel, cancellationToken))
             return null;
 
         if (IsVisibilityIncompatibleWithContainingType(bulkParams.Visibility, containingType))
@@ -1132,12 +1141,26 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     }
 
     /// <summary>
-    /// True for the operand of the special minimum-value unary forms
-    /// <c>-2147483648</c> / <c>-9223372036854775808</c> (including digit
-    /// separators), where the literal is typed as unsigned and replacing only
-    /// the operand changes semantics (Codex P2).
+    /// True for the operand of a special minimum-value unary negation such as
+    /// <c>-2147483648</c>, <c>-0x80000000</c>, <c>-9223372036854775808</c> or
+    /// <c>-0x8000_0000_0000_0000</c>: the compiler types the literal as
+    /// <c>uint</c> / <c>ulong</c> but the negation as <c>int</c> / <c>long</c>,
+    /// a conversion that only exists for the literal operand. Replacing just the
+    /// operand changes semantics (CS0266 / CS0023, or a silent int→long change).
+    /// Decided by semantic types, not spelling, so hexadecimal, binary,
+    /// digit-separated and <c>L</c>-suffixed forms are covered, while
+    /// <c>-2147483648U</c> (ordinary <c>uint</c> negation, result <c>long</c>)
+    /// is not. A 32-bit form whose <c>int</c> result is immediately converted to
+    /// <c>long</c> by a fixed-type target (<c>long x = -0x80000000;</c>, a long
+    /// field/property initializer or a simple assignment) is also allowed:
+    /// <c>-operand</c> is then <c>long</c> with the same value. Arguments and
+    /// other inferred contexts stay refused because the int→long change can pick
+    /// a different overload (#3355, Codex P2, Copilot).
     /// </summary>
-    internal static bool IsSpecialMinValueUnaryOperand(LiteralExpressionSyntax literal)
+    internal static bool IsSpecialMinValueUnaryOperand(
+        LiteralExpressionSyntax literal,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         if (literal.Parent is not PrefixUnaryExpressionSyntax unary ||
             !unary.IsKind(SyntaxKind.UnaryMinusExpression) ||
@@ -1146,14 +1169,57 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             return false;
         }
 
-        // Use the token's numeric value so spellings with digit separators
-        // (e.g. -2_147_483_648) still match — Token.Text alone misses those.
-        return literal.Token.Value switch
+        var operandType = semanticModel.GetTypeInfo(literal, cancellationToken).Type?.SpecialType;
+        var resultType = semanticModel.GetTypeInfo(unary, cancellationToken).Type?.SpecialType;
+
+        if (operandType == SpecialType.System_UInt64 && resultType == SpecialType.System_Int64)
         {
-            uint u when u == 2147483648u => true,
-            ulong ul when ul == 9223372036854775808ul => true,
-            _ => false
-        };
+            // -ulong has no operator (CS0023) once the operand is a variable/constant.
+            return true;
+        }
+
+        if (operandType != SpecialType.System_UInt32 || resultType != SpecialType.System_Int32)
+        {
+            return false;
+        }
+
+        // The int result is immediately converted to long (`long x = -0x80000000;`):
+        // ordinary uint negation already yields long with the same value, so
+        // extracting the operand compiles and keeps semantics.
+        ExpressionSyntax outer = unary;
+        while (outer.Parent is ParenthesizedExpressionSyntax or CheckedExpressionSyntax)
+        {
+            outer = (ExpressionSyntax)outer.Parent;
+        }
+
+        // Only a fixed-type target keeps semantics: an explicitly typed long
+        // declaration/field/property initializer or a simple assignment. In an
+        // argument, return or other inferred context the extracted `-operand`
+        // becomes long instead of int, which can change overload resolution or
+        // generic inference while still compiling (Copilot).
+        if (!IsFixedTypeInitializerOrAssignment(outer))
+        {
+            return true;
+        }
+
+        return semanticModel.GetTypeInfo(outer, cancellationToken).ConvertedType?.SpecialType
+            != SpecialType.System_Int64;
+    }
+
+    private static bool IsFixedTypeInitializerOrAssignment(ExpressionSyntax expression)
+    {
+        switch (expression.Parent)
+        {
+            case EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax { Parent: VariableDeclarationSyntax declaration } }:
+                return !declaration.Type.IsVar;
+            case EqualsValueClauseSyntax { Parent: PropertyDeclarationSyntax }:
+                return true;
+            case AssignmentExpressionSyntax assignment
+                when assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) && assignment.Right == expression:
+                return true;
+            default:
+                return false;
+        }
     }
 
     /// <summary>
@@ -1557,7 +1623,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
                 // Skip special min-value unary operands even when text/type match
                 // a non-unary seed (Codex P2).
-                if (IsSpecialMinValueUnaryOperand(lit))
+                if (IsSpecialMinValueUnaryOperand(lit, semanticModel, cancellationToken))
                     return false;
 
                 if (lit.Kind() != originalLiteral.Kind()) return false;

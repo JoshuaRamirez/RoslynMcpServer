@@ -1547,6 +1547,144 @@ public class GenerateMethodStubOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableTheory]
+    [InlineData("var (a, b) = Split(\"x\");", false)]
+    [InlineData("var (a, b) = Split(\"x\");", true)]
+    [InlineData("(var a, int b) = Split(\"x\");", false)]
+    [InlineData("(var a, int b) = Split(\"x\");", true)]
+    public async Task GenerateMethodStub_ImplicitlyTypedDeconstruction_ThrowsCannotInferReturnType(string statement, bool preview)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Run()
+                {
+                    {{statement}}
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Split");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateMethodStubParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                Column = column,
+                Preview = preview
+            }));
+
+        Assert.Equal(ErrorCodes.CannotInferReturnType, ex.ErrorCode);
+        Assert.Contains("returnType", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_ImplicitlyTypedDeconstruction_SkipsCallSite()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Run()
+                {
+                    var (a, b) = Split("x");
+                    (var c, int d) = Pair(1);
+                    Log("ok");
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private void Log(string arg1)", updated);
+        Assert.DoesNotContain(" Split(", updated.Replace("= Split(", string.Empty, StringComparison.Ordinal));
+        Assert.DoesNotContain(" Pair(", updated.Replace("= Pair(", string.Empty, StringComparison.Ordinal));
+        Assert.DoesNotContain("(var a, var b) Split", updated);
+        Assert.DoesNotContain("(var c, int d) Pair", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ImplicitlyTypedDeconstruction_ExplicitReturnTypeSucceeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Run()
+                {
+                    var (a, b) = Split("x");
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Split");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ReturnType = "(int, string)"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private (int, string) Split(string arg1)", updated);
+        Assert.DoesNotContain("var a, var b", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_TypedDeconstructionAssignment_InfersTupleReturnType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Run()
+                {
+                    int a; string b;
+                    (a, b) = Split("x");
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Split");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private (int a, string b) Split(string arg1)", updated);
+    }
+
     [SkippableFact]
     public async Task GenerateMethodStub_ExternalTarget_Throws()
     {
@@ -1623,6 +1761,96 @@ public class GenerateMethodStubOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("private int Mystery()", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ExplicitVoidReturnType_ConditionalAccessCall_GeneratesVoidStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class C
+            {
+            }
+
+            public static class P
+            {
+                public static void Main()
+                {
+                    C? c = new C();
+                    c?.Run();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Run");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ReturnType = "void"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public void Run()", updated);
+        AssertCompiles("#nullable enable\n" + updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ExplicitVoidReturnType_ActionLambdaCall_GeneratesVoidStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public static class P
+            {
+                public static void Main()
+                {
+                    System.Action a = () => Helper();
+                    a();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Helper");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ReturnType = "void",
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static void Helper()", updated);
+        AssertCompiles(updated);
+    }
+
+    [Theory]
+    [InlineData("void")]
+    [InlineData(" void ")]
+    public void GenerateMethodStub_IsValidTypeName_AcceptsVoid(string typeName)
+    {
+        Assert.True(GenerateMethodStubOperation.IsValidTypeName(typeName));
+    }
+
+    [Theory]
+    [InlineData("void[]")]
+    [InlineData("void?")]
+    [InlineData("List<void>")]
+    public void GenerateMethodStub_IsValidTypeName_RejectsVoidCompositions(string typeName)
+    {
+        Assert.False(GenerateMethodStubOperation.IsValidTypeName(typeName));
     }
 
     #endregion

@@ -1847,6 +1847,226 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_ExtractsHexUintOperandConvertedToLong()
+    {
+        // `long x = -0x80000000;` types the negation as int (special min-value
+        // case) but immediately converts it to long; with a uint const operand,
+        // -X is ordinary uint negation (long) with the same value, so the operand
+        // is still extracted and the result compiles (#3355).
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public long Run()
+                {
+                    long x = -0x80000000;
+                    return x;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("const uint ", updated, StringComparison.Ordinal);
+        Assert.Contains("= 0x80000000;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("long x = -0x80000000;", updated, StringComparison.Ordinal);
+        Assert.Matches(@"long x = -\w+;", updated);
+        AssertCompilesWithoutErrors(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_SingleSite_HexUintOperandConvertedToLong_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public long Run()
+                {
+                    long x = -0x80000000;
+                    return x;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var span = FindSpan(source, "0x80000000");
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            ConstantName = "Big"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("const uint Big = 0x80000000;", updated, StringComparison.Ordinal);
+        Assert.Contains("long x = -Big;", updated, StringComparison.Ordinal);
+        AssertCompilesWithoutErrors(updated);
+    }
+
+    [SkippableTheory]
+    [InlineData("var x = -0x8000000000000000;", "0x8000000000000000")]
+    [InlineData("long x = -0x8000000000000000L;", "0x8000000000000000L")]
+    [InlineData("long x = -0x8000_0000_0000_0000;", "0x8000_0000_0000_0000")]
+    [InlineData("var x = -0b1000000000000000000000000000000000000000000000000000000000000000;", "0b1000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("int x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0b10000000000000000000000000000000;", "0b10000000000000000000000000000000")]
+    [InlineData("long x = -9223372036854775808L;", "9223372036854775808L")]
+    public async Task ExtractConstant_SingleSite_HexBinarySuffixedMinValueOperand_Fails3116(string declaration, string operand)
+    {
+        // The min-value special case is decided by type, not spelling (#3355).
+        var source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public object Run()
+                {
+                    DECLARATION
+                    return x;
+                }
+            }
+            """.Replace("DECLARATION", declaration, StringComparison.Ordinal);
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                ConstantName = "Big"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        Assert.Contains("special minimum-value unary expression", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData("2147483648")]
+    [InlineData("0x80000000")]
+    public async Task ExtractConstant_SingleSite_IntMinValueOperandInLongArgument_Fails3116(string operand)
+    {
+        // Extracting the operand would make `-Big` a long argument and switch
+        // overload resolution to the generic M<T> (#3355, Copilot).
+        var source = """
+            namespace TestApp;
+
+            public static class Calls
+            {
+                public static string M(long x, object y) => "long";
+                public static string M<T>(T x, string y) where T : System.IEquatable<long> => "generic";
+            }
+
+            public class Host
+            {
+                public string Run()
+                {
+                    return Calls.M(-OPERAND, "");
+                }
+            }
+            """.Replace("OPERAND", operand, StringComparison.Ordinal);
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                ConstantName = "Big"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        Assert.Contains("special minimum-value unary expression", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData("var x = -0x8000000000000000;", "0x8000000000000000")]
+    [InlineData("long x = -0x8000000000000000L;", "0x8000000000000000L")]
+    [InlineData("long x = -0x8000_0000_0000_0000;", "0x8000_0000_0000_0000")]
+    [InlineData("var x = -0b1000000000000000000000000000000000000000000000000000000000000000;", "0b1000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("int x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0b10000000000000000000000000000000;", "0b10000000000000000000000000000000")]
+    [InlineData("long x = -9223372036854775808L;", "9223372036854775808L")]
+    public async Task ExtractConstant_AllFilesTrue_SkipsHexBinarySuffixedMinValueOperand(string declaration, string operand)
+    {
+        // allFiles skips what single-site refuses with 3116 (#3355).
+        _ = operand;
+        var source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public object Run()
+                {
+                    DECLARATION
+                    return x;
+                }
+            }
+            """.Replace("DECLARATION", declaration, StringComparison.Ordinal);
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    private static void AssertCompilesWithoutErrors(string code)
+    {
+        var tree = CSharpSyntaxTree.ParseText(code);
+        var trustedAssemblies = ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(path => MetadataReference.CreateFromFile(path));
+        var compilation = CSharpCompilation.Create(
+            "MinValueCheck",
+            new[] { tree },
+            trustedAssemblies,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        Assert.DoesNotContain(
+            compilation.GetDiagnostics(),
+            d => d.Severity == DiagnosticSeverity.Error);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_Protected_SkipsInternalEnumType()
     {
         // protected vs internal are incomparable — do not emit protected const State.

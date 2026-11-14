@@ -302,6 +302,60 @@ public class ExtractMethodParamsValidationTests
     }
 
     [Fact]
+    public void Validate_MethodNameIsDiscard_ThrowsInvalidNewName()
+    {
+        // A method named "_" captures every discard in the containing type
+        // (_ = Log(7) / out _), so the rewrite fails with CS1656 / CS1657 (#3299).
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodDiscardName.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractMethodOperation.Validate(new ExtractMethodParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 5,
+                    EndColumn = 10,
+                    MethodName = "_"
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidNewName, ex.ErrorCode);
+            Assert.Contains("discard", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Theory]
+    [InlineData("__")]
+    [InlineData("_helper")]
+    public void Validate_MethodNameWithLeadingUnderscore_IsAccepted(string methodName)
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"RoslynMcpExtractMethodUnderscore{methodName.Length}.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            ExtractMethodOperation.Validate(new ExtractMethodParams
+            {
+                SourceFile = file,
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 5,
+                EndColumn = 10,
+                MethodName = methodName
+            });
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
     public void Validate_MethodNameIsKeyword_ThrowsException()
     {
         var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodKeyword.cs");
@@ -392,5 +446,17 @@ public class ExtractMethodParamsValidationTests
             SyntaxFactory.ParseStatement("Log();")
         };
         Assert.Equal("DoWork", ExtractMethodOperation.DeriveMethodNameFromStatements(statements));
+    }
+
+    [Fact]
+    public void DeriveMethodNameFromStatements_DiscardOnlySeed_ReturnsNull()
+    {
+        // "_" would capture the extracted discards (CS1656), so allFiles must skip the run (#3299).
+        var statements = new[]
+        {
+            SyntaxFactory.ParseStatement("_ = s.Length;"),
+            SyntaxFactory.ParseStatement("Keep();")
+        };
+        Assert.Null(ExtractMethodOperation.DeriveMethodNameFromStatements(statements));
     }
 }

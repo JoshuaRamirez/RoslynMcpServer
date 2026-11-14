@@ -603,6 +603,464 @@ public class ExtractVariableOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    private const string KeywordFollowerSource = """
+        namespace TestApp;
+
+        public record Item(string Name, int Qty);
+
+        public static class P
+        {
+            static object Make() => "hello";
+
+            public static string Run()
+            {
+                var copy = new Item("a", 2) with { Qty = 5 };
+                bool isText = Make() is string;
+                string? asText = Make() as string;
+                int code = Make() switch { string => 1, _ => 0 };
+                return $"{copy.Qty} {isText} {asText} {code}";
+            }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData("Make() is", "Make()", "made", "bool isText = made is string;")]
+    [InlineData("Make() as", "Make()", "made", "string? asText = made as string;")]
+    [InlineData("Make() switch", "Make()", "made", "int code = made switch { string => 1, _ => 0 };")]
+    [InlineData("new Item(\"a\", 2) with", "new Item(\"a\", 2)", "item", "var copy = item with { Qty = 5 };")]
+    public async Task ExtractVariable_ExpressionFollowedByKeyword_KeepsSeparatingSpace(
+        string context,
+        string selection,
+        string variableName,
+        string expectedLine)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KeywordFollowerSource);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var contextIndex = KeywordFollowerSource.IndexOf(context, StringComparison.Ordinal);
+        Assert.True(contextIndex >= 0);
+        var occurrence = CountOccurrences(KeywordFollowerSource[..contextIndex], selection) + 1;
+        var span = FindSpan(KeywordFollowerSource, selection, occurrence);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = variableName
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains(expectedLine, updated, StringComparison.Ordinal);
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(updated);
+        Assert.DoesNotContain(
+            tree.GetDiagnostics(),
+            d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
+    }
+
+    [SkippableTheory]
+    [InlineData("2147483648", "big")]
+    [InlineData("2_147_483_648", "big")]
+    [InlineData("9223372036854775808", "huge")]
+    [InlineData("9_223_372_036_854_775_808", "huge")]
+    public async Task ExtractVariable_SpecialMinValueUnaryOperand_Fails3116(string operand, string variableName)
+    {
+        // Selecting only the literal operand of -2147483648 / -9223372036854775808
+        // (or digit-separator spellings) must refuse like extract_constant (#3355):
+        // extracting it alone types the local as uint/ulong and breaks the build
+        // (CS0266 / CS0023) or silently widens int→long under var.
+        var source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public object Run()
+                {
+                    var value = -OPERAND;
+                    return value;
+                }
+            }
+            """.Replace("OPERAND", operand, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                VariableName = variableName
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        Assert.Contains("special minimum-value unary expression", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_FullIntMinValueUnaryExpression_Succeeds()
+    {
+        // Extracting the full -2147483648 expression (not just the operand) stays legal.
+        const string source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public int Run()
+                {
+                    int m = -2147483648;
+                    return m;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "-2147483648");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "min"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("var min = -2147483648;", updated, StringComparison.Ordinal);
+        Assert.Contains("int m = min;", updated, StringComparison.Ordinal);
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(updated);
+        Assert.DoesNotContain(
+            tree.GetDiagnostics(),
+            d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
+    }
+
+    [SkippableTheory]
+    [InlineData("var x = -0x8000000000000000;", "0x8000000000000000")]
+    [InlineData("long x = -0x8000000000000000L;", "0x8000000000000000L")]
+    [InlineData("long x = -0x8000_0000_0000_0000;", "0x8000_0000_0000_0000")]
+    [InlineData("var x = -0b1000000000000000000000000000000000000000000000000000000000000000;", "0b1000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("int x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0b10000000000000000000000000000000;", "0b10000000000000000000000000000000")]
+    [InlineData("long x = -9223372036854775808L;", "9223372036854775808L")]
+    public async Task ExtractVariable_HexBinarySuffixedMinValueOperand_Fails3116(string declaration, string operand)
+    {
+        // The compiler applies the min-value special case by type, not spelling:
+        // hex / binary / L-suffixed / digit-separated operands typed uint (ulong)
+        // whose negation is int (long) break the same way when extracted alone
+        // (CS0023 / CS0266, or a silent int→long change under var) (#3355).
+        var source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public object Run()
+                {
+                    DECLARATION
+                    return x;
+                }
+            }
+            """.Replace("DECLARATION", declaration, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                VariableName = "big"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        Assert.Contains("special minimum-value unary expression", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData("var x = -0x8000000000000000;", "0x8000000000000000")]
+    [InlineData("long x = -0x8000000000000000L;", "0x8000000000000000L")]
+    [InlineData("long x = -0x8000_0000_0000_0000;", "0x8000_0000_0000_0000")]
+    [InlineData("var x = -0b1000000000000000000000000000000000000000000000000000000000000000;", "0b1000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("int x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0x80000000;", "0x80000000")]
+    [InlineData("var x = -0b10000000000000000000000000000000;", "0b10000000000000000000000000000000")]
+    [InlineData("long x = -9223372036854775808L;", "9223372036854775808L")]
+    public async Task ExtractVariable_AllFiles_HexBinarySuffixedMinValueOperand_NotExtractedAlone(string declaration, string operand)
+    {
+        // allFiles skips targets that single-site refuses with 3116 (#3355): the
+        // operand must never become its own local, and the result must compile.
+        var source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public object Run()
+                {
+                    DECLARATION
+                    return x;
+                }
+            }
+            """.Replace("DECLARATION", declaration, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("= " + operand + ";", updated, StringComparison.Ordinal);
+        Assert.Contains("-" + operand, updated, StringComparison.Ordinal);
+        AssertCompilesWithoutErrors(updated);
+    }
+
+    [SkippableTheory]
+    [InlineData("2147483648U")]
+    [InlineData("2147483648u")]
+    [InlineData("0x80000000u")]
+    public async Task ExtractVariable_UnsignedSuffixedMinValueOperand_Succeeds(string operand)
+    {
+        // A U suffix makes the negation ordinary uint negation (result long), so
+        // the operand is not the special min-value case and extracts safely (#3355).
+        var source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public object Run()
+                {
+                    var value = -OPERAND;
+                    return value;
+                }
+            }
+            """.Replace("OPERAND", operand, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "big"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("var big = " + operand + ";", updated, StringComparison.Ordinal);
+        Assert.Contains("var value = -big;", updated, StringComparison.Ordinal);
+        AssertCompilesWithoutErrors(updated);
+    }
+
+    [SkippableTheory]
+    [InlineData("0x80000000")]
+    [InlineData("2147483648")]
+    public async Task ExtractVariable_IntMinValueOperandConvertedToLong_Succeeds(string operand)
+    {
+        // `long x = -0x80000000;` types the negation as int and converts it to
+        // long; with the operand extracted, -big is ordinary uint negation (long)
+        // with the same value, so this stays extractable and compiles (#3355).
+        var source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public long Run()
+                {
+                    long x = -OPERAND;
+                    return x;
+                }
+            }
+            """.Replace("OPERAND", operand, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "big"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("var big = " + operand + ";", updated, StringComparison.Ordinal);
+        Assert.Contains("long x = -big;", updated, StringComparison.Ordinal);
+        AssertCompilesWithoutErrors(updated);
+    }
+
+    [SkippableTheory]
+    [InlineData("2147483648")]
+    [InlineData("0x80000000")]
+    public async Task ExtractVariable_IntMinValueOperandInLongArgument_Fails3116(string operand)
+    {
+        // As an argument the int negation is converted to the long parameter, but
+        // extracting the operand would make `-big` a long, so the generic
+        // M<T>(T, string) where T : IEquatable<long> becomes applicable and wins:
+        // still compiles, different method runs. Refuse outside fixed-type targets (#3355, Copilot).
+        var source = """
+            namespace TestApp;
+
+            public static class Calls
+            {
+                public static string M(long x, object y) => "long";
+                public static string M<T>(T x, string y) where T : System.IEquatable<long> => "generic";
+            }
+
+            public class Host
+            {
+                public string Run()
+                {
+                    return Calls.M(-OPERAND, "");
+                }
+            }
+            """.Replace("OPERAND", operand, StringComparison.Ordinal);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, operand);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                VariableName = "big"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        Assert.Contains("special minimum-value unary expression", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_ReplaceAllFromPlainLiteral_SkipsMinValueUnaryOperand()
+    {
+        // Selecting the plain 2147483648 with ReplaceAll must not rewrite the
+        // operand of -2147483648 into `-big` (CS0266 on int) (#3355).
+        const string source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                public long Run()
+                {
+                    var upper = 2147483648;
+                    var again = 2147483648;
+                    int lower = -2147483648;
+                    return upper + again + lower;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "2147483648");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "big",
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("var big = 2147483648;", updated, StringComparison.Ordinal);
+        Assert.Contains("var upper = big;", updated, StringComparison.Ordinal);
+        Assert.Contains("var again = big;", updated, StringComparison.Ordinal);
+        Assert.Contains("int lower = -2147483648;", updated, StringComparison.Ordinal);
+        AssertCompilesWithoutErrors(updated);
+    }
+
+    private static void AssertCompilesWithoutErrors(string code)
+    {
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(code);
+        var trustedAssemblies = ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(path => Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(path));
+        var compilation = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(
+            "MinValueCheck",
+            new[] { tree },
+            trustedAssemblies,
+            new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary));
+        Assert.DoesNotContain(
+            compilation.GetDiagnostics(),
+            d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_ExpressionWithTrailingComment_DoesNotDuplicateComment()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private static object Make() => "x";
+
+                public bool Run()
+                {
+                    bool isText = Make() /* reason */ is string;
+                    return isText;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "Make() /*");
+        span = (span.StartLine, span.StartColumn, span.EndLine, span.EndColumn - 3);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "made"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(1, CountOccurrences(updated, "/* reason */"));
+        Assert.Contains("made /* reason */ is string;", updated, StringComparison.Ordinal);
+        Assert.Contains("= Make();", updated, StringComparison.Ordinal);
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(updated);
+        Assert.DoesNotContain(
+            tree.GetDiagnostics(),
+            d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
+    }
+
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
 

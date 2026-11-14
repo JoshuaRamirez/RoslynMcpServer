@@ -814,6 +814,55 @@ public class InvertIfOperationTests
         Assert.DoesNotContain("x <= 0", updated);
     }
 
+    [SkippableTheory]
+    [InlineData("r > 5", "!(r > 5)", "r <= 5")]
+    [InlineData("5 < r", "!(5 < r)", "5 >= r")]
+    [InlineData("r >= 5", "!(r >= 5)", "r < 5")]
+    public async Task InvertIf_RelationalLiftedThroughImplicitNullableConversion_WrapsWithNot(
+        string condition, string expected, string flipped)
+    {
+        // Neither operand is typed Nullable<T>, but Reading converts implicitly to
+        // int?, so the comparison binds to the lifted int? operator. null > 5 and
+        // null <= 5 are both false, so flipping the operator moves the null case
+        // to the other branch (#3426). Fall back to !(...) like a typed int? operand.
+        var source = """
+            namespace TestApp;
+
+            public readonly struct Reading
+            {
+                private readonly int? _value;
+                public Reading(int? value) => _value = value;
+                public static implicit operator int?(Reading r) => r._value;
+            }
+
+            public static class Sensor
+            {
+                public static string Classify(Reading r)
+                {
+                    if (CONDITION)
+                        return "high";
+                    else
+                        return "low";
+                }
+            }
+            """.Replace("CONDITION", condition, StringComparison.Ordinal);
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "if (" + condition + ")")
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, result.InvertedCondition);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains(expected, updated, StringComparison.Ordinal);
+        Assert.DoesNotContain(flipped, updated, StringComparison.Ordinal);
+    }
+
     [SkippableFact]
     public async Task InvertIf_CustomTruthWithoutNot_Throws()
     {
