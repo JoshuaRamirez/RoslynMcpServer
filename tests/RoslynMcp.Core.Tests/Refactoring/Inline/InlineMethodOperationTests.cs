@@ -771,6 +771,46 @@ public class InlineMethodOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    private const string RateSeparatelyGuardedAlternative = """
+        namespace TestApp;
+
+        public static class Program
+        {
+            public static int Run()
+            {
+                return Rate(2);
+            }
+
+        #if DEBUG
+            private static int Rate(int x) => x * 10;
+        #endif
+        #if !DEBUG
+            private static int Rate(int x) => x * 50;
+        #endif
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task InlineMethod_SeparatelyGuardedAlternative_Throws(bool removeMethod)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(RateSeparatelyGuardedAlternative);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Rate",
+                RemoveMethod = removeMethod
+            }));
+
+        Assert.Equal(ErrorCodes.CannotInlineDirectives, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     private const string RateWithDirectiveBody = """
         using System;
 
