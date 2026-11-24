@@ -223,6 +223,26 @@ public class ExtractInterfaceOperationTests
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
+    [Theory]
+    [InlineData("123x")]
+    [InlineData("has space")]
+    [InlineData("Person!")]
+    public void Validate_InvalidTypeName_ThrowsInvalidSymbolName(string typeName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = typeName,
+                InterfaceName = "IPerson",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+        Assert.Equal("1003", ex.ErrorCode);
+    }
+
     [SkippableFact]
     public async Task ExtractInterface_OmittedLine_KeepsTypeNameFirstOrDefaultPick()
     {
