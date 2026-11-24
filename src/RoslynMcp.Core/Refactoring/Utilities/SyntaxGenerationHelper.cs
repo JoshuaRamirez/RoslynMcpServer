@@ -108,6 +108,7 @@ public static class SyntaxGenerationHelper
                 SyntaxFactory.TypeParameterList(SyntaxFactory.SeparatedList(typeParams)));
         }
 
+        methodDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(methodDecl, method);
         return methodDecl.NormalizeWhitespace();
     }
 
@@ -176,6 +177,7 @@ public static class SyntaxGenerationHelper
             propDecl = propDecl.WithModifiers(SyntaxFactory.TokenList(modifiers));
         }
 
+        propDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(propDecl, property);
         return propDecl.NormalizeWhitespace();
     }
 
@@ -243,6 +245,7 @@ public static class SyntaxGenerationHelper
             indexerDecl = indexerDecl.WithModifiers(SyntaxFactory.TokenList(modifiers));
         }
 
+        indexerDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(indexerDecl, indexer);
         return indexerDecl.NormalizeWhitespace();
     }
 
@@ -675,7 +678,9 @@ public static class SyntaxGenerationHelper
         var modifiers = RefKindParameterModifiers(parameter.RefKind);
         if (EmitsScopedModifier(parameter))
             modifiers = modifiers.Insert(0, SyntaxFactory.Token(SyntaxKind.ScopedKeyword));
-        return modifiers.Count == 0 ? syntax : syntax.WithModifiers(modifiers);
+        if (modifiers.Count > 0)
+            syntax = syntax.WithModifiers(modifiers);
+        return NullableFlowAttributeHelpers.WithNullableFlowAttributes(syntax, parameter);
     }
 
     /// <summary>

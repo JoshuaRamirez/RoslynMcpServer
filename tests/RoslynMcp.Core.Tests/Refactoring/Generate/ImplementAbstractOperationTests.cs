@@ -4626,9 +4626,119 @@ public class ImplementAbstractOperationTests
         AssertCompiles(updatedA, updatedB);
     }
 
+    [SkippableFact]
+    public async Task ImplementAbstract_CopiesNullableFlowAttributesAndCompilesClean()
+    {
+        const string source = """
+            using System.Diagnostics.CodeAnalysis;
+
+            public abstract class Store
+            {
+                public abstract bool TryGet(string key, [NotNullWhen(true)] out string? value);
+
+                [return: NotNullIfNotNull(nameof(input))]
+                public abstract string? Normalize(string? input);
+
+                public abstract void Put(string key, [DisallowNull] string? value);
+
+                [AllowNull]
+                public abstract string Label { get; set; }
+            }
+
+            public class MemStore : Store
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "MemStore"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("[global::System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? value", updated, StringComparison.Ordinal);
+        Assert.Contains("[return: global::System.Diagnostics.CodeAnalysis.NotNullIfNotNull(\"input\")]", updated, StringComparison.Ordinal);
+        Assert.Contains("[global::System.Diagnostics.CodeAnalysis.DisallowNull] string? value", updated, StringComparison.Ordinal);
+        Assert.Contains("[global::System.Diagnostics.CodeAnalysis.AllowNull]", updated, StringComparison.Ordinal);
+        AssertNullableFlowCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_Preview_DescribesNullableFlowAttributesAndWritesNothing()
+    {
+        const string source = """
+            using System.Diagnostics.CodeAnalysis;
+
+            public abstract class Store
+            {
+                public abstract bool TryGet(string key, [NotNullWhen(true)] out string? value);
+            }
+
+            public class MemStore : Store
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "MemStore",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains(
+            "[global::System.Diagnostics.CodeAnalysis.NotNullWhen(true)]",
+            result.PendingChanges![0].AfterSnippet,
+            StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+
     #endregion
 
     #region Helpers
+
+    private static void AssertNullableFlowCompiles(string source)
+    {
+        var assemblies = (string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!;
+        var references = assemblies
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(path => (MetadataReference)MetadataReference.CreateFromFile(path))
+            .ToList();
+        var compilation = CSharpCompilation.Create(
+            "NullableFlowOverrideCompileTest",
+            new[]
+            {
+                CSharpSyntaxTree.ParseText(
+                    source,
+                    CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview))
+            },
+            references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                .WithNullableContextOptions(NullableContextOptions.Enable)
+                .WithGeneralDiagnosticOption(ReportDiagnostic.Error)
+                .WithSpecificDiagnosticOptions(new Dictionary<string, ReportDiagnostic>
+                {
+                    // Unused usings and similar noise from the snippet should not fail the test.
+                    ["CS8019"] = ReportDiagnostic.Suppress
+                }));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Generated stubs were not nullable-clean:\n" + string.Join("\n", errors) + "\n\n" + source);
+    }
 
     private const string AlreadyImplementedMethodSource = """
         namespace TestApp;

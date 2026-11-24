@@ -800,6 +800,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                     SyntaxFactory.SeparatedList(method.TypeParameters.Select(tp => SyntaxFactory.TypeParameter(tp.Name)))));
         }
 
+        methodDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(methodDecl, method);
         return methodDecl.NormalizeWhitespace();
     }
 
@@ -816,12 +817,13 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         INamedTypeSymbol emittingType,
         bool throwNotImplemented = true)
     {
-        return SyntaxFactory.PropertyDeclaration(
+        var propertyDecl = SyntaxFactory.PropertyDeclaration(
                 CreateMemberType(property.Type, property.ReturnsByRef, property.ReturnsByRefReadonly),
                 property.Name)
             .WithModifiers(CreateOverrideModifiers(property, emittingType, property.IsRequired))
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(property, emittingType, throwNotImplemented))))
-            .NormalizeWhitespace();
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(property, emittingType, throwNotImplemented))));
+        propertyDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(propertyDecl, property);
+        return propertyDecl.NormalizeWhitespace();
     }
 
     /// <summary>
@@ -834,12 +836,13 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         bool throwNotImplemented = true)
     {
         var parameters = indexer.Parameters.Select(CreateParameter);
-        return SyntaxFactory.IndexerDeclaration(
+        var indexerDecl = SyntaxFactory.IndexerDeclaration(
                 CreateMemberType(indexer.Type, indexer.ReturnsByRef, indexer.ReturnsByRefReadonly))
             .WithModifiers(CreateOverrideModifiers(indexer, emittingType, indexer.IsRequired))
             .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer, emittingType, throwNotImplemented))))
-            .NormalizeWhitespace();
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer, emittingType, throwNotImplemented))));
+        indexerDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(indexerDecl, indexer);
+        return indexerDecl.NormalizeWhitespace();
     }
 
     /// <summary>
@@ -995,7 +998,9 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         if (refKeyword != SyntaxKind.None)
             tokens.Add(SyntaxFactory.Token(refKeyword).WithTrailingTrivia(SyntaxFactory.Space));
 
-        return tokens.Count == 0 ? syntax : syntax.WithModifiers(SyntaxFactory.TokenList(tokens));
+        if (tokens.Count > 0)
+            syntax = syntax.WithModifiers(SyntaxFactory.TokenList(tokens));
+        return NullableFlowAttributeHelpers.WithNullableFlowAttributes(syntax, parameter);
     }
 
     /// <summary>
