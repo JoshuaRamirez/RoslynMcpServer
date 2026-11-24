@@ -1511,6 +1511,66 @@ public class RenameSymbolOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    private const string LocalFunctionLambdaParameterSource = """
+        using System;
+
+        namespace TestApp;
+
+        public class Report
+        {
+            public int Run()
+            {
+                int F() => 1;
+                Func<int, int> a = x => x;
+                Func<int, int> b = delegate (int y) { return y; };
+                return F() + a(1) + b(2);
+            }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData("x")]
+    [InlineData("y")]
+    public async Task RenameSymbol_AllFilesTrue_LocalFunctionOntoNestedLambdaParameter_Skips(string newName)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LocalFunctionLambdaParameterSource, "Program.cs");
+        var operation = new RenameSymbolOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            AllFiles = true,
+            SymbolName = "F",
+            NewName = newName,
+            RenameFile = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("int F() => 1;", text);
+    }
+
+    [SkippableTheory]
+    [InlineData("x")]
+    [InlineData("y")]
+    public async Task RenameSymbol_SingleSite_LocalFunctionOntoNestedLambdaParameter_ThrowsNameConflictScope(string newName)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LocalFunctionLambdaParameterSource, "Program.cs");
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameSymbolParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "F",
+                NewName = newName,
+                RenameFile = false
+            }));
+
+        Assert.Equal(ErrorCodes.NameConflictScope, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     [SkippableFact]
     public async Task RenameSymbol_SingleSite_LocalFunctionOntoParameter_ThrowsNameConflictScope()
     {

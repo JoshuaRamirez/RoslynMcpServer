@@ -849,13 +849,16 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
                 return true;
             }
 
-            // Simple foreach / catch identifiers are not VariableDeclaratorSyntax.
+            // Simple foreach / catch identifiers are not VariableDeclaratorSyntax;
+            // parameters of nested lambdas, anonymous methods, and local
+            // functions are not on IMethodSymbol.Parameters of the outer method.
             foreach (var node in body.DescendantNodes())
             {
                 var identifier = node switch
                 {
                     ForEachStatementSyntax forEach => forEach.Identifier,
                     CatchDeclarationSyntax catchDeclaration => catchDeclaration.Identifier,
+                    ParameterSyntax parameterSyntax => parameterSyntax.Identifier,
                     _ => default
                 };
                 if (identifier.ValueText != newName || identifier.IsKind(SyntaxKind.None))
