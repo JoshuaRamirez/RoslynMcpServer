@@ -90,6 +90,12 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             throw new RefactoringException(ErrorCodes.CannotConvert, $"No foreach statement found at {location}.");
         }
 
+        if (BodyContainsPreprocessorDirectives(foreachStmt))
+        {
+            throw new RefactoringException(ErrorCodes.CannotConvert,
+                "foreach body contains preprocessor directives and cannot be safely converted to LINQ.");
+        }
+
         if (!TryConvert(foreachStmt, @params.PreferQuerySyntax, out var conversion, out var assignment))
         {
             throw new RefactoringException(ErrorCodes.CannotConvert,
@@ -269,6 +275,14 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     {
         conversion = null!;
         assignment = null!;
+
+        // Directives in the body (or disabled text from an inactive #if branch)
+        // would be dropped by the rewrite, which only keeps the active branch
+        // and the foreach statement's own leading/trailing trivia. Leading
+        // trivia such as a loop wrapped in #if DEBUG is preserved and must
+        // not block conversion.
+        if (BodyContainsPreprocessorDirectives(foreachStmt))
+            return false;
 
         var body = foreachStmt.Statement;
         var statements = body is BlockSyntax block ? block.Statements.ToList() : new List<StatementSyntax> { body };
@@ -514,6 +528,21 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         SyntaxFactory.ExpressionStatement(linqExpr)
             .WithLeadingTrivia(foreach_.GetLeadingTrivia())
             .WithTrailingTrivia(foreach_.GetTrailingTrivia());
+
+    /// <summary>
+    /// True when the foreach body contains preprocessor directives or disabled
+    /// text. The foreach statement's own leading and trailing trivia are
+    /// ignored because <see cref="ReplaceForeachWithLinqStatement"/> keeps them.
+    /// </summary>
+    internal static bool BodyContainsPreprocessorDirectives(ForEachStatementSyntax foreachStmt)
+    {
+        var body = foreachStmt.Statement;
+        if (body.ContainsDirectives)
+            return true;
+
+        return body.DescendantTrivia(descendIntoTrivia: true)
+            .Any(trivia => trivia.IsDirective || trivia.IsKind(SyntaxKind.DisabledTextTrivia));
+    }
 
 }
 
