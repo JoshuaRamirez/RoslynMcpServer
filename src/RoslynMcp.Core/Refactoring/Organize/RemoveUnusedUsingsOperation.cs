@@ -314,7 +314,8 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
 
         foreach (var usingDirective in root.Usings)
         {
-            var namespaceName = usingDirective.Name?.ToString();
+            var namespaceName = GetCanonicalUsingNamespaceName(
+                usingDirective, semanticModel, cancellationToken);
             if (namespaceName == null) continue;
 
             // Check if this using is in the diagnostics
@@ -368,6 +369,30 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
         var sortedUsings = UsingDirectiveSorter.Sort(remainingUsings);
         var newRoot = root.WithUsings(SyntaxFactory.List(sortedUsings));
         return (root, newRoot, unusedUsings);
+    }
+
+
+    /// <summary>
+    /// Canonical namespace name for comparing a using against used namespaces.
+    /// Prefers the bound namespace display string so
+    /// embedded trivia or whitespace in the name (<c>System./*inner*/Text</c>,
+    /// <c>System . Text</c>) still match <c>System.Text</c>. Falls back to
+    /// trivia-stripped token text when the name does not bind.
+    /// </summary>
+    private static string? GetCanonicalUsingNamespaceName(
+        UsingDirectiveSyntax usingDirective,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (usingDirective.Name is null)
+            return null;
+
+        var info = semanticModel.GetSymbolInfo(usingDirective.Name, cancellationToken);
+        if ((info.Symbol ?? info.CandidateSymbols.FirstOrDefault()) is INamespaceSymbol namespaceSymbol)
+            return namespaceSymbol.ToDisplayString();
+
+        var stripped = string.Concat(usingDirective.Name.DescendantTokens().Select(t => t.Text));
+        return string.IsNullOrEmpty(stripped) ? null : stripped;
     }
 
     /// <summary>
