@@ -109,6 +109,11 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         foreach (var diagnostic in diagnostics)
         {
             var node = root.FindNode(diagnostic.Location.SourceSpan);
+            // A using only affects unqualified lookup. Skip CS0234-style
+            // right/middle segments (e.g. Task in App.Task.Widget).
+            if (IsQualifiedRightHandSegment(node))
+                continue;
+
             var typeName = GetTypeName(node);
             if (string.IsNullOrEmpty(typeName)) continue;
 
@@ -390,6 +395,11 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         foreach (var diagnostic in diagnostics)
         {
             var node = root.FindNode(diagnostic.Location.SourceSpan);
+            // A using only affects unqualified lookup. Skip CS0234-style
+            // right/middle segments (e.g. Task in App.Task.Widget).
+            if (IsQualifiedRightHandSegment(node))
+                continue;
+
             var typeName = GetTypeName(node);
             if (string.IsNullOrEmpty(typeName)) continue;
 
@@ -426,6 +436,42 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         var sortedUsings = UsingDirectiveSorter.Sort(allUsingsForFile);
         var newRoot = root.WithUsings(SyntaxFactory.List(sortedUsings));
         return (root, newRoot, newUsings);
+    }
+
+
+    /// <summary>
+    /// True when <paramref name="node"/> is a qualified right-hand or middle
+    /// segment (<c>App.Task.Widget</c>, <c>obj.Member</c>, alias-qualified or
+    /// cref names). A using directive cannot fix that lookup, so the segment
+    /// must not be treated as a top-level type name.
+    /// </summary>
+    private static bool IsQualifiedRightHandSegment(SyntaxNode node)
+    {
+        if (node is QualifiedNameSyntax)
+            return true;
+
+        for (var current = node; current != null; current = current.Parent)
+        {
+            switch (current.Parent)
+            {
+                case QualifiedNameSyntax qualified when qualified.Right == current:
+                    return true;
+                case MemberAccessExpressionSyntax member when member.Name == current:
+                    return true;
+                case AliasQualifiedNameSyntax alias when alias.Name == current:
+                    return true;
+                case QualifiedCrefSyntax cref when cref.Member == current:
+                    return true;
+                case NameSyntax:
+                case TypeSyntax:
+                case TypeArgumentListSyntax:
+                    continue;
+                default:
+                    return false;
+            }
+        }
+
+        return false;
     }
 
     private static string? GetTypeName(SyntaxNode node)
