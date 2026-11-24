@@ -849,6 +849,22 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
                 return true;
             }
 
+            // Simple foreach / catch identifiers are not VariableDeclaratorSyntax.
+            foreach (var node in body.DescendantNodes())
+            {
+                var identifier = node switch
+                {
+                    ForEachStatementSyntax forEach => forEach.Identifier,
+                    CatchDeclarationSyntax catchDeclaration => catchDeclaration.Identifier,
+                    _ => default
+                };
+                if (identifier.ValueText != newName || identifier.IsKind(SyntaxKind.None))
+                    continue;
+                if (IsDeclaredBySymbol(symbol, identifier.Span))
+                    continue;
+                return true;
+            }
+
             foreach (var localFunction in body.DescendantNodes().OfType<LocalFunctionStatementSyntax>())
             {
                 if (localFunction.Identifier.ValueText != newName)

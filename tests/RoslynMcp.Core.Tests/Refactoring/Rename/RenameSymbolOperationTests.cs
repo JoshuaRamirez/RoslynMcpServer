@@ -1288,6 +1288,42 @@ public class RenameSymbolOperationTests
         Assert.False(RenameSymbolOperation.HasSimpleNameConflict(describe, "Summarize"));
     }
 
+    private const string LocalFunctionInForEachCatchSource = """
+        using System;
+
+        public static class Loops
+        {
+            public static void Run(string[] items)
+            {
+                foreach (var item in items)
+                {
+                    string Fmt(string s) => "[" + s + "]";
+                    Console.WriteLine(Fmt(item));
+                }
+
+                try
+                {
+                    Console.WriteLine(items[0]);
+                }
+                catch (Exception ex)
+                {
+                    string Describe() => "failed";
+                    Console.WriteLine(Describe() + ex.Message);
+                }
+            }
+        }
+        """;
+
+    [Fact]
+    public void HasSimpleNameConflict_LocalFunction_DetectsForEachAndCatchLocals()
+    {
+        var fmt = GetLocalFunctionSymbol(LocalFunctionInForEachCatchSource, "Fmt");
+        Assert.True(RenameSymbolOperation.HasSimpleNameConflict(fmt, "item"));
+        var describe = GetLocalFunctionSymbol(LocalFunctionInForEachCatchSource, "Describe");
+        Assert.True(RenameSymbolOperation.HasSimpleNameConflict(describe, "ex"));
+        Assert.False(RenameSymbolOperation.HasSimpleNameConflict(describe, "Summary"));
+    }
+
     [SkippableFact]
     public async Task RenameSymbol_AllFilesTrue_LocalFunctionOntoEnclosing_Skips()
     {
