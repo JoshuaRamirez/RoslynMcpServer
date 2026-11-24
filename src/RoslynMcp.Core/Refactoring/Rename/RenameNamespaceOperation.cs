@@ -1321,6 +1321,13 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 return false;
             if (previous.IsKind(SyntaxKind.UsingKeyword) || previous.IsKind(SyntaxKind.NamespaceKeyword))
                 return true;
+            // Alias target: `using Alias = B;`
+            if (previous.IsKind(SyntaxKind.EqualsToken) && start >= 3 &&
+                tokens[start - 2].IsKind(SyntaxKind.IdentifierToken) &&
+                tokens[start - 3].IsKind(SyntaxKind.UsingKeyword))
+            {
+                return true;
+            }
         }
 
         return end + 1 < tokens.Count && tokens[end + 1].IsKind(SyntaxKind.DotToken);

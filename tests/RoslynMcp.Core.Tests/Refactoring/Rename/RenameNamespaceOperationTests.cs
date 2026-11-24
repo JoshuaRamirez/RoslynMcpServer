@@ -1097,6 +1097,16 @@ public class RenameNamespaceOperationTests
         Assert.Equal("using C;\nvar x = B + 1;\nC.Helper.Tag();\nglobal::B.Other();\nA.C.Helper.Tag();\n", rewritten);
     }
 
+    [Fact]
+    public void ReplaceNamespaceReferences_RelativeForm_InUsingAliasTarget()
+    {
+        var text = "using Alias = B;\nusing T = B.Helper;\nvar y = z = B;\n";
+
+        var rewritten = RenameNamespaceOperation.ReplaceNamespaceReferences(text, "A.B", "A.C", new[] { "A" });
+
+        Assert.Equal("using Alias = C;\nusing T = C.Helper;\nvar y = z = B;\n", rewritten);
+    }
+
     private static int CountOccurrences(string text, string value)
     {
         var count = 0;
