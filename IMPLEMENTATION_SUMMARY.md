@@ -114,8 +114,8 @@ This document summarizes all work completed to prepare the RoslynMcp solution fo
 ### GitHub Actions Workflows Created
 
 1. **`.github/workflows/build.yml`** ✓
-   - **Multi-platform builds**: Windows, Linux, macOS
-   - Runs on: push to main/develop, pull requests
+   - **PR CI builds Linux only**; push to `master`/`develop` runs the full 3-OS matrix (Windows, Linux, macOS)
+   - Runs on: push to master/develop, pull requests
    - Steps:
      - Checkout code
      - Setup .NET 9.0

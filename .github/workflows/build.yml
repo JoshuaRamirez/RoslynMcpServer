@@ -6,9 +6,12 @@ on:
   pull_request:
     branches: [ master ]
 
-# Cancel superseded pull-request runs. Never cancel a push to master/develop.
+# Cancel superseded pull-request runs. Each master/develop push gets its own
+# group (keyed by run_id) so a burst of merges does not cancel pending
+# Windows/macOS builds for earlier commits. cancel-in-progress is true only
+# for pull_request; it is never set for push.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -26,43 +29,46 @@ jobs:
     # and skip the build so they do not wait for those runners. Push to
     # master/develop (and any future non-PR trigger) keeps the full matrix.
     runs-on: ${{ github.event_name == 'pull_request' && matrix.os != 'ubuntu-latest' && 'ubuntu-latest' || matrix.os }}
+    env:
+      # True on pull-request Windows/macOS cells, which run as Ubuntu stubs.
+      SKIP_NON_LINUX: ${{ github.event_name == 'pull_request' && matrix.os != 'ubuntu-latest' }}
 
     steps:
     - name: Skip non-Linux builds on pull requests
-      if: github.event_name == 'pull_request' && matrix.os != 'ubuntu-latest'
+      if: env.SKIP_NON_LINUX == 'true'
       run: |
         echo "Skipping the ${{ matrix.os }} build on pull requests."
         echo "The full Windows, Linux, and macOS matrix still runs on push to master."
         echo "This job reports the required status check 'build (${{ matrix.os }})'."
 
     - name: Checkout code
-      if: github.event_name != 'pull_request' || matrix.os == 'ubuntu-latest'
+      if: env.SKIP_NON_LINUX != 'true'
       uses: actions/checkout@v6
 
     - name: Setup .NET
-      if: github.event_name != 'pull_request' || matrix.os == 'ubuntu-latest'
+      if: env.SKIP_NON_LINUX != 'true'
       uses: actions/setup-dotnet@v5
       with:
         dotnet-version: '9.0.x'
 
     - name: Display .NET version
-      if: github.event_name != 'pull_request' || matrix.os == 'ubuntu-latest'
+      if: env.SKIP_NON_LINUX != 'true'
       run: dotnet --version
 
     - name: Restore dependencies
-      if: github.event_name != 'pull_request' || matrix.os == 'ubuntu-latest'
+      if: env.SKIP_NON_LINUX != 'true'
       run: dotnet restore RoslynMcp.sln
 
     - name: Build solution
-      if: github.event_name != 'pull_request' || matrix.os == 'ubuntu-latest'
+      if: env.SKIP_NON_LINUX != 'true'
       run: dotnet build RoslynMcp.sln -c Release --no-restore
 
     - name: Run tests
-      if: github.event_name != 'pull_request' || matrix.os == 'ubuntu-latest'
+      if: env.SKIP_NON_LINUX != 'true'
       run: dotnet test RoslynMcp.sln -c Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx"
 
     - name: Upload test results
-      if: always() && (github.event_name != 'pull_request' || matrix.os == 'ubuntu-latest')
+      if: always() && env.SKIP_NON_LINUX != 'true'
       uses: actions/upload-artifact@v7
       with:
         name: test-results-${{ matrix.os }}

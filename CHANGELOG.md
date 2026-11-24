@@ -29,7 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
-- CI: pull-request Build and Test runs the real build and tests on `ubuntu-latest` only. The `build (windows-latest)` and `build (macos-latest)` cells still report (they are required status checks on `master`) but skip the build and run on Ubuntu so they do not wait for those runners. Push to `master` and `develop` still runs the full Windows, Linux, and macOS matrix. Superseded pull-request runs are cancelled automatically.
+- CI: pull-request Build and Test runs the real build and tests on `ubuntu-latest` only. The `build (windows-latest)` and `build (macos-latest)` cells still report (they are required status checks on `master`) but skip the build and run on Ubuntu so they do not wait for those runners. Push to `master` and `develop` still runs the full Windows, Linux, and macOS matrix. Each of those pushes uses its own concurrency group (keyed by `run_id`) so a burst of merges does not cancel pending Windows or macOS builds for earlier commits. Superseded pull-request runs are cancelled automatically.
 
 ## [0.16.0] - 2026-11-02
 

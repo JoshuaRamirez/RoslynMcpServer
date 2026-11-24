@@ -49,8 +49,8 @@ This document tracks the completion status of all tasks required for public GitH
 ## ✅ Phase 3: CI/CD Pipeline (COMPLETE)
 
 - [x] **`.github/workflows/build.yml` created**:
-  - Multi-platform builds (Windows, Linux, macOS)
-  - Automated testing on all platforms
+  - Pull-request CI builds and tests Linux only
+  - Push to `master`/`develop` runs the full 3-OS matrix (Windows, Linux, macOS)
   - Test result artifact uploads
   - Build summary job
   
