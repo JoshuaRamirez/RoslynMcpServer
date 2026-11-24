@@ -227,6 +227,10 @@ public class ExtractInterfaceOperationTests
     [InlineData("123x")]
     [InlineData("has space")]
     [InlineData("Person!")]
+    [InlineData("a.b")]
+    [InlineData("@123x")]
+    [InlineData("@")]
+    [InlineData("@@class")]
     public void Validate_InvalidTypeName_ThrowsInvalidSymbolName(string typeName)
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -241,6 +245,32 @@ public class ExtractInterfaceOperationTests
 
         Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
         Assert.Equal("1003", ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("Person")]
+    [InlineData("@class")]
+    [InlineData("@Person")]
+    [InlineData("A\u0301")]
+    [InlineData("@A\u0301")]
+    public void Validate_ValidTypeName_DoesNotThrowInvalidSymbolName(string typeName)
+    {
+        // Verbatim "@class" must pass Validate: Identifier.Text keeps the
+        // @ prefix, so that is the name that selects class @class.
+        // Combining marks are legal identifier part characters. A missing
+        // file must surface as SourceFileNotFound, not InvalidSymbolName.
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = typeName,
+                InterfaceName = "IPerson",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        Assert.NotEqual(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
     }
 
     [SkippableFact]

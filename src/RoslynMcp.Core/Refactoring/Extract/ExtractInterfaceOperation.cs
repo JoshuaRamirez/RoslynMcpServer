@@ -75,7 +75,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         if (string.IsNullOrWhiteSpace(@params.TypeName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "typeName is required.");
 
-        if (!IdentifierValidation.IsValidIdentifier(@params.TypeName!))
+        if (!IsValidTypeName(@params.TypeName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid type name: {@params.TypeName}");
 
         if (string.IsNullOrWhiteSpace(@params.InterfaceName))
@@ -97,6 +97,20 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
 
         if (@params.TargetFile != null)
             TargetFilePathHelpers.ValidateTargetFilePath(@params.TargetFile);
+    }
+
+    /// <summary>
+    /// Type lookup keys follow C# identifier rules
+    /// (<see cref="SyntaxFacts.IsValidIdentifier"/>, so Unicode
+    /// combining marks such as <c>A</c> + U+0301 are allowed), plus an
+    /// optional single verbatim <c>@</c> prefix. Roslyn keeps the
+    /// <c>@</c> in <c>Identifier.Text</c>, so <c>class @class</c> is
+    /// found as <c>@class</c>, not <c>class</c>.
+    /// </summary>
+    private static bool IsValidTypeName(string name)
+    {
+        var rest = name.StartsWith('@') ? name[1..] : name;
+        return SyntaxFacts.IsValidIdentifier(rest);
     }
 
 
