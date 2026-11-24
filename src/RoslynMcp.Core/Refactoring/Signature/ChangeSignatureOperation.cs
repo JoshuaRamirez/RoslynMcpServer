@@ -19,6 +19,9 @@ namespace RoslynMcp.Core.Refactoring.Signature;
 /// Optional <c>allFiles</c> walks every C# document (or the optional single
 /// <c>sourceFile</c>) and applies the same <c>parameters</c> list to every
 /// eligible method, skipping ineligible methods rather than throwing.
+/// Single-site refuses interface member declarations (the same
+/// <c>TypeKind.Interface</c> gate as <see cref="IsEligible"/>) because
+/// implementers would be left with a broken contract.
 /// </summary>
 public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSignatureParams>
 {
@@ -165,6 +168,15 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (methodSymbol == null)
         {
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve method symbol.");
+        }
+
+        // Same TypeKind.Interface gate as allFiles IsEligible: rewriting only
+        // I.M leaves implementers at the old arity (CS0539 / CS0535) (#2966).
+        if (methodSymbol.ContainingType?.TypeKind == TypeKind.Interface)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Method '{methodName}' is an interface member declaration and cannot be changed with single-site change_signature.");
         }
 
         // Build new parameter list

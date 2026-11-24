@@ -766,6 +766,136 @@ public class ChangeSignatureOperationTests
         Assert.True(HasParameters(updated, "Process", ("string", "x")));
     }
 
+    [SkippableFact]
+    public async Task ChangeSignature_SingleSiteAddOnInterfaceMemberDeclaration_ThrowsInvalidSymbolKind()
+    {
+        const string source = """
+            using System;
+
+            public interface IRunner
+            {
+                void Run(int a);
+            }
+
+            public class Car : IRunner
+            {
+                void IRunner.Run(int a) { Console.WriteLine("a=" + a); }
+            }
+
+            public class Bike : IRunner
+            {
+                public void Run(int a) { Console.WriteLine("bike " + a); }
+            }
+
+            public static class Program
+            {
+                public static void Main()
+                {
+                    IRunner r = new Car();
+                    r.Run(1);
+                    new Bike().Run(2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var line = FindLine(source, "void Run(int a);");
+        var column = ColumnOf(source, "Run(int a);");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeSignatureParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Run",
+                Line = line,
+                Column = column,
+                Parameters =
+                [
+                    new() { OriginalName = "a", Name = "a", NewPosition = 0 },
+                    new() { Name = "b", Type = "int", DefaultValue = "0", NewPosition = 1 }
+                ]
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("interface member declaration", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.True(HasParameters(before, "Run", ("int", "a")));
+        Assert.False(HasParameters(before, "Run", ("int", "a"), ("int", "b")));
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_SingleSiteAddOnInterfaceMemberDeclaration_Preview_ThrowsInvalidSymbolKind()
+    {
+        const string source = """
+            public interface IRunner
+            {
+                void Run(int a);
+            }
+
+            public class Bike : IRunner
+            {
+                public void Run(int a) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var line = FindLine(source, "void Run(int a);");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeSignatureParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Run",
+                Line = line,
+                Preview = true,
+                Parameters =
+                [
+                    new() { OriginalName = "a", Name = "a" },
+                    new() { Name = "b", Type = "int", DefaultValue = "0" }
+                ]
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_SingleSiteAddOnInterfaceMemberDeclarationWithoutImplementers_ThrowsInvalidSymbolKind()
+    {
+        const string source = """
+            public interface IRunner
+            {
+                void Run(int a);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var line = FindLine(source, "void Run(int a);");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeSignatureParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Run",
+                Line = line,
+                Parameters =
+                [
+                    new() { OriginalName = "a", Name = "a" },
+                    new() { Name = "b", Type = "int", DefaultValue = "0" }
+                ]
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     #endregion
 
     #region allFiles
