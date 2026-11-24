@@ -111,6 +111,13 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         // Validate rename is allowed
         ValidateRename(symbol, @params);
 
+        if (IsMethodScopedSymbol(symbol) && HasSimpleNameConflict(symbol, @params.NewName))
+        {
+            throw new RefactoringException(
+                ErrorCodes.NameConflictScope,
+                $"Cannot rename '{symbol.Name}' to '{@params.NewName}' because a symbol with that name already exists in the same scope.");
+        }
+
         // Find all references before rename
         var references = await ReferenceTracker.FindAllReferencesAsync(symbol, cancellationToken);
 
@@ -707,8 +714,8 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
     /// <summary>
     /// True when a sibling member / type / method-scoped name already uses
     /// <paramref name="newName"/> in the same container (cases single-site
-    /// Renamer would leave conflicted). Locals, parameters, and method type
-    /// parameters are checked against the enclosing method's lexical scope —
+    /// Renamer would leave conflicted). Locals, parameters, method type
+    /// parameters, and local functions are checked against lexical scope —
     /// <c>INamedTypeSymbol.GetMembers</c> cannot see them.
     /// </summary>
     internal static bool HasSimpleNameConflict(ISymbol symbol, string newName)
@@ -743,12 +750,13 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
     }
 
     /// <summary>
-    /// Locals, parameters, and method type parameters live in a method's
-    /// lexical declaration space rather than on <see cref="INamedTypeSymbol"/>.
+    /// Locals, parameters, method type parameters, and local functions live in
+    /// a method's lexical declaration space rather than on <see cref="INamedTypeSymbol"/>.
     /// </summary>
     internal static bool IsMethodScopedSymbol(ISymbol symbol) =>
         symbol.Kind is Microsoft.CodeAnalysis.SymbolKind.Local or Microsoft.CodeAnalysis.SymbolKind.Parameter
-        || symbol is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method };
+        || symbol is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method }
+        || symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction };
 
     /// <summary>
     /// Enclosing <see cref="IMethodSymbol"/> for a method-scoped symbol
@@ -770,13 +778,30 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
     /// type parameter, local, or local function in the enclosing method.
     /// Conservative: any same-name local in the method body counts as a
     /// conflict (sibling-block renames may be skipped; skip-not-throw).
+    /// Local functions also walk every enclosing method, local function, and
+    /// lambda so a nested function cannot silently shadow an outer one (#2962).
     /// </summary>
     internal static bool HasMethodScopeNameConflict(ISymbol symbol, string newName)
     {
-        var method = GetEnclosingMethod(symbol);
-        if (method == null)
-            return false;
+        if (symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction })
+        {
+            for (var current = symbol.ContainingSymbol; current != null; current = current.ContainingSymbol)
+            {
+                if (current is IMethodSymbol method && MethodScopeHasNameConflict(method, symbol, newName))
+                    return true;
+                if (current is INamedTypeSymbol or INamespaceSymbol)
+                    break;
+            }
 
+            return false;
+        }
+
+        var enclosing = GetEnclosingMethod(symbol);
+        return enclosing != null && MethodScopeHasNameConflict(enclosing, symbol, newName);
+    }
+
+    private static bool MethodScopeHasNameConflict(IMethodSymbol method, ISymbol symbol, string newName)
+    {
         foreach (var parameter in method.Parameters)
         {
             if (parameter.Name == newName
