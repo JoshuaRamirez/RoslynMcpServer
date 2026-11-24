@@ -61,7 +61,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
         if (target is BinaryExpressionSyntax concat)
         {
-            return await ConvertConcatenation(operationId, document, root, concat, @params, cancellationToken);
+            return await ConvertConcatenation(operationId, document, root, concat, semanticModel, @params, cancellationToken);
         }
 
         var location = @params.Column.HasValue
@@ -126,7 +126,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
                 var passReplacements = new Dictionary<SyntaxNode, SyntaxNode>();
                 foreach (var expression in CollectConvertibleExpressions(root, semanticModel))
                 {
-                    if (TryConvert(expression, out var converted))
+                    if (TryConvert(expression, semanticModel, out var converted))
                         passReplacements[expression] = converted;
                 }
 
@@ -215,7 +215,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         SemanticModel semanticModel)
     {
         var convertibleFormats = EnumerateFormatInvocations(root, semanticModel)
-            .Where(invocation => TryConvert(invocation, out _))
+            .Where(invocation => TryConvert(invocation, semanticModel, out _))
             .ToList();
 
         // Innermost convertible Format wins so a nested literal Format is not
@@ -228,7 +228,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         var concats = EnumerateConcatenations(root, semanticModel)
             .Select(OuterConcatenation)
             .Distinct()
-            .Where(concat => TryConvert(concat, out _))
+            .Where(concat => TryConvert(concat, semanticModel, out _))
             .Where(concat => !convertibleFormats.Any(format => concat.Contains(format)));
 
         return formats.Concat(concats).ToList();
@@ -301,7 +301,10 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     /// Attempts a conversion without throwing. Used by allFiles so expressions
     /// that cannot convert stay no-ops.
     /// </summary>
-    internal static bool TryConvert(ExpressionSyntax expression, out ExpressionSyntax converted)
+    internal static bool TryConvert(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        out ExpressionSyntax converted)
     {
         try
         {
@@ -313,7 +316,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
             if (expression is BinaryExpressionSyntax concat)
             {
-                converted = ConvertConcatenationExpression(concat);
+                converted = ConvertConcatenationExpression(concat, semanticModel);
                 return true;
             }
 
@@ -402,10 +405,11 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
     private async Task<RefactoringResult> ConvertConcatenation(
         Guid operationId, Document document, SyntaxNode root,
-        BinaryExpressionSyntax concat, ConvertToInterpolatedStringParams @params,
+        BinaryExpressionSyntax concat, SemanticModel semanticModel,
+        ConvertToInterpolatedStringParams @params,
         CancellationToken cancellationToken)
     {
-        var interpolatedString = ConvertConcatenationExpression(concat);
+        var interpolatedString = ConvertConcatenationExpression(concat, semanticModel);
         var outerConcat = OuterConcatenation(concat);
 
         var before = outerConcat.NormalizeWhitespace().ToFullString();
@@ -525,7 +529,9 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             SyntaxFactory.List(contents));
     }
 
-    private static InterpolatedStringExpressionSyntax ConvertConcatenationExpression(BinaryExpressionSyntax concat)
+    private static InterpolatedStringExpressionSyntax ConvertConcatenationExpression(
+        BinaryExpressionSyntax concat,
+        SemanticModel semanticModel)
     {
         // Flatten the outermost concatenation so a column (or omitted first
         // match) on an inner operand of a 3+ chain still keeps later parts.
@@ -547,7 +553,10 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             }
             else
             {
-                contents.Add(SyntaxFactory.Interpolation(part));
+                // Concat uses object.ToString(); an interpolated hole uses
+                // ISpanFormattable / IFormattable and can change output (#2954).
+                contents.Add(SyntaxFactory.Interpolation(
+                    WrapFormattableConcatOperand(part, semanticModel)));
             }
         }
 
@@ -555,6 +564,76 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             SyntaxFactory.Token(SyntaxKind.InterpolatedStringStartToken),
             SyntaxFactory.List(contents));
     }
+
+    /// <summary>
+    /// Concatenation formats an operand with parameterless <c>ToString()</c>.
+    /// An interpolated hole uses <c>ISpanFormattable.TryFormat</c> or
+    /// <c>IFormattable.ToString(null, culture)</c>, which can silently
+    /// change the printed value. Built-in special types are left as bare
+    /// holes because those two paths match. Custom formattable types are
+    /// written as <c>{expr.ToString()}</c> so concat semantics are kept.
+    /// </summary>
+    private static ExpressionSyntax WrapFormattableConcatOperand(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel)
+    {
+        var type = semanticModel.GetTypeInfo(expression).Type
+            ?? semanticModel.GetTypeInfo(expression).ConvertedType;
+        if (type == null || !RequiresExplicitToStringInConcatHole(type))
+            return expression;
+
+        if (IsParameterlessToStringCall(expression))
+            return expression;
+
+        var receiver = NeedsMemberAccessParentheses(expression)
+            ? SyntaxFactory.ParenthesizedExpression(expression.WithoutTrivia())
+            : expression.WithoutTrivia();
+
+        return SyntaxFactory.InvocationExpression(
+            SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                receiver,
+                SyntaxFactory.IdentifierName("ToString")));
+    }
+
+    private static bool RequiresExplicitToStringInConcatHole(ITypeSymbol type)
+    {
+        if (type.SpecialType != SpecialType.None)
+            return false;
+
+        foreach (var iface in type.AllInterfaces)
+        {
+            if (iface.ContainingNamespace?.ToDisplayString() == "System"
+                && iface.Name is "IFormattable" or "ISpanFormattable")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsParameterlessToStringCall(ExpressionSyntax expression) =>
+        expression is InvocationExpressionSyntax { ArgumentList.Arguments.Count: 0 } invocation
+        && invocation.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "ToString" };
+
+    private static bool NeedsMemberAccessParentheses(ExpressionSyntax expression) =>
+        expression is not (
+            IdentifierNameSyntax or
+            MemberAccessExpressionSyntax or
+            InvocationExpressionSyntax or
+            ElementAccessExpressionSyntax or
+            ConditionalAccessExpressionSyntax or
+            ThisExpressionSyntax or
+            BaseExpressionSyntax or
+            LiteralExpressionSyntax or
+            ParenthesizedExpressionSyntax or
+            ObjectCreationExpressionSyntax or
+            ImplicitObjectCreationExpressionSyntax or
+            PostfixUnaryExpressionSyntax or
+            DefaultExpressionSyntax or
+            TypeOfExpressionSyntax or
+            InterpolatedStringExpressionSyntax);
 
     private static List<ExpressionSyntax> FlattenConcatenation(ExpressionSyntax expr)
     {

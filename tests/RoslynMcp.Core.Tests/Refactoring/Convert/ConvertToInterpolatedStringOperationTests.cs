@@ -1235,6 +1235,309 @@ public class ConvertToInterpolatedStringOperationTests
         Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
     }
 
+    [SkippableFact]
+    public async Task Convert_Concat_IFormattableOperand_WrapsToStringAndPreservesOutput()
+    {
+        const string source = """
+            using System;
+
+            public struct Weird : IFormattable
+            {
+                public override string ToString() => "TOSTRING";
+
+                public string ToString(string? format, IFormatProvider? provider) => "IFORMATTABLE";
+            }
+
+            public static class Program
+            {
+                public static string Render()
+                {
+                    var w = new Weird();
+                    return "x=" + w;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "\"x=\" + w")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("$\"x={w.ToString()}\"", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("$\"x={w}\"", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_Concat_ISpanFormattableOperand_WrapsToString()
+    {
+        const string source = """
+            using System;
+
+            public struct SpanWeird : ISpanFormattable
+            {
+                public override string ToString() => "TOSTRING";
+
+                public string ToString(string? format, IFormatProvider? provider) => "IFORMATTABLE";
+
+                public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider)
+                {
+                    charsWritten = 0;
+                    return false;
+                }
+            }
+
+            public static class Program
+            {
+                public static string Render()
+                {
+                    var w = new SpanWeird();
+                    return "x=" + w;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "\"x=\" + w")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("$\"x={w.ToString()}\"", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_Concat_ToStringOnlyType_KeepsBareHole()
+    {
+        const string source = """
+            public struct Plain
+            {
+                public override string ToString() => "PLAIN";
+            }
+
+            public static class Program
+            {
+                public static string Render()
+                {
+                    var p = new Plain();
+                    return "x=" + p;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "\"x=\" + p")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("$\"x={p}\"", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("p.ToString()", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_Concat_IntOperand_KeepsBareHole()
+    {
+        const string source = """
+            public static class Program
+            {
+                public static string Render(int n)
+                {
+                    return "x=" + n;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "\"x=\" + n")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("$\"x={n}\"", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("n.ToString()", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_Format_IFormattableOperand_KeepsBareHole()
+    {
+        const string source = """
+            using System;
+
+            public struct Weird : IFormattable
+            {
+                public override string ToString() => "TOSTRING";
+
+                public string ToString(string? format, IFormatProvider? provider) => "IFORMATTABLE";
+            }
+
+            public static class Program
+            {
+                public static string Render()
+                {
+                    var w = new Weird();
+                    return string.Format("x={0}", w);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "string.Format")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("$\"x={w}\"", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("w.ToString()", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_Preview_IFormattableOperand_DescribesToStringHoleAndWritesNothing()
+    {
+        const string source = """
+            using System;
+
+            public struct Weird : IFormattable
+            {
+                public override string ToString() => "TOSTRING";
+
+                public string ToString(string? format, IFormatProvider? provider) => "IFORMATTABLE";
+            }
+
+            public static class Program
+            {
+                public static string Render()
+                {
+                    var w = new Weird();
+                    return "x=" + w;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "\"x=\" + w"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("$\"x={w.ToString()}\"", result.PendingChanges![0].AfterSnippet, StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFiles_IFormattableOperand_WrapsToString()
+    {
+        const string source = """
+            using System;
+
+            public struct Weird : IFormattable
+            {
+                public override string ToString() => "TOSTRING";
+
+                public string ToString(string? format, IFormatProvider? provider) => "IFORMATTABLE";
+            }
+
+            public static class Program
+            {
+                public static string Render()
+                {
+                    var w = new Weird();
+                    return "x=" + w;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("$\"x={w.ToString()}\"", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_Concat_IFormattableClassAndConditional_WrapsWithParentheses()
+    {
+        const string source = """
+            using System;
+
+            public class Weird : IFormattable
+            {
+                public override string ToString() => "TOSTRING";
+
+                public string ToString(string? format, IFormatProvider? provider) => "IFORMATTABLE";
+            }
+
+            public static class Program
+            {
+                public static string Render(bool alt)
+                {
+                    var w = new Weird();
+                    var v = new Weird();
+                    return "x=" + (alt ? w : v);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "\"x=\" + (alt ? w : v)")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("$\"x={(alt ? w : v).ToString()}\"", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+
     #endregion
 
     #endregion
