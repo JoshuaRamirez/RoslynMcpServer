@@ -1131,6 +1131,62 @@ public class ExtractVariableOperationTests
         }
         """;
 
+    private const string InsideIfWithCommentAndPragmaSource = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+            static int _calls;
+            static int Next() { _calls++; return _calls * 10; }
+
+            public static string Run()
+            {
+                int total = 1;
+        #if DEBUG
+                // add the debug bonus
+        #pragma warning disable CS0168
+                total += Next() + 5;
+        #pragma warning restore CS0168
+        #else
+                total += 2;
+        #endif
+                return $"total={total} calls={_calls}";
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task ExtractVariable_InsideIfWithCommentAndPragma_DoesNotDuplicateTrivia()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InsideIfWithCommentAndPragmaSource);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(InsideIfWithCommentAndPragmaSource, "Next() + 5");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "bonus"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(1, CountOccurrences(updated, "// add the debug bonus"));
+        Assert.Equal(1, CountOccurrences(updated, "#pragma warning disable CS0168"));
+        var ifIndex = updated.IndexOf("#if DEBUG", StringComparison.Ordinal);
+        var declIndex = updated.IndexOf("var bonus = Next() + 5;", StringComparison.Ordinal);
+        var elseIndex = updated.IndexOf("#else", StringComparison.Ordinal);
+        Assert.True(ifIndex >= 0 && declIndex > ifIndex && declIndex < elseIndex, updated);
+        Assert.Contains("total += bonus;", updated, StringComparison.Ordinal);
+        Assert.Contains("\n        var bonus = Next() + 5;\n", updated, StringComparison.Ordinal);
+        AssertCompilesInDebugAndRelease(updated);
+    }
+
     [SkippableFact]
     public async Task ExtractVariable_AfterEndif_PlacesDeclarationAfterEndif()
     {

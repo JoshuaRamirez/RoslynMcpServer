@@ -1052,8 +1052,9 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
     /// <paramref name="statement"/> onto <paramref name="declaration"/> so the
     /// new local stays in the same conditional region as the statement: after
     /// a preceding <c>#endif</c> / <c>#endregion</c>, or inside an opening
-    /// <c>#if</c> / <c>#else</c>. Indentation whitespace after the last
-    /// directive is kept on both. Statements with no such trivia are unchanged.
+    /// <c>#if</c> / <c>#else</c>. Only the statement's indentation whitespace
+    /// is copied to the declaration; other trivia after the last directive
+    /// (comments, <c>#pragma</c>, …) stays only on the statement. Statements with no such trivia are unchanged.
     /// </summary>
     private static (LocalDeclarationStatementSyntax Declaration, StatementSyntax Statement)
         PlaceDeclarationRelativeToDirectiveTrivia(
@@ -1076,10 +1077,19 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             split++;
 
         var moved = SyntaxFactory.TriviaList(leading.Take(split));
-        var indent = SyntaxFactory.TriviaList(leading.Skip(split));
+        var rest = SyntaxFactory.TriviaList(leading.Skip(split));
+
+        // Only the statement's own indentation (trailing whitespace) is copied
+        // to the declaration; comments or other directives after the last
+        // recognized directive stay solely on the statement.
+        var indentStart = rest.Count;
+        while (indentStart > 0 && rest[indentStart - 1].IsKind(SyntaxKind.WhitespaceTrivia))
+            indentStart--;
+        var indent = SyntaxFactory.TriviaList(rest.Skip(indentStart));
+
         return (
             declaration.WithLeadingTrivia(moved.AddRange(indent)),
-            statement.WithLeadingTrivia(indent));
+            statement.WithLeadingTrivia(rest));
     }
 
     private static bool IsDirectivePlacementTrivia(SyntaxTrivia trivia) =>
