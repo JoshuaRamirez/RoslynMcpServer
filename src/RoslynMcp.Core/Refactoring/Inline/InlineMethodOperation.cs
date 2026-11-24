@@ -621,6 +621,42 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 ErrorCodes.CannotInlineDirectives,
                 $"Method '{methodSymbol.Name}' body contains preprocessor directives and cannot be safely inlined.");
         }
+
+        // A whole-method wrapper with an #else / #elif alternative means another
+        // configuration compiles a different implementation; inlining the active
+        // one would silently run the wrong branch there.
+        if (IsInsideConditionalAlternative(methodSyntax))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CannotInlineDirectives,
+                $"Method '{methodSymbol.Name}' has conditional-compilation alternatives (#else / #elif) and cannot be safely inlined.");
+        }
+    }
+
+    /// <summary>
+    /// True when the method sits inside an <c>#if</c> group (enclosing its whole
+    /// declaration) that also has an <c>#elif</c> or <c>#else</c> branch.
+    /// </summary>
+    private static bool IsInsideConditionalAlternative(MethodDeclarationSyntax methodSyntax)
+    {
+        var span = methodSyntax.Span;
+        var root = methodSyntax.SyntaxTree.GetRoot();
+        foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
+        {
+            if (!trivia.IsKind(SyntaxKind.IfDirectiveTrivia) ||
+                trivia.GetStructure() is not IfDirectiveTriviaSyntax ifDirective ||
+                ifDirective.SpanStart >= span.Start)
+            {
+                continue;
+            }
+
+            var related = ifDirective.GetRelatedDirectives();
+            var enclosesMethod = related.Any(d => d is EndIfDirectiveTriviaSyntax && d.SpanStart >= span.End);
+            if (enclosesMethod && related.Any(d => d is ElseDirectiveTriviaSyntax or ElifDirectiveTriviaSyntax))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool BodyContainsPreprocessorDirectives(MethodDeclarationSyntax methodSyntax)

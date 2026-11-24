@@ -712,6 +712,65 @@ public class InlineMethodOperationTests
         Assert.DoesNotContain("await _left + _right", text);
     }
 
+    private const string RateWholeMethodElseAlternative = """
+        namespace TestApp;
+
+        public static class Program
+        {
+            public static int Run()
+            {
+                return Rate(2);
+            }
+
+        #if DEBUG
+            private static int Rate(int x) => x * 10;
+        #else
+            private static int Rate(int x) => x * 50;
+        #endif
+        }
+        """;
+
+    private const string RateWholeMethodElifAlternative = """
+        namespace TestApp;
+
+        public static class Program
+        {
+            public static int Run()
+            {
+                return Rate(2);
+            }
+
+        #if TRACE_RATE
+            private static int Rate(int x) => x * 1;
+        #elif DEBUG
+            private static int Rate(int x) => x * 10;
+        #endif
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task InlineMethod_WholeMethodConditionalAlternative_Throws(bool useElse, bool removeMethod)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            useElse ? RateWholeMethodElseAlternative : RateWholeMethodElifAlternative);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Rate",
+                RemoveMethod = removeMethod
+            }));
+
+        Assert.Equal(ErrorCodes.CannotInlineDirectives, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     private const string RateWithDirectiveBody = """
         using System;
 
