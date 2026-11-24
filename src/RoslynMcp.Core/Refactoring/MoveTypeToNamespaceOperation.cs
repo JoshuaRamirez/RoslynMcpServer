@@ -602,8 +602,18 @@ public sealed class MoveTypeToNamespaceOperation
             newNamespace,
             cancellationToken);
 
-        // Update using directives in all referencing documents
-        foreach (var (docId, _) in references.ReferencesByDocument)
+        // Update using directives in all referencing documents, including
+        // consumers that only mention the type in inactive #if/#else text
+        // (FindReferencesAsync sees the active configuration only, #2939).
+        var documentsToUpdate = new HashSet<DocumentId>(references.ReferencesByDocument.Keys);
+        await AddDocumentsWithInactiveIdentifierAsync(
+            solution,
+            resolution.Symbol.Name,
+            resolution.Document.Id,
+            documentsToUpdate,
+            cancellationToken);
+
+        foreach (var docId in documentsToUpdate)
         {
             var doc = solution.GetDocument(docId);
             if (doc == null) continue;
@@ -687,6 +697,73 @@ public sealed class MoveTypeToNamespaceOperation
 
         return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
     }
+
+
+    /// <summary>
+    /// Adds documents whose disabled preprocessor text contains
+    /// <paramref name="identifier"/> as a whole word, so a Release-only
+    /// <c>#else</c> / <c>#if !DEBUG</c> use still gets <c>using NewNs</c>.
+    /// </summary>
+    private static async Task AddDocumentsWithInactiveIdentifierAsync(
+        Solution solution,
+        string identifier,
+        DocumentId declaringDocumentId,
+        HashSet<DocumentId> documentsToUpdate,
+        CancellationToken cancellationToken)
+    {
+        foreach (var project in solution.Projects)
+        {
+            foreach (var document in project.Documents)
+            {
+                if (documentsToUpdate.Contains(document.Id) ||
+                    document.Id == declaringDocumentId ||
+                    !document.SupportsSyntaxTree)
+                {
+                    continue;
+                }
+
+                var root = await document.GetSyntaxRootAsync(cancellationToken);
+                if (root != null && DisabledTriviaContainsIdentifier(root, identifier))
+                    documentsToUpdate.Add(document.Id);
+            }
+        }
+    }
+
+    private static bool DisabledTriviaContainsIdentifier(SyntaxNode root, string identifier)
+    {
+        foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
+        {
+            if (!trivia.IsKind(SyntaxKind.DisabledTextTrivia))
+                continue;
+
+            if (ContainsWholeIdentifier(trivia.ToFullString(), identifier))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool ContainsWholeIdentifier(string text, string identifier)
+    {
+        var start = 0;
+        while (true)
+        {
+            var index = text.IndexOf(identifier, start, StringComparison.Ordinal);
+            if (index < 0)
+                return false;
+
+            var beforeOk = index == 0 || !IsIdentifierPart(text[index - 1]);
+            var after = index + identifier.Length;
+            var afterOk = after >= text.Length || !IsIdentifierPart(text[after]);
+            if (beforeOk && afterOk)
+                return true;
+
+            start = index + identifier.Length;
+        }
+    }
+
+    private static bool IsIdentifierPart(char c) =>
+        char.IsLetterOrDigit(c) || c == '_';
 
     private async Task<(Document, int added, int removed)> UpdateUsingDirectivesAsync(
         Document document,

@@ -1449,6 +1449,274 @@ public class MoveTypeToNamespaceOperationTests
         }
         """;
 
+
+    #region Inactive #if / #else references (#2939)
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_InactiveElseSimpleName_AddsUsing()
+    {
+        await using var workspace = await CreateInactiveReferenceWorkspace(InactiveElseProgram);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(workspace.GetPath("Helper.cs")));
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("using NewNs;", program);
+        Assert.Contains("using OldNs;", program);
+        Assert.Contains("Helper.Tag()", program);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_InactiveNotDebugSimpleName_AddsUsing()
+    {
+        await using var workspace = await CreateInactiveReferenceWorkspace(InactiveNotDebugProgram);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("using NewNs;", program);
+        Assert.Contains("Helper.Tag()", program);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_InactiveElseObjectCreation_AddsUsing()
+    {
+        await using var workspace = await CreateInactiveReferenceWorkspace(InactiveElseNewHelperProgram, instanceHelper: true);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("using NewNs;", program);
+        Assert.Contains("new Helper()", program);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_BothBranchesReference_StillAddsUsing()
+    {
+        await using var workspace = await CreateInactiveReferenceWorkspace(BothBranchesProgram);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("using NewNs;", program);
+        Assert.Equal(1, CountOccurrences(program, "using NewNs;"));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_InactiveElseSimpleName_Preview_MentionsUsing()
+    {
+        await using var workspace = await CreateInactiveReferenceWorkspace(InactiveElseProgram);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var beforeProgram = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        var beforeHelper = await File.ReadAllTextAsync(workspace.GetPath("Helper.cs"));
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains(result.PendingChanges!, c => c.Description.Contains("using") && c.Description.Contains("NewNs"));
+        Assert.Equal(beforeProgram, await File.ReadAllTextAsync(workspace.GetPath("Program.cs")));
+        Assert.Equal(beforeHelper, await File.ReadAllTextAsync(workspace.GetPath("Helper.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_InactiveTriviaWithoutTypeName_DoesNotAddUsing()
+    {
+        await using var workspace = await CreateInactiveReferenceWorkspace(InactiveElseWithoutHelperProgram);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesAdded);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.DoesNotContain("using NewNs;", program);
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(workspace.GetPath("Helper.cs")));
+    }
+
+    private static Task<TempWorkspace> CreateInactiveReferenceWorkspace(string program, bool instanceHelper = false) =>
+        TempWorkspace.CreateAsync(
+            ("Helper.cs", instanceHelper ? InactiveHelperInstanceSource : InactiveHelperSource),
+            ("Sibling.cs", InactiveSiblingSource),
+            ("Program.cs", program));
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var start = 0;
+        while (true)
+        {
+            var index = text.IndexOf(value, start, StringComparison.Ordinal);
+            if (index < 0)
+                return count;
+            count++;
+            start = index + value.Length;
+        }
+    }
+
+    private const string InactiveHelperSource = """
+        namespace OldNs
+        {
+            public class Helper
+            {
+                public static string Tag() => "helper";
+            }
+        }
+        """;
+
+    private const string InactiveHelperInstanceSource = """
+        namespace OldNs
+        {
+            public class Helper
+            {
+                public string Tag() => "helper";
+            }
+        }
+        """;
+
+    private const string InactiveSiblingSource = """
+        namespace OldNs
+        {
+            public class Sibling
+            {
+                public static string Tag() => "sibling";
+            }
+        }
+        """;
+
+    private const string InactiveElseProgram = """
+        using System;
+        using OldNs;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always " + Sibling.Tag());
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                Console.WriteLine("release " + Helper.Tag());
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveNotDebugProgram = """
+        using System;
+        using OldNs;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always " + Sibling.Tag());
+        #if !DEBUG
+                Console.WriteLine("release-only " + Helper.Tag());
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveElseNewHelperProgram = """
+        using System;
+        using OldNs;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always " + Sibling.Tag());
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                var h = new Helper();
+                Console.WriteLine("release " + h.Tag());
+        #endif
+            }
+        }
+        """;
+
+    private const string BothBranchesProgram = """
+        using System;
+        using OldNs;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always " + Sibling.Tag());
+        #if DEBUG
+                Console.WriteLine("debug " + Helper.Tag());
+        #else
+                Console.WriteLine("release " + Helper.Tag());
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveElseWithoutHelperProgram = """
+        using System;
+        using OldNs;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always " + Sibling.Tag());
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                Console.WriteLine("release-only");
+        #endif
+            }
+        }
+        """;
+
+    #endregion
+
     [SkippableFact]
     public async Task MoveTypeToNamespace_AllFilesFalse_MovesOnlySpecifiedType()
     {
