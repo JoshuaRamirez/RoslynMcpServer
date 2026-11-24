@@ -700,8 +700,9 @@ public sealed class MoveTypeToNamespaceOperation
 
 
     /// <summary>
-    /// Adds documents whose disabled preprocessor text contains
-    /// <paramref name="identifier"/> as a whole word, so a Release-only
+    /// Adds documents (in the declaring project or projects referencing it)
+    /// whose disabled preprocessor text contains <paramref name="identifier"/>
+    /// as an identifier token, so a Release-only
     /// <c>#else</c> / <c>#if !DEBUG</c> use still gets <c>using NewNs</c>.
     /// </summary>
     private static async Task AddDocumentsWithInactiveIdentifierAsync(
@@ -711,8 +712,22 @@ public sealed class MoveTypeToNamespaceOperation
         HashSet<DocumentId> documentsToUpdate,
         CancellationToken cancellationToken)
     {
-        foreach (var project in solution.Projects)
+        // Only the declaring project and projects that (transitively) reference
+        // it can see the moved type; unrelated projects must not get the using.
+        var declaringProjectId = declaringDocumentId.ProjectId;
+        var candidateProjectIds = new HashSet<ProjectId>(
+            solution.GetProjectDependencyGraph()
+                .GetProjectsThatTransitivelyDependOnThisProject(declaringProjectId))
         {
+            declaringProjectId
+        };
+
+        foreach (var projectId in candidateProjectIds)
+        {
+            var project = solution.GetProject(projectId);
+            if (project == null)
+                continue;
+
             foreach (var document in project.Documents)
             {
                 if (documentsToUpdate.Contains(document.Id) ||
@@ -736,34 +751,33 @@ public sealed class MoveTypeToNamespaceOperation
             if (!trivia.IsKind(SyntaxKind.DisabledTextTrivia))
                 continue;
 
-            if (ContainsWholeIdentifier(trivia.ToFullString(), identifier))
+            if (ContainsIdentifierToken(trivia.ToFullString(), identifier))
                 return true;
         }
 
         return false;
     }
 
-    private static bool ContainsWholeIdentifier(string text, string identifier)
+    /// <summary>
+    /// Lexes inactive text so only identifier tokens match; occurrences inside
+    /// comments or string/char literals are ignored.
+    /// </summary>
+    private static bool ContainsIdentifierToken(string text, string identifier)
     {
-        var start = 0;
-        while (true)
+        if (text.IndexOf(identifier, StringComparison.Ordinal) < 0)
+            return false;
+
+        foreach (var token in SyntaxFactory.ParseTokens(text))
         {
-            var index = text.IndexOf(identifier, start, StringComparison.Ordinal);
-            if (index < 0)
-                return false;
-
-            var beforeOk = index == 0 || !IsIdentifierPart(text[index - 1]);
-            var after = index + identifier.Length;
-            var afterOk = after >= text.Length || !IsIdentifierPart(text[after]);
-            if (beforeOk && afterOk)
+            if (token.IsKind(SyntaxKind.IdentifierToken) &&
+                string.Equals(token.ValueText, identifier, StringComparison.Ordinal))
+            {
                 return true;
-
-            start = index + identifier.Length;
+            }
         }
-    }
 
-    private static bool IsIdentifierPart(char c) =>
-        char.IsLetterOrDigit(c) || c == '_';
+        return false;
+    }
 
     private async Task<(Document, int added, int removed)> UpdateUsingDirectivesAsync(
         Document document,

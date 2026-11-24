@@ -1576,6 +1576,172 @@ public class MoveTypeToNamespaceOperationTests
         Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(workspace.GetPath("Helper.cs")));
     }
 
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_InactiveCommentAndStringOnly_DoesNotAddUsing()
+    {
+        await using var workspace = await CreateInactiveReferenceWorkspace(InactiveElseCommentAndStringProgram);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesAdded);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.DoesNotContain("using NewNs;", program);
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(workspace.GetPath("Helper.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_InactiveUseInUnrelatedProject_DoesNotAddUsing()
+    {
+        await using var workspace = await CreateUnrelatedProjectSolutionAsync();
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var otherPath = workspace.GetPath("Other/Program.cs");
+        var beforeOther = await File.ReadAllTextAsync(otherPath);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Owner/Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(workspace.GetPath("Owner/Helper.cs")));
+        Assert.Equal(beforeOther, await File.ReadAllTextAsync(otherPath));
+        var ownerProgram = await File.ReadAllTextAsync(workspace.GetPath("Owner/Program.cs"));
+        Assert.Contains("using NewNs;", ownerProgram);
+    }
+
+    private static async Task<TempWorkspace> CreateUnrelatedProjectSolutionAsync()
+    {
+        Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+        var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveNsUnrelated_" + Guid.NewGuid().ToString("N"));
+        var ownerDir = Path.Combine(directory, "Owner");
+        var otherDir = Path.Combine(directory, "Other");
+        Directory.CreateDirectory(ownerDir);
+        Directory.CreateDirectory(otherDir);
+
+        const string projectXml = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net9.0</TargetFramework>
+                <Nullable>enable</Nullable>
+              </PropertyGroup>
+            </Project>
+            """;
+        await File.WriteAllTextAsync(Path.Combine(ownerDir, "Owner.csproj"), projectXml);
+        await File.WriteAllTextAsync(Path.Combine(otherDir, "Other.csproj"), projectXml);
+        await File.WriteAllTextAsync(Path.Combine(ownerDir, "Helper.cs"), InactiveHelperSource);
+        await File.WriteAllTextAsync(Path.Combine(ownerDir, "Sibling.cs"), InactiveSiblingSource);
+        await File.WriteAllTextAsync(Path.Combine(ownerDir, "Program.cs"), InactiveElseProgram);
+        await File.WriteAllTextAsync(Path.Combine(otherDir, "Program.cs"), UnrelatedProjectInactiveHelperProgram);
+
+        var solutionPath = Path.Combine(directory, "TestApp.sln");
+        await File.WriteAllTextAsync(solutionPath, """
+            Microsoft Visual Studio Solution File, Format Version 12.00
+            # Visual Studio Version 17
+            Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Owner", "Owner\Owner.csproj", "{11111111-1111-1111-1111-111111111111}"
+            EndProject
+            Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Other", "Other\Other.csproj", "{22222222-2222-2222-2222-222222222222}"
+            EndProject
+            Global
+            	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+            		Debug|Any CPU = Debug|Any CPU
+            	EndGlobalSection
+            	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+            		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+            		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+            		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+            		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+            	EndGlobalSection
+            EndGlobal
+            """);
+
+        try
+        {
+            var provider = new MSBuildWorkspaceProvider();
+            var context = await provider.CreateContextAsync(solutionPath);
+            if (context.Solution.Projects.Count() < 2)
+            {
+                context.Dispose();
+                throw new InvalidOperationException("Expected two projects in the solution.");
+            }
+
+            return new TempWorkspace
+            {
+                DirectoryPath = directory,
+                ProjectPath = Path.Combine(ownerDir, "Owner.csproj"),
+                SecondaryProjectPath = Path.Combine(otherDir, "Other.csproj"),
+                SolutionPath = solutionPath,
+                SourcePath = Path.Combine(ownerDir, "Helper.cs"),
+                Context = context
+            };
+        }
+        catch (Exception ex) when (ex is not SkipException)
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch
+            {
+                // ignore cleanup failures
+            }
+
+            Skip.If(true, $"Workspace load failed: {ex.Message}");
+            throw;
+        }
+    }
+
+    private const string InactiveElseCommentAndStringProgram = """
+        using System;
+        using OldNs;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always " + Sibling.Tag());
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                // Helper
+                /* Helper */
+                Console.WriteLine("Helper");
+                Console.WriteLine(@"Helper");
+        #endif
+            }
+        }
+        """;
+
+    private const string UnrelatedProjectInactiveHelperProgram = """
+        using System;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                Console.WriteLine(Helper.Tag());
+        #endif
+            }
+
+            private static class Helper
+            {
+                public static string Tag() => "local";
+            }
+        }
+        """;
+
     private static Task<TempWorkspace> CreateInactiveReferenceWorkspace(string program, bool instanceHelper = false) =>
         TempWorkspace.CreateAsync(
             ("Helper.cs", instanceHelper ? InactiveHelperInstanceSource : InactiveHelperSource),
