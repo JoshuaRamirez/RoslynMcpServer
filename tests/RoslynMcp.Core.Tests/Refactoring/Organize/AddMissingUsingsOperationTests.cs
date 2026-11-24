@@ -436,6 +436,59 @@ public class AddMissingUsingsOperationTests
         Assert.Contains("new App.Task.Widget()", after);
     }
 
+    [SkippableTheory]
+    [InlineData("QualifiedGeneric")]
+    [InlineData("MemberGeneric")]
+    public async Task AddMissingUsings_UnresolvedGenericArgumentOfQualifiedName_AddsUsing(string shape)
+    {
+        var program = shape == "QualifiedGeneric" ? Cs0246QualifiedGenericArgument : Cs0246MemberGenericArgument;
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Lib.cs", Cs0234Lib),
+            ("Program.cs", program));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = workspace.SourcePaths["Program.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        var after = await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]);
+        Assert.Contains("using System.Collections.Generic;", after);
+    }
+
+    private const string Cs0246QualifiedGenericArgument = """
+        using System;
+
+        class Program
+        {
+            static void Main()
+            {
+                var map = new System.Collections.Generic.Dictionary<int, List<int>>();
+                Console.WriteLine(map.Count);
+            }
+        }
+        """;
+
+    private const string Cs0246MemberGenericArgument = """
+        using System;
+
+        class Holder
+        {
+            public int Method<T>() => 0;
+        }
+
+        class Program
+        {
+            static void Main()
+            {
+                var obj = new Holder();
+                Console.WriteLine(obj.Method<List<int>>());
+            }
+        }
+        """;
+
     private const string Cs0234Lib = """
         namespace App
         {

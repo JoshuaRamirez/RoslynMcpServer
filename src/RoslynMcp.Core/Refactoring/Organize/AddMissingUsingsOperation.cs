@@ -462,9 +462,13 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
                     return true;
                 case QualifiedCrefSyntax cref when cref.Member == current:
                     return true;
+                case TypeArgumentListSyntax:
+                    // A generic argument is looked up on its own, unqualified
+                    // (List in Dictionary<int, List<int>> or obj.M<List<int>>()),
+                    // so stop at the argument boundary.
+                    return false;
                 case NameSyntax:
                 case TypeSyntax:
-                case TypeArgumentListSyntax:
                     continue;
                 default:
                     return false;
