@@ -619,6 +619,7 @@ public class ExtractBaseClassOperationTests
     [Theory]
     [InlineData("123Bad")]
     [InlineData("has-dash")]
+    [InlineData("@123Bad")]
     public void Validate_InvalidTypeName_ThrowsInvalidSymbolName(string typeName)
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -634,6 +635,30 @@ public class ExtractBaseClassOperationTests
 
         Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
         Assert.Equal("1003", ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("Person")]
+    [InlineData("@class")]
+    public void Validate_ValidTypeName_DoesNotThrowInvalidSymbolName(string typeName)
+    {
+        // Verbatim "@class" must pass Validate: Identifier.Text keeps the
+        // @ prefix, so that is the name that selects class @class.
+        // A missing file must surface as SourceFileNotFound, not
+        // InvalidSymbolName.
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = typeName,
+                BaseClassName = "PersonBase",
+                Members = new[] { "Name" },
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        Assert.NotEqual(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
     }
 
     [SkippableFact]

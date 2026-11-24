@@ -80,7 +80,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         if (string.IsNullOrWhiteSpace(@params.TypeName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "typeName is required.");
 
-        if (!IdentifierValidation.IsValidIdentifier(@params.TypeName!))
+        if (!IsValidTypeName(@params.TypeName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid type name: {@params.TypeName}");
 
         if (string.IsNullOrWhiteSpace(@params.BaseClassName))
@@ -105,6 +105,22 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
         if (@params.TargetFile != null)
             TargetFilePathHelpers.ValidateTargetFilePath(@params.TargetFile);
+    }
+
+    /// <summary>
+    /// Type lookup keys allow the same char-based identifiers as
+    /// <see cref="IdentifierValidation"/>, plus a verbatim <c>@</c>
+    /// prefix. Roslyn keeps the <c>@</c> in <c>Identifier.Text</c>, so
+    /// <c>class @class</c> is found as <c>@class</c>, not <c>class</c>.
+    /// </summary>
+    private static bool IsValidTypeName(string name)
+    {
+        if (IdentifierValidation.IsValidIdentifier(name))
+            return true;
+
+        return name.Length > 1 &&
+               name[0] == '@' &&
+               IdentifierValidation.IsValidIdentifier(name[1..]);
     }
 
 
