@@ -153,18 +153,22 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         // Determine property name
         var propertyName = @params.PropertyName ?? DerivePropertyName(fieldName);
 
-        // Check for existing property with same name
-        var containingType = fieldDeclarator.Ancestors().OfType<TypeDeclarationSyntax>().First();
-        var existingProperty = containingType.Members
-            .OfType<PropertyDeclarationSyntax>()
-            .FirstOrDefault(p => p.Identifier.ValueText ==
-                SyntaxIdentifierValidation.NormalizeIdentifier(propertyName));
+        // Check for an existing member with the same name (property,
+        // field, method, …, including other partial declarations),
+        // excluding the field being encapsulated, as the all-files path
+        // does. Compare the unescaped name so `@foo` collides with `foo`.
+        var containingTypeSymbol = fieldSymbol.ContainingType;
+        var existingMember = containingTypeSymbol
+            .GetMembers(SyntaxIdentifierValidation.NormalizeIdentifier(propertyName))
+            .FirstOrDefault(member => !SymbolEqualityComparer.Default.Equals(member, fieldSymbol));
 
-        if (existingProperty != null)
+        if (existingMember != null)
         {
             throw new RefactoringException(
                 ErrorCodes.NameCollision,
-                $"Property '{propertyName}' already exists.");
+                existingMember is IPropertySymbol
+                    ? $"Property '{propertyName}' already exists."
+                    : $"Member '{propertyName}' already exists.");
         }
 
         // Create property
@@ -202,6 +206,12 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         {
             newFieldName = DeriveBackingFieldName(fieldName);
             fieldRenamed = true;
+            if (containingTypeSymbol.GetMembers(newFieldName).Any())
+            {
+                throw new RefactoringException(
+                    ErrorCodes.NameCollision,
+                    $"Backing field name '{newFieldName}' already exists.");
+            }
         }
 
         // If preview mode, return without applying
@@ -555,8 +565,29 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         bool updateReferences,
         CancellationToken cancellationToken)
     {
-        // Make field private if it's not already
+        // A renamed backing field (`@foo` -> `_foo`) renames the selected
+        // declarator and carries uses inside the same declaration along
+        // (`static int @foo = 1, copy = foo;` -> `copy = _foo`), because
+        // the same-type reference rewrite below skips the field
+        // declaration it replaces wholesale.
         var newFieldDeclaration = fieldDeclaration;
+        if (fieldRenamed)
+        {
+            var declarationIdentifiers = EnumerateSameFileIdentifiers(
+                    root, document.Id, internalReferences, fieldName)
+                .Where(identifier => fieldDeclaration.Span.Contains(identifier.Span))
+                .ToList();
+            newFieldDeclaration = fieldDeclaration.ReplaceNodes(
+                declarationIdentifiers.Cast<SyntaxNode>().Append(fieldDeclarator),
+                (original, rewritten) => original == fieldDeclarator
+                    ? ((VariableDeclaratorSyntax)rewritten).WithIdentifier(SyntaxFactory.Identifier(newFieldName))
+                    : SyntaxFactory.IdentifierName(newFieldName).WithTriviaFrom(original));
+
+            // Update property to use new field name
+            property = UpdatePropertyFieldName(property, newFieldName);
+        }
+
+        // Make field private if it's not already
         if (fieldSymbol.DeclaredAccessibility != Accessibility.Private)
         {
             var newModifiers = SyntaxFactory.TokenList(
@@ -566,18 +597,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                     !m.IsKind(SyntaxKind.InternalKeyword))
                 .Prepend(SyntaxFactory.Token(SyntaxKind.PrivateKeyword)));
 
-            newFieldDeclaration = fieldDeclaration.WithModifiers(newModifiers);
-        }
-
-        if (fieldRenamed)
-        {
-            var newDeclarator = fieldDeclarator.WithIdentifier(SyntaxFactory.Identifier(newFieldName));
-            var variableDeclaration = (VariableDeclarationSyntax)fieldDeclarator.Parent!;
-            var newVariableDeclaration = variableDeclaration.ReplaceNode(fieldDeclarator, newDeclarator);
-            newFieldDeclaration = newFieldDeclaration.WithDeclaration(newVariableDeclaration);
-
-            // Update property to use new field name
-            property = UpdatePropertyFieldName(property, newFieldName);
+            newFieldDeclaration = newFieldDeclaration.WithModifiers(newModifiers);
         }
 
         // Redirect to the property when updateReferences is true. When false,
