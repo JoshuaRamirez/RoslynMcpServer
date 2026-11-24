@@ -1240,7 +1240,12 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         if (leftovers.Count == 0)
             return initializer;
 
-        if (initializer == null && !HasUserDeclaredParameterlessInstanceConstructor(typeSymbol))
+        // : this() on a struct without a user-declared parameterless ctor calls the
+        // implicit zero-initializer, which skips declaration initializers, so fall
+        // back to explicit default assignments whenever any initializer must run.
+        if (initializer == null
+            && !HasUserDeclaredParameterlessInstanceConstructor(typeSymbol)
+            && !HasInstanceMemberInitializers(typeSymbol))
         {
             return SyntaxFactory.ConstructorInitializer(
                 SyntaxKind.ThisConstructorInitializer,
@@ -1251,6 +1256,23 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             statements.Add(CreateDefaultAssignment(leftover));
 
         return initializer;
+    }
+
+    private static bool HasInstanceMemberInitializers(INamedTypeSymbol typeSymbol)
+    {
+        foreach (var field in typeSymbol.GetMembers().OfType<IFieldSymbol>())
+        {
+            if (field.IsStatic || field.IsConst)
+                continue;
+
+            ISymbol member = field.IsImplicitlyDeclared && field.AssociatedSymbol is IPropertySymbol property
+                ? property
+                : field;
+            if (HasDeclarationInitializer(member))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool RequiresStructDefiniteAssignment(INamedTypeSymbol typeSymbol, SyntaxTree tree)

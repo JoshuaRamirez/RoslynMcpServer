@@ -6117,6 +6117,48 @@ public class GenerateConstructorOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_FieldInitializer_UsesDefaultAssignmentsNotThis()
+    {
+        const string source = """
+            public struct Counter
+            {
+                private int _value = 42;
+                private string _name;
+                private int _step;
+
+                public Counter(string name)
+                {
+                    _name = name;
+                    _step = 1;
+                }
+
+                public override string ToString() => _name + _value + _step;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Counter",
+            Members = ["_step"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var start = updated.IndexOf("Counter(int step)", StringComparison.Ordinal);
+        Assert.True(start >= 0, updated);
+        var ctor = updated[start..(updated.IndexOf('}', start) + 1)];
+        Assert.DoesNotContain(": this()", ctor, StringComparison.Ordinal);
+        Assert.Contains("_step = step", ctor, StringComparison.Ordinal);
+        Assert.Contains("_name = default", ctor, StringComparison.Ordinal);
+        Assert.DoesNotContain("_value =", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
     public async Task GenerateConstructor_StructLangVersion10_IncludePropertiesFalse_ChainsThisAndCompiles()
     {
         const string source = """
