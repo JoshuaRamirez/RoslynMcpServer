@@ -1104,6 +1104,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         bool renameInStrings,
         CancellationToken cancellationToken)
     {
+        Solution solution;
         if (IsLastSegmentRename(oldFullName, newFullName))
         {
             var options = new SymbolRenameOptions(
@@ -1112,16 +1113,105 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 RenameInComments: renameInComments,
                 RenameFile: false);
 
-            return await Renamer.RenameSymbolAsync(
+            solution = await Renamer.RenameSymbolAsync(
                 Context.Solution,
                 namespaceSymbol,
                 options,
                 GetLastSegment(newFullName),
                 cancellationToken);
         }
+        else
+        {
+            solution = await RewriteFullNamespaceAsync(namespaceSymbol, oldFullName, newFullName, cancellationToken);
+        }
 
-        return await RewriteFullNamespaceAsync(namespaceSymbol, oldFullName, newFullName, cancellationToken);
+        // Renamer / GetSymbolInfo only see the active preprocessor configuration.
+        // Rewrite using OldNs; and OldNs.… still sitting in disabled #else / #if !DEBUG text (#2941).
+        return await RewriteInactiveNamespaceTextAsync(solution, oldFullName, newFullName, cancellationToken);
     }
+
+    /// <summary>
+    /// Rewrites <paramref name="oldFullName"/> to <paramref name="newFullName"/>
+    /// inside disabled preprocessor trivia so Release-only <c>using</c> and
+    /// qualified names do not stay stale.
+    /// </summary>
+    private static async Task<Solution> RewriteInactiveNamespaceTextAsync(
+        Solution solution,
+        string oldFullName,
+        string newFullName,
+        CancellationToken cancellationToken)
+    {
+        foreach (var project in solution.Projects)
+        {
+            foreach (var document in project.Documents)
+            {
+                if (!document.SupportsSyntaxTree)
+                    continue;
+
+                var root = await document.GetSyntaxRootAsync(cancellationToken);
+                if (root == null)
+                    continue;
+
+                var originals = new List<SyntaxTrivia>();
+                var replacements = new List<SyntaxTrivia>();
+                foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
+                {
+                    if (!trivia.IsKind(SyntaxKind.DisabledTextTrivia))
+                        continue;
+
+                    var original = trivia.ToFullString();
+                    var rewritten = ReplaceIsolatedNamespaceName(original, oldFullName, newFullName);
+                    if (rewritten == original)
+                        continue;
+
+                    originals.Add(trivia);
+                    replacements.Add(SyntaxFactory.DisabledText(rewritten));
+                }
+
+                if (originals.Count == 0)
+                    continue;
+
+                var index = 0;
+                root = root.ReplaceTrivia(originals, (_, _) => replacements[index++]);
+                solution = solution.WithDocumentSyntaxRoot(document.Id, root);
+            }
+        }
+
+        return solution;
+    }
+
+    private static string ReplaceIsolatedNamespaceName(string text, string oldFullName, string newFullName)
+    {
+        var start = 0;
+        var builder = new System.Text.StringBuilder();
+        while (true)
+        {
+            var index = text.IndexOf(oldFullName, start, StringComparison.Ordinal);
+            if (index < 0)
+            {
+                builder.Append(text, start, text.Length - start);
+                return builder.ToString();
+            }
+
+            var beforeOk = index == 0 || !IsIdentifierPart(text[index - 1]);
+            var after = index + oldFullName.Length;
+            var afterOk = after >= text.Length || !IsIdentifierPart(text[after]);
+            if (beforeOk && afterOk)
+            {
+                builder.Append(text, start, index - start);
+                builder.Append(newFullName);
+                start = after;
+            }
+            else
+            {
+                builder.Append(text, start, index - start + 1);
+                start = index + 1;
+            }
+        }
+    }
+
+    private static bool IsIdentifierPart(char c) =>
+        char.IsLetterOrDigit(c) || c == '_';
 
     /// <summary>
     /// Rewrites namespace declarations and references in <paramref name="root"/>.

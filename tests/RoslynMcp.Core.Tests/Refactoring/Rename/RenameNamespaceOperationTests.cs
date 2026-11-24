@@ -855,6 +855,238 @@ public class RenameNamespaceOperationTests
         Assert.True(result.ReferencesUpdated >= 0);
     }
 
+
+    #region Inactive #if / #else namespace text (#2941)
+
+    [SkippableFact]
+    public async Task RenameNamespace_InactiveElseQualifiedName_Rewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", InactiveHelperSource),
+            ("Program.cs", InactiveElseQualifiedProgram));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            NamespaceName = "OldNs",
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(workspace.GetPath("Helper.cs")));
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("NewNs.Helper.Tag()", program);
+        Assert.DoesNotContain("OldNs.Helper", program);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_InactiveNotDebugQualifiedName_Rewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", InactiveHelperSource),
+            ("Program.cs", InactiveNotDebugQualifiedProgram));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            NamespaceName = "OldNs",
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("NewNs.Helper.Tag()", program);
+        Assert.DoesNotContain("OldNs.Helper", program);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_InactiveElseUsing_Rewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", InactiveHelperSource),
+            ("Program.cs", InactiveElseUsingProgram));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            NamespaceName = "OldNs",
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("using NewNs;", program);
+        Assert.DoesNotContain("using OldNs;", program);
+        Assert.Contains("Helper.Tag()", program);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_InactiveElseQualifiedName_FullRewrite_Rewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", InactiveHelperSource),
+            ("Program.cs", InactiveElseQualifiedProgram));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            NamespaceName = "OldNs",
+            NewName = "App.Core"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace App.Core", await File.ReadAllTextAsync(workspace.GetPath("Helper.cs")));
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("App.Core.Helper.Tag()", program);
+        Assert.DoesNotContain("OldNs.Helper", program);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_BothBranchesQualifiedName_RewritesInactiveToo()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", InactiveHelperSource),
+            ("Program.cs", BothBranchesQualifiedProgram));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            NamespaceName = "OldNs",
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("NewNs.Helper.Tag()", program);
+        Assert.DoesNotContain("OldNs.Helper", program);
+        Assert.Equal(2, CountOccurrences(program, "NewNs.Helper.Tag()"));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_InactiveElseQualifiedName_Preview_WritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", InactiveHelperSource),
+            ("Program.cs", InactiveElseQualifiedProgram));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var beforeHelper = await File.ReadAllTextAsync(workspace.GetPath("Helper.cs"));
+        var beforeProgram = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            NamespaceName = "OldNs",
+            NewName = "NewNs",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeHelper, await File.ReadAllTextAsync(workspace.GetPath("Helper.cs")));
+        Assert.Equal(beforeProgram, await File.ReadAllTextAsync(workspace.GetPath("Program.cs")));
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var start = 0;
+        while (true)
+        {
+            var index = text.IndexOf(value, start, StringComparison.Ordinal);
+            if (index < 0)
+                return count;
+            count++;
+            start = index + value.Length;
+        }
+    }
+
+    private const string InactiveHelperSource = """
+        namespace OldNs
+        {
+            public class Helper
+            {
+                public static string Tag() => "helper";
+            }
+        }
+        """;
+
+    private const string InactiveElseQualifiedProgram = """
+        using System;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always");
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                Console.WriteLine("release " + OldNs.Helper.Tag());
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveNotDebugQualifiedProgram = """
+        using System;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always");
+        #if !DEBUG
+                Console.WriteLine("release-only " + OldNs.Helper.Tag());
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveElseUsingProgram = """
+        using System;
+        #if DEBUG
+        // debug has no OldNs import
+        #else
+        using OldNs;
+        #endif
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always");
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                Console.WriteLine("release " + Helper.Tag());
+        #endif
+            }
+        }
+        """;
+
+    private const string BothBranchesQualifiedProgram = """
+        using System;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always");
+        #if DEBUG
+                Console.WriteLine("debug " + OldNs.Helper.Tag());
+        #else
+                Console.WriteLine("release " + OldNs.Helper.Tag());
+        #endif
+            }
+        }
+        """;
+
+    #endregion
+
     [SkippableFact]
     public async Task RenameNamespace_Preview_ReturnsChangesAndWritesNothing()
     {
