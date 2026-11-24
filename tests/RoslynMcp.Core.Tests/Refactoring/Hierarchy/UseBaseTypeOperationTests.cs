@@ -2008,6 +2008,7 @@ public class UseBaseTypeOperationTests
     [InlineData(nameof(InactiveMethodReturnBreedSource))]
     [InlineData(nameof(InactiveHiddenOverloadSource))]
     [InlineData(nameof(InactiveNestedMethodReturnSource))]
+    [InlineData(nameof(InactiveIndexerBreedSource))]
     public async Task UseBaseType_InactiveDerivedOnlyUse_CodexFollowUps_Throws(string sourceName)
     {
         var source = sourceName switch
@@ -2016,6 +2017,7 @@ public class UseBaseTypeOperationTests
             nameof(InactivePublicPropertyBreedSource) => InactivePublicPropertyBreedSource,
             nameof(InactiveMethodReturnBreedSource) => InactiveMethodReturnBreedSource,
             nameof(InactiveNestedMethodReturnSource) => InactiveNestedMethodReturnSource,
+            nameof(InactiveIndexerBreedSource) => InactiveIndexerBreedSource,
             _ => InactiveHiddenOverloadSource
         };
         await using var workspace = await TempWorkspace.CreateAsync(source);
@@ -2051,6 +2053,58 @@ public class UseBaseTypeOperationTests
         var updated = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.Contains("Describe(Animal d)", updated);
         Assert.DoesNotContain("Describe(Dog d)", updated);
+    }
+
+    private const string InactiveIndexerBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+
+        class Holder
+        {
+            public Dog this[int i] => new Dog("Rex", "lab");
+        }
+
+        class Program
+        {
+            static void Main()
+            {
+                var holder = new Holder();
+                Console.WriteLine(holder[0].Name);
+        #if !DEBUG
+                Console.WriteLine(holder[0].Breed);
+        #endif
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task UseBaseType_InactiveIndexerBaseMemberOnly_StillRewrites()
+    {
+        var source = InactiveIndexerBreedSource.Replace("holder[0].Breed", "holder[0].Name");
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            TargetBaseType = "Animal"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public Animal this[int i]", updated);
     }
 
     private const string InactiveFieldBreedSource = """

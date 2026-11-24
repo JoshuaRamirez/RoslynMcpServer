@@ -1150,9 +1150,11 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         bool isMethodReturn,
         CancellationToken cancellationToken)
     {
+        // An indexer is used as `x[i]`, never by its metadata name (`this[]`).
+        var isIndexer = symbol is IPropertySymbol { IsIndexer: true };
         foreach (var scope in await GetInactiveScanScopesAsync(symbol, cancellationToken))
         {
-            if (!InactiveIdentifierUsesCompatible(scope, symbol.Name, derived, baseType, isMethodReturn))
+            if (!InactiveIdentifierUsesCompatible(scope, symbol.Name, derived, baseType, isMethodReturn, isIndexer))
                 return false;
         }
 
@@ -1206,14 +1208,18 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         string identifier,
         INamedTypeSymbol derived,
         INamedTypeSymbol baseType,
-        bool isMethodReturn)
+        bool isMethodReturn,
+        bool isIndexer)
     {
         foreach (var trivia in scope.DescendantTrivia(descendIntoTrivia: true))
         {
             if (!trivia.IsKind(SyntaxKind.DisabledTextTrivia))
                 continue;
 
-            if (!InactiveTextCompatibleWithBase(trivia.ToFullString(), identifier, derived, baseType, isMethodReturn))
+            var compatible = isIndexer
+                ? InactiveIndexerTextCompatibleWithBase(trivia.ToFullString(), derived, baseType)
+                : InactiveTextCompatibleWithBase(trivia.ToFullString(), identifier, derived, baseType, isMethodReturn);
+            if (!compatible)
                 return false;
         }
 
@@ -1238,6 +1244,44 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
             .ToList();
 
         return InactiveTokensCompatibleWithBase(tokens, 0, tokens.Count, identifier, derived, baseType, isMethodReturn);
+    }
+
+    /// <summary>
+    /// Indexer return-type variant: disabled text cannot be bound, so any
+    /// element access followed by a member (<c>x[i].M</c> / <c>x[i]?.M</c>)
+    /// must name a member the base can satisfy. Conservative: unrelated
+    /// element accesses with a derived-only member also decline the widen.
+    /// </summary>
+    internal static bool InactiveIndexerTextCompatibleWithBase(
+        string text,
+        INamedTypeSymbol derived,
+        INamedTypeSymbol baseType)
+    {
+        var tokens = SyntaxFactory.ParseTokens(text)
+            .Where(token => !token.IsKind(SyntaxKind.EndOfFileToken))
+            .ToList();
+
+        for (var index = 0; index < tokens.Count; index++)
+        {
+            if (!tokens[index].IsKind(SyntaxKind.CloseBracketToken))
+                continue;
+
+            var i = index + 1;
+            if (i < tokens.Count && tokens[i].IsKind(SyntaxKind.QuestionToken))
+                i++;
+
+            if (i + 1 >= tokens.Count ||
+                !tokens[i].IsKind(SyntaxKind.DotToken) ||
+                !tokens[i + 1].IsKind(SyntaxKind.IdentifierToken))
+            {
+                continue;
+            }
+
+            if (!IsMemberAvailableOnBase(tokens[i + 1].ValueText, derived, baseType))
+                return false;
+        }
+
+        return true;
     }
 
     private static bool InactiveTokensCompatibleWithBase(
