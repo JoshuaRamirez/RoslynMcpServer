@@ -329,6 +329,69 @@ public class EncapsulateFieldOperationTests
         Assert.Matches(@"private\s*int\s+@class", person);
         Assert.Contains("public int Kind", person);
         Assert.Contains("=> @class", person);
+        Assert.Contains("return @class;", person);
+        Assert.Contains("@class = value;", person);
+        Assert.DoesNotContain("return class;", person);
+        AssertNoSyntaxErrors(person);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_VerbatimKeywordFieldName_OmittedPropertyName_DerivesValidNames()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public int @class;
+
+                public int Display() => @class;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "@class"
+        });
+
+        Assert.True(result.Success);
+        var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int Class", person);
+        Assert.Matches(@"private\s*int\s+_class;", person);
+        Assert.Contains("return _class;", person);
+        Assert.DoesNotContain("_@class", person);
+        Assert.DoesNotContain("@Class", person);
+        AssertNoSyntaxErrors(person);
+    }
+
+    [Theory]
+    [InlineData("@class", "Class")]
+    [InlineData("_name", "Name")]
+    [InlineData("name", "Name")]
+    public void DerivePropertyName_StripsVerbatimPrefixAndUnderscore(string fieldName, string expected)
+    {
+        Assert.Equal(expected, EncapsulateFieldOperation.DerivePropertyName(fieldName));
+    }
+
+    [Theory]
+    [InlineData("@class", "_class")]
+    [InlineData("Name", "_name")]
+    public void DeriveBackingFieldName_StripsVerbatimPrefix(string fieldName, string expected)
+    {
+        Assert.Equal(expected, EncapsulateFieldOperation.DeriveBackingFieldName(fieldName));
+    }
+
+    private static void AssertNoSyntaxErrors(string source)
+    {
+        var errors = CSharpSyntaxTree.ParseText(source)
+            .GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.True(errors.Count == 0, string.Join("\n", errors));
     }
 
     [SkippableFact]

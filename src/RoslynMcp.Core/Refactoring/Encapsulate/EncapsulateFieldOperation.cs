@@ -192,9 +192,9 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         // so the description can mention backing-field rename updates).
         var newFieldName = fieldName;
         var fieldRenamed = false;
-        if (propertyName.Equals(fieldName, StringComparison.OrdinalIgnoreCase))
+        if (PropertyNameConflictsWithField(propertyName, fieldName))
         {
-            newFieldName = "_" + char.ToLowerInvariant(fieldName[0]) + fieldName.Substring(1);
+            newFieldName = DeriveBackingFieldName(fieldName);
             fieldRenamed = true;
         }
 
@@ -481,9 +481,9 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         var newFieldName = fieldName;
         var fieldRenamed = false;
-        if (propertyName.Equals(fieldName, StringComparison.OrdinalIgnoreCase))
+        if (PropertyNameConflictsWithField(propertyName, fieldName))
         {
-            newFieldName = "_" + char.ToLowerInvariant(fieldName[0]) + fieldName.Substring(1);
+            newFieldName = DeriveBackingFieldName(fieldName);
             fieldRenamed = true;
             if (containingTypeSymbol != null &&
                 containingTypeSymbol.GetMembers(newFieldName).Any())
@@ -818,8 +818,10 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
     /// </summary>
     internal static string DerivePropertyName(string fieldName)
     {
-        // Remove leading underscore if present
-        var name = fieldName.TrimStart('_');
+        // Strip a verbatim '@' (e.g. '@class' -> 'class') before deriving
+        // so the result is a plain identifier ('Class'), then remove a
+        // leading underscore if present.
+        var name = SyntaxIdentifierValidation.NormalizeIdentifier(fieldName).TrimStart('_');
 
         // Capitalize first letter
         if (name.Length > 0)
@@ -828,6 +830,27 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         }
 
         return name;
+    }
+
+    /// <summary>
+    /// True when <paramref name="propertyName"/> and <paramref name="fieldName"/>
+    /// differ only by case or a verbatim <c>@</c> prefix, so the backing
+    /// field must be renamed.
+    /// </summary>
+    internal static bool PropertyNameConflictsWithField(string propertyName, string fieldName) =>
+        SyntaxIdentifierValidation.NormalizeIdentifier(propertyName).Equals(
+            SyntaxIdentifierValidation.NormalizeIdentifier(fieldName),
+            StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Derives the renamed backing field name (<c>_camelCase</c>) from
+    /// <paramref name="fieldName"/>, stripping a verbatim <c>@</c> first so
+    /// <c>@class</c> becomes <c>_class</c> rather than the invalid <c>_@class</c>.
+    /// </summary>
+    internal static string DeriveBackingFieldName(string fieldName)
+    {
+        var bare = SyntaxIdentifierValidation.NormalizeIdentifier(fieldName);
+        return "_" + char.ToLowerInvariant(bare[0]) + bare.Substring(1);
     }
 
     private static PropertyDeclarationSyntax UpdatePropertyFieldName(
