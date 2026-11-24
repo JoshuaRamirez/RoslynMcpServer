@@ -339,6 +339,225 @@ public class RemoveUnusedUsingsOperationTests
 
     #endregion
 
+
+    #region Embedded trivia in using names (#2946)
+
+    [SkippableFact]
+    public async Task RemoveUnusedUsings_LiveUsingWithEmbeddedComment_IsKept()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LiveUsingEmbeddedComment);
+        var operation = new RemoveUnusedUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveUnusedUsingsParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesRemoved);
+        Assert.Empty(result.Changes!.FilesModified);
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("using System./*inner*/Text;", after);
+        Assert.Contains("StringBuilder", after);
+    }
+
+    [SkippableFact]
+    public async Task RemoveUnusedUsings_LiveUsingWithSpacedDots_IsKept()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LiveUsingSpacedDots);
+        var operation = new RemoveUnusedUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveUnusedUsingsParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesRemoved);
+        Assert.Empty(result.Changes!.FilesModified);
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("using System . Text;", after);
+    }
+
+    [SkippableFact]
+    public async Task RemoveUnusedUsings_LiveUsingWithTrailingComment_IsKept()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LiveUsingTrailingComment);
+        var operation = new RemoveUnusedUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveUnusedUsingsParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesRemoved);
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("using System.Text/*trail*/;", after);
+    }
+
+    [SkippableFact]
+    public async Task RemoveUnusedUsings_PlainLiveUsing_IsKept()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LiveUsingPlain);
+        var operation = new RemoveUnusedUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveUnusedUsingsParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesRemoved);
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("using System.Text;", after);
+    }
+
+    [SkippableFact]
+    public async Task RemoveUnusedUsings_LiveUsingWithEmbeddedComment_Preview_DoesNotListAsUnused()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LiveUsingEmbeddedComment);
+        var operation = new RemoveUnusedUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveUnusedUsingsParams
+        {
+            SourceFile = workspace.SourcePath,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesRemoved);
+        Assert.True(result.PendingChanges is null || result.PendingChanges.Count == 0);
+        var listed = string.Join(" ", (result.PendingChanges ?? []).Select(c => $"{c.Description} {c.AfterSnippet}"));
+        Assert.DoesNotContain("System./*inner*/Text", listed);
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("using System./*inner*/Text;", after);
+    }
+
+    [SkippableFact]
+    public async Task RemoveUnusedUsings_LiveUsingWithEmbeddedComment_AllFiles_IsKept()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LiveUsingEmbeddedComment);
+        var operation = new RemoveUnusedUsingsOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new RemoveUnusedUsingsParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesRemoved);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RemoveUnusedUsings_UnusedUsingWithEmbeddedComment_IsStillRemoved()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LiveTextWithUnusedLinqComment);
+        var operation = new RemoveUnusedUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveUnusedUsingsParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesRemoved);
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("using System./*inner*/Text;", after);
+        Assert.DoesNotContain("Linq", after);
+        Assert.Contains("StringBuilder", after);
+    }
+
+    private const string LiveUsingEmbeddedComment = """
+        using System;
+        using System./*inner*/Text;
+        using System.Collections.Generic;
+
+        class Program
+        {
+            static void Main()
+            {
+                var sb = new StringBuilder();
+                sb.Append("hi");
+                Console.WriteLine(sb.ToString());
+                var list = new List<int> { 1 };
+                Console.WriteLine(list.Count);
+            }
+        }
+        """;
+
+    private const string LiveUsingSpacedDots = """
+        using System;
+        using System . Text;
+        using System.Collections.Generic;
+
+        class Program
+        {
+            static void Main()
+            {
+                var sb = new StringBuilder();
+                sb.Append("hi");
+                Console.WriteLine(sb.ToString());
+                var list = new List<int> { 1 };
+                Console.WriteLine(list.Count);
+            }
+        }
+        """;
+
+    private const string LiveUsingTrailingComment = """
+        using System;
+        using System.Text/*trail*/;
+        using System.Collections.Generic;
+
+        class Program
+        {
+            static void Main()
+            {
+                var sb = new StringBuilder();
+                sb.Append("hi");
+                Console.WriteLine(sb.ToString());
+                var list = new List<int> { 1 };
+                Console.WriteLine(list.Count);
+            }
+        }
+        """;
+
+    private const string LiveUsingPlain = """
+        using System;
+        using System.Text;
+        using System.Collections.Generic;
+
+        class Program
+        {
+            static void Main()
+            {
+                var sb = new StringBuilder();
+                sb.Append("hi");
+                Console.WriteLine(sb.ToString());
+                var list = new List<int> { 1 };
+                Console.WriteLine(list.Count);
+            }
+        }
+        """;
+
+    private const string LiveTextWithUnusedLinqComment = """
+        using System;
+        using System./*inner*/Text;
+        using System./*inner*/Linq;
+
+        class Program
+        {
+            static void Main()
+            {
+                var sb = new StringBuilder();
+                sb.Append("hi");
+                Console.WriteLine(sb.ToString());
+            }
+        }
+        """;
+
+    #endregion
+
     #region AllFiles optional sourceFile
 
     [SkippableFact]
