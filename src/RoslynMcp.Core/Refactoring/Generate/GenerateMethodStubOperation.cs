@@ -1149,7 +1149,11 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
                     return method.Modifiers.Any(SyntaxKind.StaticKeyword)
                         || semanticModel.GetDeclaredSymbol(method, cancellationToken)?.IsStatic == true;
                 case LocalFunctionStatementSyntax local:
-                    return local.Modifiers.Any(SyntaxKind.StaticKeyword);
+                    // A static local function has no 'this'. A non-static one
+                    // inherits the enclosing member's static-ness (#2950).
+                    if (local.Modifiers.Any(SyntaxKind.StaticKeyword))
+                        return true;
+                    continue;
                 case ConstructorDeclarationSyntax constructor:
                     return constructor.Modifiers.Any(SyntaxKind.StaticKeyword);
                 case PropertyDeclarationSyntax property:
