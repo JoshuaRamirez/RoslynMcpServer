@@ -108,19 +108,17 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     }
 
     /// <summary>
-    /// Type lookup keys allow the same char-based identifiers as
-    /// <see cref="IdentifierValidation"/>, plus a verbatim <c>@</c>
-    /// prefix. Roslyn keeps the <c>@</c> in <c>Identifier.Text</c>, so
-    /// <c>class @class</c> is found as <c>@class</c>, not <c>class</c>.
+    /// Type lookup keys follow C# identifier rules
+    /// (<see cref="SyntaxFacts.IsValidIdentifier"/>, so Unicode
+    /// combining marks such as <c>A</c> + U+0301 are allowed), plus an
+    /// optional single verbatim <c>@</c> prefix. Roslyn keeps the
+    /// <c>@</c> in <c>Identifier.Text</c>, so <c>class @class</c> is
+    /// found as <c>@class</c>, not <c>class</c>.
     /// </summary>
     private static bool IsValidTypeName(string name)
     {
-        if (IdentifierValidation.IsValidIdentifier(name))
-            return true;
-
-        return name.Length > 1 &&
-               name[0] == '@' &&
-               IdentifierValidation.IsValidIdentifier(name[1..]);
+        var rest = name.StartsWith('@') ? name[1..] : name;
+        return SyntaxFacts.IsValidIdentifier(rest);
     }
 
 

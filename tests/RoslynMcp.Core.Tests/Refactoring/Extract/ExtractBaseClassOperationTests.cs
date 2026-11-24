@@ -620,6 +620,10 @@ public class ExtractBaseClassOperationTests
     [InlineData("123Bad")]
     [InlineData("has-dash")]
     [InlineData("@123Bad")]
+    [InlineData("Foo Bar")]
+    [InlineData("a.b")]
+    [InlineData("@")]
+    [InlineData("@@class")]
     public void Validate_InvalidTypeName_ThrowsInvalidSymbolName(string typeName)
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -640,6 +644,9 @@ public class ExtractBaseClassOperationTests
     [Theory]
     [InlineData("Person")]
     [InlineData("@class")]
+    [InlineData("@Person")]
+    [InlineData("A\u0301")]
+    [InlineData("@A\u0301")]
     public void Validate_ValidTypeName_DoesNotThrowInvalidSymbolName(string typeName)
     {
         // Verbatim "@class" must pass Validate: Identifier.Text keeps the
