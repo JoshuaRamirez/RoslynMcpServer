@@ -6326,6 +6326,72 @@ public class GenerateConstructorOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_UserParameterlessCtor_PreservesInitializedLeftovers()
+    {
+        const string source = """
+            public struct Box
+            {
+                public Box() { _start = 0; _extra = 0; }
+                private int _start;
+                private int _value = 42;
+                private int _extra;
+                public int Label { get; } = 7;
+                public override string ToString() => _start + " " + _value + " " + _extra + " " + Label;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["_start"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Box(int start)", updated, StringComparison.Ordinal);
+        Assert.Contains("_start = start", updated, StringComparison.Ordinal);
+        Assert.Contains("this._extra = default", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("_value = default", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Label = default", updated, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_OnlyInitializedLeftovers_LeavesThemAlone()
+    {
+        const string source = """
+            public struct Box
+            {
+                public Box() { _start = 0; }
+                private int _start;
+                private int _value = 42;
+                public override string ToString() => _start + " " + _value;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["_start"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Box(int start)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public Box(int start) : this()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("_value = default", updated, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
     public async Task GenerateConstructor_ClassLangVersion10_DoesNotChainThis()
     {
         const string source = """

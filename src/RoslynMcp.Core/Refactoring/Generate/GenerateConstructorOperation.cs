@@ -1290,7 +1290,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             {
                 if (field.AssociatedSymbol is IPropertySymbol property
                     && !property.IsIndexer
-                    && !assigned.Contains(property))
+                    && !assigned.Contains(property)
+                    && !HasDeclarationInitializer(property))
                 {
                     leftovers.Add(property);
                 }
@@ -1298,11 +1299,32 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 continue;
             }
 
-            if (!assigned.Contains(field))
+            if (!assigned.Contains(field) && !HasDeclarationInitializer(field))
                 leftovers.Add(field);
         }
 
         return leftovers;
+    }
+
+    /// <summary>
+    /// True when the member's declaration carries an initializer
+    /// (<c>int _x = 42;</c> / <c>int P { get; } = 42;</c>); the initializer
+    /// already definitely assigns it, so it must not be overwritten with
+    /// <c>default</c>.
+    /// </summary>
+    private static bool HasDeclarationInitializer(ISymbol member)
+    {
+        foreach (var reference in member.DeclaringSyntaxReferences)
+        {
+            var syntax = reference.GetSyntax();
+            if (syntax is VariableDeclaratorSyntax { Initializer: not null }
+                or PropertyDeclarationSyntax { Initializer: not null })
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static StatementSyntax CreateDefaultAssignment(ISymbol member)
