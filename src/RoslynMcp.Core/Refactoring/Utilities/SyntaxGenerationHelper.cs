@@ -586,6 +586,7 @@ public static class SyntaxGenerationHelper
             var getBody = useBase
                 ? CreateBasePropertyGetBody(property)
                 : ThrowNotImplementedBodyHelpers.RequiresThrowBody(property, throwNotImplemented)
+                    || NullableFlowAttributeHelpers.HasGetterPostconditionAttributes(property, emittingType)
                     ? CreateThrowNotImplementedBody()
                     : CreateDefaultReturnBody(property.Type);
             accessors.Add(WithOverrideAccessorModifiers(

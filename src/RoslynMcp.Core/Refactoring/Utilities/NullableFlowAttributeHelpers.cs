@@ -53,9 +53,9 @@ internal static class NullableFlowAttributeHelpers
     {
         var scope = new MemberScope(property.ContainingType, emittingType);
         var lists = ToAttributeLists(property.GetAttributes(), returnTarget: false, scope);
-        if (property.GetMethod != null)
-            lists.AddRange(ToAttributeLists(property.GetMethod.GetReturnTypeAttributes(), returnTarget: true, scope));
-        return lists.Count == 0 ? syntax : syntax.WithAttributeLists(syntax.AttributeLists.AddRange(lists));
+        if (lists.Count > 0)
+            syntax = syntax.WithAttributeLists(syntax.AttributeLists.AddRange(lists));
+        return syntax.WithAccessorList(WithGetterReturnAttributes(syntax.AccessorList, property, scope));
     }
 
     internal static IndexerDeclarationSyntax WithNullableFlowAttributes(
@@ -65,9 +65,31 @@ internal static class NullableFlowAttributeHelpers
     {
         var scope = new MemberScope(indexer.ContainingType, emittingType);
         var lists = ToAttributeLists(indexer.GetAttributes(), returnTarget: false, scope);
-        if (indexer.GetMethod != null)
-            lists.AddRange(ToAttributeLists(indexer.GetMethod.GetReturnTypeAttributes(), returnTarget: true, scope));
-        return lists.Count == 0 ? syntax : syntax.WithAttributeLists(syntax.AttributeLists.AddRange(lists));
+        if (lists.Count > 0)
+            syntax = syntax.WithAttributeLists(syntax.AttributeLists.AddRange(lists));
+        return syntax.WithAccessorList(WithGetterReturnAttributes(syntax.AccessorList, indexer, scope));
+    }
+
+    /// <summary>
+    /// Getter return attributes (<c>[return: NotNull]</c>, ...) are only
+    /// valid on the <c>get</c> accessor, not on the property (CS0657).
+    /// </summary>
+    private static AccessorListSyntax? WithGetterReturnAttributes(
+        AccessorListSyntax? accessorList,
+        IPropertySymbol property,
+        MemberScope scope)
+    {
+        if (accessorList == null || property.GetMethod == null)
+            return accessorList;
+
+        var lists = ToAttributeLists(property.GetMethod.GetReturnTypeAttributes(), returnTarget: true, scope);
+        if (lists.Count == 0)
+            return accessorList;
+
+        var getter = accessorList.Accessors.FirstOrDefault(a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        return getter == null
+            ? accessorList
+            : accessorList.ReplaceNode(getter, getter.WithAttributeLists(getter.AttributeLists.AddRange(lists)));
     }
 
     /// <summary>
@@ -98,6 +120,24 @@ internal static class NullableFlowAttributeHelpers
 
         return method.Parameters.Any(parameter => parameter.GetAttributes().Any(data => IsCopiedPostcondition(data, default,
             "DoesNotReturnIfAttribute", "NotNullAttribute", "NotNullWhenAttribute")));
+    }
+
+    /// <summary>
+    /// True when the property / indexer getter carries a copied
+    /// postcondition (<c>[NotNull]</c> on the property, or
+    /// <c>[return: NotNull]</c> / <c>[return: NotNullIfNotNull]</c> on the
+    /// getter) that a default-valued getter cannot honor, so the getter
+    /// must throw instead.
+    /// </summary>
+    internal static bool HasGetterPostconditionAttributes(IPropertySymbol property, INamedTypeSymbol? emittingType = null)
+    {
+        if (property.GetMethod == null)
+            return false;
+
+        var scope = new MemberScope(property.ContainingType, emittingType);
+        return property.GetAttributes().Any(data => IsCopiedPostcondition(data, scope, "NotNullAttribute"))
+            || property.GetMethod.GetReturnTypeAttributes().Any(data => IsCopiedPostcondition(data, scope,
+                "NotNullAttribute", "NotNullIfNotNullAttribute"));
     }
 
     private static bool IsFlowAttribute(AttributeData data, params string[] names) =>
@@ -198,10 +238,10 @@ internal static class NullableFlowAttributeHelpers
         // The compiler resolves [MemberNotNull] names against the declaring
         // type only; inherited members, even protected ones, are rejected
         // (CS8776). An override still inherits the base obligation, so the
-        // attribute is safe to drop. Without a known emitting type only an
-        // interface's own members (re-declared by the implementer) are kept.
-        var target = scope.EmittingType
-            ?? (scope.DeclaringType?.TypeKind == TypeKind.Interface ? scope.DeclaringType : null);
+        // attribute is safe to drop. Without a known emitting type (e.g.
+        // implement_interface) the destination may not declare the member,
+        // or only implement it explicitly, so the target is dropped too.
+        var target = scope.EmittingType;
         if (target == null)
             return false;
 

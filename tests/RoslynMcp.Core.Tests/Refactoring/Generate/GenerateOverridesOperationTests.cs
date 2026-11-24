@@ -4274,6 +4274,59 @@ public class GenerateOverridesOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateOverrides_CallBaseFalse_GetterPostconditions_ThrowAndCompileClean()
+    {
+        const string source = """
+            using System;
+            using System.Diagnostics.CodeAnalysis;
+
+            public class Store
+            {
+                public virtual string? Name
+                {
+                    [return: NotNull]
+                    get => string.Empty;
+                }
+
+                [NotNull]
+                public virtual string? Title { get => string.Empty; set { } }
+
+                public virtual string? this[string? key]
+                {
+                    [return: NotNullIfNotNull(nameof(key))]
+                    get => key;
+                }
+
+                public virtual string? Plain => null;
+            }
+
+            public class MemStore : Store
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "MemStore",
+            Members = new[] { "Name", "Title", "this[]", "Plain" },
+            CallBase = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("class MemStore", StringComparison.Ordinal)..];
+        Assert.Contains("[return: global::System.Diagnostics.CodeAnalysis.NotNull]", derived, StringComparison.Ordinal);
+        Assert.Contains("NotNullIfNotNull", derived, StringComparison.Ordinal);
+        Assert.Equal(3, CountOccurrences(derived, "NotImplementedException"));
+        Assert.Contains("return null;", derived, StringComparison.Ordinal);
+        AssertNullableFlowCompiles(updated);
+    }
+
+    [SkippableFact]
     public async Task GenerateOverrides_MemberNotNull_DropsInheritedTargetsAndCompilesClean()
     {
         const string source = """

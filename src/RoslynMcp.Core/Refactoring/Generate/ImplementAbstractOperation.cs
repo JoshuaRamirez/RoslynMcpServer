@@ -912,6 +912,8 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         BlockSyntax body;
         if (kind == SyntaxKind.GetAccessorDeclaration
             ? ThrowNotImplementedBodyHelpers.RequiresThrowBody(accessor, throwNotImplemented)
+                || (accessor.AssociatedSymbol is IPropertySymbol owner
+                    && NullableFlowAttributeHelpers.HasGetterPostconditionAttributes(owner, emittingType))
             : throwNotImplemented)
         {
             body = ThrowNotImplementedBodyHelpers.CreateThrowNotImplementedBody();
