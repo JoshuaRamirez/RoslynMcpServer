@@ -524,6 +524,34 @@ public class EncapsulateFieldOperationTests
         await AssertCompilesAsync(workspace);
     }
 
+    [SkippableTheory]
+    [InlineData("@_")]
+    [InlineData("__")]
+    public async Task EncapsulateField_UnderscoreOnlyFieldName_OmittedPropertyName_Rejected(string fieldName)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Person
+            {
+                public int {{fieldName}};
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                FieldName = fieldName
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+        Assert.Equal(NormalizeNewlines(source), NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
     [Theory]
     [InlineData("@class", "Class")]
     [InlineData("_name", "Name")]

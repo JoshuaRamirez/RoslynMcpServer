@@ -153,6 +153,15 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         // Determine property name
         var propertyName = @params.PropertyName ?? DerivePropertyName(fieldName);
 
+        // A field named only underscores (e.g. `_`, `@_`, `__`) derives an
+        // empty name; reject rather than generate a property with no identifier.
+        if (propertyName.Length == 0)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolName,
+                $"Cannot derive a property name from field '{fieldName}'; specify propertyName.");
+        }
+
         // Check for an existing member with the same name (property,
         // field, method, …, including other partial declarations),
         // excluding the field being encapsulated, as the all-files path
@@ -479,6 +488,8 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             return null;
 
         var propertyName = DerivePropertyName(fieldName);
+        if (propertyName.Length == 0)
+            return null;
 
         var containingType = fieldDeclarator.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
         if (containingType == null)
