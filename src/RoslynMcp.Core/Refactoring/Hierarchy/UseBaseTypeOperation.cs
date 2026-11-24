@@ -1128,7 +1128,136 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
             }
         }
 
+        // FindReferencesAsync only sees the active configuration. A derived-only
+        // member under #else / #if !DEBUG would otherwise allow a widen that
+        // breaks Release (CS1061, #2944).
+        return InactiveUsagesCompatibleWithBase(symbol, baseType);
+    }
+
+    /// <summary>
+    /// False when disabled preprocessor text in the declaration's enclosing
+    /// method uses <paramref name="symbol"/> in a way <paramref name="baseType"/>
+    /// cannot satisfy.
+    /// </summary>
+    private static bool InactiveUsagesCompatibleWithBase(ISymbol symbol, INamedTypeSymbol baseType)
+    {
+        foreach (var syntaxRef in symbol.DeclaringSyntaxReferences)
+        {
+            var node = syntaxRef.GetSyntax();
+            SyntaxNode? scope = node.FirstAncestorOrSelf<MethodDeclarationSyntax>();
+            scope ??= node.FirstAncestorOrSelf<LocalFunctionStatementSyntax>();
+            scope ??= node.FirstAncestorOrSelf<AccessorDeclarationSyntax>();
+            scope ??= node.FirstAncestorOrSelf<BaseMethodDeclarationSyntax>();
+            if (scope == null)
+                continue;
+
+            if (!InactiveIdentifierUsesCompatible(scope, symbol.Name, baseType))
+                return false;
+        }
+
         return true;
+    }
+
+    private static bool InactiveIdentifierUsesCompatible(
+        SyntaxNode scope,
+        string identifier,
+        INamedTypeSymbol baseType)
+    {
+        foreach (var trivia in scope.DescendantTrivia(descendIntoTrivia: true))
+        {
+            if (!trivia.IsKind(SyntaxKind.DisabledTextTrivia))
+                continue;
+
+            if (!InactiveTextCompatibleWithBase(trivia.ToFullString(), identifier, baseType))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool InactiveTextCompatibleWithBase(
+        string text,
+        string identifier,
+        INamedTypeSymbol baseType)
+    {
+        var start = 0;
+        while (true)
+        {
+            var index = IndexOfWholeIdentifier(text, identifier, start);
+            if (index < 0)
+                return true;
+
+            var i = index + identifier.Length;
+            while (i < text.Length && char.IsWhiteSpace(text[i]))
+                i++;
+
+            if (i < text.Length && text[i] == '?')
+                i++;
+
+            if (i < text.Length && text[i] == '.')
+            {
+                i++;
+                while (i < text.Length && char.IsWhiteSpace(text[i]))
+                    i++;
+
+                var memberStart = i;
+                if (i < text.Length && (char.IsLetter(text[i]) || text[i] == '_'))
+                {
+                    i++;
+                    while (i < text.Length && IsIdentifierPart(text[i]))
+                        i++;
+
+                    var memberName = text[memberStart..i];
+                    if (!IsMemberAvailableOnBase(memberName, baseType))
+                        return false;
+
+                    start = i;
+                    continue;
+                }
+            }
+
+            // Some other use of the identifier (call argument, assignment, …)
+            // cannot be proven safe without a bind.
+            return false;
+        }
+    }
+
+    private static int IndexOfWholeIdentifier(string text, string identifier, int start)
+    {
+        while (true)
+        {
+            var index = text.IndexOf(identifier, start, StringComparison.Ordinal);
+            if (index < 0)
+                return -1;
+
+            var beforeOk = index == 0 || !IsIdentifierPart(text[index - 1]);
+            var after = index + identifier.Length;
+            var afterOk = after >= text.Length || !IsIdentifierPart(text[after]);
+            if (beforeOk && afterOk)
+                return index;
+
+            start = index + identifier.Length;
+        }
+    }
+
+    private static bool IsIdentifierPart(char c) =>
+        char.IsLetterOrDigit(c) || c == '_';
+
+    private static bool IsMemberAvailableOnBase(string memberName, INamedTypeSymbol baseType)
+    {
+        for (var type = (INamedTypeSymbol?)baseType; type != null; type = type.BaseType)
+        {
+            if (type.GetMembers(memberName).Length > 0)
+                return true;
+        }
+
+        foreach (var iface in baseType.AllInterfaces)
+        {
+            if (iface.GetMembers(memberName).Length > 0)
+                return true;
+        }
+
+        return false;
     }
 
     private async Task<bool> AnalyzeMethodReturnUsagesAsync(
