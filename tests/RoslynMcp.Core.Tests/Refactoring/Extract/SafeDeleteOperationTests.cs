@@ -84,6 +84,40 @@ public class SafeDeleteOperationTests
     }
 
     [Fact]
+    public void Validate_SameLineExclusiveEndEqualStart_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SafeDeleteOperation.Validate(new SafeDeleteParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                StartLine = 5,
+                StartColumn = 10,
+                EndLine = 5,
+                EndColumn = 10
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetSelectionSpan_SameLineExclusiveEndEqualStart_Throws()
+    {
+        var text = SourceText.From("class C { }");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SafeDeleteOperation.GetSelectionSpan(text, new SafeDeleteParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+    }
+
+    [Fact]
     public void Validate_MissingFile_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
