@@ -610,7 +610,34 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 ErrorCodes.UnresolvableControlFlow,
                 $"Method '{methodSymbol.Name}' contains nested return, break, continue, goto, or yield and cannot be inlined.");
         }
+
+        // Inlining pastes only the active branch and drops #if / #else / #endif
+        // (and disabled text) in the body, which silently changes other
+        // configurations. Leading / trailing trivia on the method itself is
+        // ignored so a method wrapped as a whole in #if can still be inlined.
+        if (BodyContainsPreprocessorDirectives(methodSyntax))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CannotInlineDirectives,
+                $"Method '{methodSymbol.Name}' body contains preprocessor directives and cannot be safely inlined.");
+        }
     }
+
+    private static bool BodyContainsPreprocessorDirectives(MethodDeclarationSyntax methodSyntax)
+    {
+        var span = methodSyntax.Span;
+        return methodSyntax.DescendantTrivia(descendIntoTrivia: true).Any(trivia =>
+            IsConditionalCompilationTrivia(trivia)
+            && trivia.Span.Start >= span.Start
+            && trivia.Span.Start < span.End);
+    }
+
+    private static bool IsConditionalCompilationTrivia(SyntaxTrivia trivia) =>
+        trivia.IsKind(SyntaxKind.IfDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.ElifDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.ElseDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.EndIfDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.DisabledTextTrivia);
 
     private static bool HasUnsupportedControlFlow(MethodDeclarationSyntax methodSyntax)
     {
