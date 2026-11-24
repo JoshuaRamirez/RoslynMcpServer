@@ -692,8 +692,16 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
     private static bool IsDelegateConversionInvocation(InvocationExpressionSyntax invocation)
     {
         var expression = invocation.Expression;
-        while (expression is ParenthesizedExpressionSyntax parenthesized)
-            expression = parenthesized.Expression;
+        while (true)
+        {
+            if (expression is ParenthesizedExpressionSyntax parenthesized)
+                expression = parenthesized.Expression;
+            else if (expression is PostfixUnaryExpressionSyntax postfix
+                && postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression))
+                expression = postfix.Operand;
+            else
+                break;
+        }
 
         return expression is CastExpressionSyntax
             or ObjectCreationExpressionSyntax
