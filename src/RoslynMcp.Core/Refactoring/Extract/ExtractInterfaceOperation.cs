@@ -100,17 +100,25 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
     }
 
     /// <summary>
-    /// Type lookup keys follow C# identifier rules
-    /// (<see cref="SyntaxFacts.IsValidIdentifier"/>, so Unicode
-    /// combining marks such as <c>A</c> + U+0301 are allowed), plus an
-    /// optional single verbatim <c>@</c> prefix. Roslyn keeps the
-    /// <c>@</c> in <c>Identifier.Text</c>, so <c>class @class</c> is
-    /// found as <c>@class</c>, not <c>class</c>.
+    /// The type name must be one complete C# identifier token, spelled the
+    /// way it appears in source, because lookup compares it to
+    /// <c>Identifier.Text</c>. It is parsed with
+    /// <see cref="SyntaxFactory.ParseToken"/> and must come back as a single
+    /// <see cref="SyntaxKind.IdentifierToken"/> with no diagnostics or
+    /// trivia that covers the whole string. So <c>@class</c>, Unicode escapes
+    /// such as <c>\u0041</c>, and combining marks such as <c>A</c> + U+0301
+    /// are accepted. A bare reserved keyword such as <c>class</c>, <c>@</c>,
+    /// <c>@@class</c>, <c>123Bad</c>, <c>a.b</c> and <c>Foo Bar</c> are
+    /// rejected.
     /// </summary>
     private static bool IsValidTypeName(string name)
     {
-        var rest = name.StartsWith('@') ? name[1..] : name;
-        return SyntaxFacts.IsValidIdentifier(rest);
+        var token = SyntaxFactory.ParseToken(name);
+        return token.IsKind(SyntaxKind.IdentifierToken)
+            && !token.ContainsDiagnostics
+            && !token.HasLeadingTrivia
+            && !token.HasTrailingTrivia
+            && token.Text == name;
     }
 
 

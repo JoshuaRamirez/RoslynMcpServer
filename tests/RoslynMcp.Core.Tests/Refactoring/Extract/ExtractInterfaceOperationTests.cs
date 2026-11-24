@@ -231,6 +231,8 @@ public class ExtractInterfaceOperationTests
     [InlineData("@123x")]
     [InlineData("@")]
     [InlineData("@@class")]
+    [InlineData("class")]
+    [InlineData(" Person")]
     public void Validate_InvalidTypeName_ThrowsInvalidSymbolName(string typeName)
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -253,10 +255,15 @@ public class ExtractInterfaceOperationTests
     [InlineData("@Person")]
     [InlineData("A\u0301")]
     [InlineData("@A\u0301")]
+    [InlineData("\\u0041")]
+    [InlineData("B\\u0043")]
+    [InlineData("@\\u0041")]
     public void Validate_ValidTypeName_DoesNotThrowInvalidSymbolName(string typeName)
     {
         // Verbatim "@class" must pass Validate: Identifier.Text keeps the
         // @ prefix, so that is the name that selects class @class.
+        // A Unicode-escape spelling such as \u0041 is what Identifier.Text
+        // holds for class \u0041, so it must pass too.
         // Combining marks are legal identifier part characters. A missing
         // file must surface as SourceFileNotFound, not InvalidSymbolName.
         var ex = Assert.Throws<RefactoringException>(() =>
