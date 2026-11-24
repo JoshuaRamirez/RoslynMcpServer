@@ -3271,6 +3271,277 @@ public class GenerateMethodStubOperationTests
         AssertCompiles(updated);
     }
 
+    [SkippableFact]
+    public async Task GenerateMethodStub_CallInNonStaticLocalFunctionOfStaticMethod_EmitsStaticStub()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            class Program
+            {
+                static void Main()
+                {
+                    void Report(int x)
+                    {
+                        int doubled = Twice(x);
+                    }
+
+                    Report(21);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Twice");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static int Twice(int x)", updated, StringComparison.Ordinal);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_CallInNonStaticLocalFunctionOfStaticConstructor_EmitsStaticStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            class Settings
+            {
+                static Settings()
+                {
+                    int Pick()
+                    {
+                        int port = LoadPort();
+                        return port;
+                    }
+
+                    _ = Pick();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "LoadPort");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static int LoadPort()", updated, StringComparison.Ordinal);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_CallInNonStaticLocalFunctionOfStaticPropertyGetter_EmitsStaticStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            class Settings
+            {
+                public static string Label
+                {
+                    get
+                    {
+                        string Build()
+                        {
+                            string name = LoadName();
+                            return name;
+                        }
+
+                        return Build();
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "LoadName");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static string LoadName()", updated, StringComparison.Ordinal);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_CallDirectlyInStaticMethod_StillEmitsStaticStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            class Program
+            {
+                static void Main()
+                {
+                    int doubled = Twice(21);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Twice");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static int Twice(int arg1)", updated, StringComparison.Ordinal);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_CallInStaticLocalFunctionOfStaticMethod_EmitsStaticStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            class Program
+            {
+                static void Main()
+                {
+                    static void Report(int x)
+                    {
+                        int doubled = Twice(x);
+                    }
+
+                    Report(21);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Twice");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static int Twice(int x)", updated, StringComparison.Ordinal);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_CallInNonStaticLocalFunctionOfInstanceMethod_EmitsInstanceStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            class Program
+            {
+                void Run()
+                {
+                    void Show(int x)
+                    {
+                        int tripled = Triple(x);
+                    }
+
+                    Show(7);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Triple");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int Triple(int x)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private static int Triple", updated, StringComparison.Ordinal);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_Preview_CallInNonStaticLocalFunctionOfStaticMethod_DescribesStaticStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            class Program
+            {
+                static void Main()
+                {
+                    void Report(int x)
+                    {
+                        int doubled = Twice(x);
+                    }
+
+                    Report(21);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Twice");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("private static int Twice(int x)", result.PendingChanges![0].AfterSnippet, StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     #endregion
 
     #region Helpers
