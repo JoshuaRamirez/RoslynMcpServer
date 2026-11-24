@@ -5,6 +5,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Editing;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -609,6 +610,7 @@ public sealed class MoveTypeToNamespaceOperation
         await AddDocumentsWithInactiveIdentifierAsync(
             solution,
             resolution.Symbol.Name,
+            newNamespace,
             resolution.Document.Id,
             documentsToUpdate,
             cancellationToken);
@@ -708,6 +710,7 @@ public sealed class MoveTypeToNamespaceOperation
     private static async Task AddDocumentsWithInactiveIdentifierAsync(
         Solution solution,
         string identifier,
+        string newNamespace,
         DocumentId declaringDocumentId,
         HashSet<DocumentId> documentsToUpdate,
         CancellationToken cancellationToken)
@@ -731,24 +734,53 @@ public sealed class MoveTypeToNamespaceOperation
             foreach (var document in project.Documents)
             {
                 if (documentsToUpdate.Contains(document.Id) ||
-                    document.Id == declaringDocumentId ||
                     !document.SupportsSyntaxTree)
                 {
                     continue;
                 }
 
                 var root = await document.GetSyntaxRootAsync(cancellationToken);
-                if (root != null && DisabledTriviaContainsIdentifier(root, identifier))
+                if (root == null)
+                    continue;
+
+                // In the declaring document, inactive text inside the moved
+                // type's (already renamed) namespace still resolves without a
+                // using; only other namespaces in that file need one.
+                var excludedSpans = document.Id == declaringDocumentId
+                    ? GetMovedNamespaceSpans(root, newNamespace, identifier)
+                    : [];
+
+                if (DisabledTriviaContainsIdentifier(root, identifier, excludedSpans))
                     documentsToUpdate.Add(document.Id);
             }
         }
     }
 
-    private static bool DisabledTriviaContainsIdentifier(SyntaxNode root, string identifier)
+    private static List<TextSpan> GetMovedNamespaceSpans(
+        SyntaxNode root,
+        string newNamespace,
+        string identifier)
+    {
+        return root.DescendantNodes()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Where(ns => ns.Name.ToString() == newNamespace &&
+                         ns.Members.OfType<BaseTypeDeclarationSyntax>()
+                             .Any(t => t.Identifier.ValueText == identifier))
+            .Select(ns => ns.FullSpan)
+            .ToList();
+    }
+
+    private static bool DisabledTriviaContainsIdentifier(
+        SyntaxNode root,
+        string identifier,
+        List<TextSpan> excludedSpans)
     {
         foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
         {
             if (!trivia.IsKind(SyntaxKind.DisabledTextTrivia))
+                continue;
+
+            if (excludedSpans.Any(span => span.Contains(trivia.Span)))
                 continue;
 
             if (ContainsIdentifierToken(trivia.ToFullString(), identifier))
@@ -767,13 +799,21 @@ public sealed class MoveTypeToNamespaceOperation
         if (text.IndexOf(identifier, StringComparison.Ordinal) < 0)
             return false;
 
+        var previous = default(SyntaxToken);
         foreach (var token in SyntaxFactory.ParseTokens(text))
         {
+            // A name after '.', '->' or '::' is a member access or an already
+            // qualified name (e.g. obj.Helper()), which a using cannot affect.
             if (token.IsKind(SyntaxKind.IdentifierToken) &&
-                string.Equals(token.ValueText, identifier, StringComparison.Ordinal))
+                string.Equals(token.ValueText, identifier, StringComparison.Ordinal) &&
+                !previous.IsKind(SyntaxKind.DotToken) &&
+                !previous.IsKind(SyntaxKind.MinusGreaterThanToken) &&
+                !previous.IsKind(SyntaxKind.ColonColonToken))
             {
                 return true;
             }
+
+            previous = token;
         }
 
         return false;

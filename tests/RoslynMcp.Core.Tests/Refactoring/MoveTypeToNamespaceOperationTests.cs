@@ -1742,6 +1742,131 @@ public class MoveTypeToNamespaceOperationTests
         }
         """;
 
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_InactiveMemberAccessOnly_DoesNotAddUsing()
+    {
+        await using var workspace = await CreateInactiveReferenceWorkspace(InactiveElseMemberAccessProgram);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesAdded);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.DoesNotContain("using NewNs;", program);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_InactiveUseInOtherNamespaceOfDeclaringFile_AddsUsing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", InactiveHelperWithConsumerNamespaceSource),
+            ("Sibling.cs", InactiveSiblingSource),
+            ("Program.cs", InactiveElseWithoutHelperProgram));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        var helper = await File.ReadAllTextAsync(workspace.GetPath("Helper.cs"));
+        Assert.Contains("namespace NewNs", helper);
+        Assert.Contains("using NewNs;", helper);
+        Assert.DoesNotContain("using NewNs;", await File.ReadAllTextAsync(workspace.GetPath("Program.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_InactiveUseInsideMovedNamespace_DoesNotAddUsing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", InactiveHelperSelfReferenceSource),
+            ("Sibling.cs", InactiveSiblingSource),
+            ("Program.cs", InactiveElseWithoutHelperProgram));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesAdded);
+        var helper = await File.ReadAllTextAsync(workspace.GetPath("Helper.cs"));
+        Assert.Contains("namespace NewNs", helper);
+        Assert.DoesNotContain("using NewNs;", helper);
+    }
+
+    private const string InactiveElseMemberAccessProgram = """
+        using System;
+        using OldNs;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                var s = new Sibling();
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                s.Helper();
+                Console.WriteLine(s?.Helper());
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveHelperWithConsumerNamespaceSource = """
+        using OldNs;
+
+        namespace OldNs
+        {
+            public class Helper
+            {
+                public static string Tag() => "helper";
+            }
+        }
+
+        namespace Consumer
+        {
+            public static class UsesHelper
+            {
+                public static string Run()
+                {
+        #if DEBUG
+                    return Sibling.Tag();
+        #else
+                    return Helper.Tag();
+        #endif
+                }
+            }
+        }
+        """;
+
+    private const string InactiveHelperSelfReferenceSource = """
+        namespace OldNs
+        {
+            public class Helper
+            {
+                public static string Tag() => "helper";
+        #if !DEBUG
+                public static Helper Create() => new Helper();
+        #endif
+            }
+        }
+        """;
+
     private static Task<TempWorkspace> CreateInactiveReferenceWorkspace(string program, bool instanceHelper = false) =>
         TempWorkspace.CreateAsync(
             ("Helper.cs", instanceHelper ? InactiveHelperInstanceSource : InactiveHelperSource),
