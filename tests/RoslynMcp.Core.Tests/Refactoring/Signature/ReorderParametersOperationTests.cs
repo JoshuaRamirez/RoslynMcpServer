@@ -866,6 +866,42 @@ public class ReorderParametersOperationTests
     }
 
     [SkippableFact]
+    public async Task ReorderParameters_DelegateCastNestedInConditionalCallee_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System;
+
+            static class Program
+            {
+                static int Combine(int a, string b) => a + b.Length;
+
+                static void Main()
+                {
+                    bool flag = Environment.TickCount > 0;
+                    Func<int, string, int> fallback = (a, b) => a;
+                    Console.WriteLine(Combine(10, "hi"));
+                    Console.WriteLine((flag ? (Func<int, string, int>)Combine : fallback)(10, "hi"));
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Combine",
+                NewOrder = new[] { 1, 0 }
+            }));
+
+        Assert.Equal(ErrorCodes.UnsupportedCallSite, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task ReorderParameters_NewFuncInvocation_ThrowsAndWritesNothing()
     {
         const string source = """

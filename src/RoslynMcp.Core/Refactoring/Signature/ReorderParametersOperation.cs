@@ -685,11 +685,13 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
 
 
     /// <summary>
-    /// True when the invocation is an immediately-invoked delegate conversion
-    /// such as <c>((Func&lt;...&gt;)M)(...)</c> or <c>new Func&lt;...&gt;(M)(...)</c>,
-    /// not a (possibly parenthesized) direct call.
+    /// True when the reference is not the invocation's direct callee name, e.g.
+    /// an immediately-invoked delegate conversion such as
+    /// <c>((Func&lt;...&gt;)M)(...)</c>, <c>new Func&lt;...&gt;(M)(...)</c>, or one
+    /// nested in a composite callee like <c>(flag ? (Func&lt;...&gt;)M : f)(...)</c>.
+    /// A (possibly parenthesized or null-forgiven) direct call returns false.
     /// </summary>
-    private static bool IsDelegateConversionInvocation(InvocationExpressionSyntax invocation)
+    private static bool IsDelegateConversionInvocation(InvocationExpressionSyntax invocation, TextSpan referenceSpan)
     {
         var expression = invocation.Expression;
         while (true)
@@ -703,9 +705,15 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                 break;
         }
 
-        return expression is CastExpressionSyntax
-            or ObjectCreationExpressionSyntax
-            or ImplicitObjectCreationExpressionSyntax;
+        SimpleNameSyntax? calleeName = expression switch
+        {
+            SimpleNameSyntax simple => simple,
+            MemberAccessExpressionSyntax member => member.Name,
+            MemberBindingExpressionSyntax binding => binding.Name,
+            _ => null
+        };
+
+        return calleeName == null || !calleeName.Span.IntersectsWith(referenceSpan);
     }
 
     private async Task<List<CallSite>> CollectCallSitesAsync(
@@ -742,7 +750,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                         // Delegate-cast / new Func<>(M) invocations wrap a method-group
                         // conversion. Reordering args without rewriting the delegate type
                         // leaves CS0123/CS1503, so refuse like a bare method group (#2914).
-                        if (IsDelegateConversionInvocation(invocation))
+                        if (IsDelegateConversionInvocation(invocation, location.Location.SourceSpan))
                         {
                             throw new RefactoringException(
                                 ErrorCodes.UnsupportedCallSite,
