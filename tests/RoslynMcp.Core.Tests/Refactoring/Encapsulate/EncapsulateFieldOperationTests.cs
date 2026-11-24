@@ -368,6 +368,74 @@ public class EncapsulateFieldOperationTests
         AssertNoSyntaxErrors(person);
     }
 
+    [SkippableTheory]
+    [InlineData("@foo")]
+    [InlineData("foo")]
+    public async Task EncapsulateField_RenamedBackingField_RewritesSameTypeUses(string fieldName)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Person
+            {
+                public int {{fieldName}};
+
+                public int Display() => foo;
+
+                public int Twice() => this.foo * 2;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = fieldName,
+            PropertyName = "Foo"
+        });
+
+        Assert.True(result.Success);
+        var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Matches(@"private\s*int\s+_foo;", person);
+        Assert.Contains("Display() => _foo", person);
+        Assert.Contains("this._foo * 2", person);
+        Assert.Contains("return _foo;", person);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableTheory]
+    [InlineData("@foo")]
+    [InlineData("foo")]
+    public async Task EncapsulateField_VerbatimPropertyName_CollidesWithExistingProperty(string propertyName)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public int _bar;
+
+                public int foo { get; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                FieldName = "_bar",
+                PropertyName = propertyName
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal(NormalizeNewlines(source), NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
     [Theory]
     [InlineData("@class", "Class")]
     [InlineData("_name", "Name")]

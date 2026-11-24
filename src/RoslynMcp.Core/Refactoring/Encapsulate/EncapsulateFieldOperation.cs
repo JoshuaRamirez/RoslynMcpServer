@@ -157,7 +157,8 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         var containingType = fieldDeclarator.Ancestors().OfType<TypeDeclarationSyntax>().First();
         var existingProperty = containingType.Members
             .OfType<PropertyDeclarationSyntax>()
-            .FirstOrDefault(p => p.Identifier.Text == propertyName);
+            .FirstOrDefault(p => p.Identifier.ValueText ==
+                SyntaxIdentifierValidation.NormalizeIdentifier(propertyName));
 
         if (existingProperty != null)
         {
@@ -183,9 +184,14 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             Context.Solution,
             cancellationToken);
 
-        var externalReferences = references
+        var referenceLocations = references
             .SelectMany(r => r.Locations)
+            .ToList();
+        var externalReferences = referenceLocations
             .Where(loc => !IsInsideContainingType(loc, fieldSymbol.ContainingType))
+            .ToList();
+        var internalReferences = referenceLocations
+            .Where(loc => IsInsideContainingType(loc, fieldSymbol.ContainingType))
             .ToList();
 
         // Rename field if property name would conflict (computed before preview
@@ -221,6 +227,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             propertyName,
             property,
             externalReferences,
+            internalReferences,
             newFieldName,
             fieldRenamed,
             @params.UpdateReferences,
@@ -505,9 +512,14 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             document.Project.Solution,
             cancellationToken);
 
-        var externalReferences = references
+        var referenceLocations = references
             .SelectMany(r => r.Locations)
+            .ToList();
+        var externalReferences = referenceLocations
             .Where(loc => !IsInsideContainingType(loc, fieldSymbol.ContainingType))
+            .ToList();
+        var internalReferences = referenceLocations
+            .Where(loc => IsInsideContainingType(loc, fieldSymbol.ContainingType))
             .ToList();
 
         return await ApplyEncapsulateToSolutionAsync(
@@ -520,6 +532,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             propertyName,
             property,
             externalReferences,
+            internalReferences,
             newFieldName,
             fieldRenamed,
             updateReferences,
@@ -536,6 +549,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         string propertyName,
         PropertyDeclarationSyntax property,
         IReadOnlyList<ReferenceLocation> externalReferences,
+        IReadOnlyList<ReferenceLocation> internalReferences,
         string newFieldName,
         bool fieldRenamed,
         bool updateReferences,
@@ -584,15 +598,30 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         // rewrite rather than rematching a stale SourceSpan.
         var fieldAnnotation = new SyntaxAnnotation("encapsulate-field-target");
         var refAnnotation = new SyntaxAnnotation("encapsulate-field-external-ref");
+        var internalRefAnnotation = new SyntaxAnnotation("encapsulate-field-internal-ref");
         newFieldDeclaration = newFieldDeclaration.WithAdditionalAnnotations(fieldAnnotation);
 
         var replacements = new Dictionary<SyntaxNode, SyntaxNode> { [fieldDeclaration] = newFieldDeclaration };
         if (referenceReplacement != null)
         {
-            foreach (var identifier in EnumerateSameFileExternalIdentifiers(
+            foreach (var identifier in EnumerateSameFileIdentifiers(
                          root, document.Id, externalReferences, fieldName))
             {
                 replacements[identifier] = identifier.WithAdditionalAnnotations(refAnnotation);
+            }
+        }
+
+        // A renamed backing field (`foo` / `@foo` -> `_foo`) must also
+        // carry same-type uses along, otherwise `Display() => foo` binds to
+        // a name that no longer exists.
+        if (fieldRenamed)
+        {
+            foreach (var identifier in EnumerateSameFileIdentifiers(
+                         root, document.Id, internalReferences, fieldName))
+            {
+                if (fieldDeclaration.Span.Contains(identifier.Span))
+                    continue;
+                replacements[identifier] = identifier.WithAdditionalAnnotations(internalRefAnnotation);
             }
         }
 
@@ -635,20 +664,43 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             }
         }
 
+        if (fieldRenamed)
+        {
+            var annotatedInternalRefs = newRoot.GetAnnotatedNodes(internalRefAnnotation)
+                .OfType<IdentifierNameSyntax>()
+                .ToList();
+            if (annotatedInternalRefs.Count > 0)
+            {
+                newRoot = newRoot.ReplaceNodes(
+                    annotatedInternalRefs,
+                    (original, _) => SyntaxFactory.IdentifierName(newFieldName)
+                        .WithTriviaFrom(original));
+            }
+        }
+
         var stillAnnotated = newRoot.GetAnnotatedNodes(fieldAnnotation).FirstOrDefault();
         if (stillAnnotated != null)
             newRoot = newRoot.ReplaceNode(stillAnnotated, stillAnnotated.WithoutAnnotations(fieldAnnotation));
 
         var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
 
+        // Cross-file rewrites: external references follow
+        // referenceReplacement; same-type references in other partial
+        // declarations follow a renamed backing field.
+        var crossFileRewrites = new List<(ReferenceLocation Reference, string Replacement)>();
         if (referenceReplacement != null)
+            crossFileRewrites.AddRange(externalReferences.Select(r => (r, referenceReplacement)));
+        if (fieldRenamed)
+            crossFileRewrites.AddRange(internalReferences.Select(r => (r, newFieldName)));
+
+        if (crossFileRewrites.Count > 0)
         {
             // Group by document and rewrite from the pre-replacement root
             // so later SourceSpans stay valid after the first identifier
             // in that file is replaced.
-            foreach (var group in externalReferences
-                .Where(reference => reference.Document.Id != document.Id)
-                .GroupBy(reference => reference.Document.Id))
+            foreach (var group in crossFileRewrites
+                .Where(rewrite => rewrite.Reference.Document.Id != document.Id)
+                .GroupBy(rewrite => rewrite.Reference.Document.Id))
             {
                 var refDoc = newSolution.GetDocument(group.Key);
                 if (refDoc == null) continue;
@@ -656,17 +708,15 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                 var refRoot = await refDoc.GetSyntaxRootAsync(cancellationToken);
                 if (refRoot == null) continue;
 
-                var identifiers = new List<IdentifierNameSyntax>();
-                var seen = new HashSet<IdentifierNameSyntax>();
-                foreach (var reference in group)
+                var identifiers = new Dictionary<IdentifierNameSyntax, string>();
+                foreach (var (reference, replacement) in group)
                 {
                     var refNode = refRoot.FindNode(
                         reference.Location.SourceSpan, getInnermostNodeForTie: true);
                     if (refNode is IdentifierNameSyntax identifier &&
-                        identifier.Identifier.Text == fieldName &&
-                        seen.Add(identifier))
+                        IdentifierMatchesField(identifier, fieldName))
                     {
-                        identifiers.Add(identifier);
+                        identifiers.TryAdd(identifier, replacement);
                     }
                 }
 
@@ -674,8 +724,8 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                     continue;
 
                 var newRefRoot = refRoot.ReplaceNodes(
-                    identifiers,
-                    (original, _) => SyntaxFactory.IdentifierName(referenceReplacement)
+                    identifiers.Keys,
+                    (original, _) => SyntaxFactory.IdentifierName(identifiers[original])
                         .WithTriviaFrom(original));
                 newSolution = refDoc.WithSyntaxRoot(newRefRoot).Project.Solution;
             }
@@ -790,27 +840,35 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         return false;
     }
 
-    private static IEnumerable<IdentifierNameSyntax> EnumerateSameFileExternalIdentifiers(
+    private static IEnumerable<IdentifierNameSyntax> EnumerateSameFileIdentifiers(
         SyntaxNode root,
         DocumentId documentId,
-        IEnumerable<ReferenceLocation> externalReferences,
+        IEnumerable<ReferenceLocation> references,
         string fieldName)
     {
         var seen = new HashSet<IdentifierNameSyntax>();
-        foreach (var reference in externalReferences)
+        foreach (var reference in references)
         {
             if (reference.Document.Id != documentId)
                 continue;
 
             var refNode = root.FindNode(reference.Location.SourceSpan, getInnermostNodeForTie: true);
             if (refNode is IdentifierNameSyntax identifier &&
-                identifier.Identifier.Text == fieldName &&
+                IdentifierMatchesField(identifier, fieldName) &&
                 seen.Add(identifier))
             {
                 yield return identifier;
             }
         }
     }
+
+    /// <summary>
+    /// True when <paramref name="identifier"/> names <paramref name="fieldName"/>,
+    /// comparing unescaped values so a verbatim declaration (<c>@foo</c>)
+    /// matches a plain use (<c>foo</c>) and vice versa.
+    /// </summary>
+    private static bool IdentifierMatchesField(IdentifierNameSyntax identifier, string fieldName) =>
+        identifier.Identifier.ValueText == SyntaxIdentifierValidation.NormalizeIdentifier(fieldName);
 
     /// <summary>
     /// Derives a property name from <paramref name="fieldName"/> by
