@@ -852,6 +852,8 @@ public class EncapsulateFieldOperationTests
     [InlineData("field-name")]
     [InlineData("foo.bar")]
     [InlineData("@123x")]
+    [InlineData("class")]
+    [InlineData("@")]
     public void Validate_InvalidFieldName_ThrowsInvalidSymbolName(string fieldName)
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -870,13 +872,15 @@ public class EncapsulateFieldOperationTests
     [Theory]
     [InlineData("name")]
     [InlineData("_name")]
-    [InlineData("class")]
     [InlineData("@class")]
+    [InlineData("var")]
+    [InlineData("async")]
+    [InlineData("café")]
     public void Validate_ValidFieldName_DoesNotThrowInvalidSymbolName(string fieldName)
     {
-        // Char-based identifiers, reserved keywords such as "class", and
-        // verbatim "@class" must pass Validate. Identifier.Text keeps the
-        // @ prefix, so "@class" is the name that selects int @class;.
+        // SyntaxIdentifierValidation accepts ordinary names, verbatim
+        // "@class", contextual keywords (var, async), and Unicode letters.
+        // Bare reserved keywords such as "class" are rejected above.
         // A missing file must surface as SourceFileNotFound, not
         // InvalidSymbolName.
         var missing = Path.Combine(
@@ -892,6 +896,62 @@ public class EncapsulateFieldOperationTests
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
         Assert.NotEqual(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("class")]
+    [InlineData("123x")]
+    [InlineData("@")]
+    public void Validate_InvalidPropertyName_ThrowsInvalidSymbolName(string propertyName)
+    {
+        // propertyName is checked after File.Exists, so the source file must exist.
+        var file = Path.Combine(
+            Path.GetTempPath(),
+            "RoslynMcpEncapsulateField_InvalidProp_" + Guid.NewGuid().ToString("N") + ".cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+                {
+                    SourceFile = file,
+                    FieldName = "name",
+                    PropertyName = propertyName
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+            Assert.Equal("1003", ex.ErrorCode);
+            Assert.Contains("property name", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Theory]
+    [InlineData("Name")]
+    [InlineData("@class")]
+    [InlineData("var")]
+    public void Validate_ValidPropertyName_DoesNotThrowInvalidSymbolName(string propertyName)
+    {
+        var file = Path.Combine(
+            Path.GetTempPath(),
+            "RoslynMcpEncapsulateField_ValidProp_" + Guid.NewGuid().ToString("N") + ".cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                SourceFile = file,
+                FieldName = "name",
+                PropertyName = propertyName
+            });
+        }
+        finally
+        {
+            File.Delete(file);
+        }
     }
 
     [Fact]
