@@ -1052,9 +1052,11 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
     /// <paramref name="statement"/> onto <paramref name="declaration"/> so the
     /// new local stays in the same conditional region as the statement: after
     /// a preceding <c>#endif</c> / <c>#endregion</c>, or inside an opening
-    /// <c>#if</c> / <c>#else</c>. Only the statement's indentation whitespace
-    /// is copied to the declaration; other trivia after the last directive
-    /// (comments, <c>#pragma</c>, …) stays only on the statement. Statements with no such trivia are unchanged.
+    /// <c>#if</c> / <c>#else</c>. Later state-changing directives
+    /// (<c>#pragma</c>, <c>#nullable</c>, …) move with them so the extracted
+    /// expression keeps their scope. Only the statement's indentation whitespace
+    /// is copied to the declaration; trivia after the last directive stays only
+    /// on the statement. Statements with no such trivia are unchanged.
     /// </summary>
     private static (LocalDeclarationStatementSyntax Declaration, StatementSyntax Statement)
         PlaceDeclarationRelativeToDirectiveTrivia(
@@ -1063,13 +1065,20 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
     {
         var leading = statement.GetLeadingTrivia();
         var lastDirective = -1;
+        var hasPlacementDirective = false;
         for (var i = 0; i < leading.Count; i++)
         {
             if (IsDirectivePlacementTrivia(leading[i]))
+                hasPlacementDirective = true;
+
+            // State-changing directives (#pragma, #nullable, …) after the
+            // placement directive must also precede the declaration, or the
+            // moved expression leaves their scope.
+            if (leading[i].IsDirective || leading[i].IsKind(SyntaxKind.DisabledTextTrivia))
                 lastDirective = i;
         }
 
-        if (lastDirective < 0)
+        if (!hasPlacementDirective)
             return (declaration, statement);
 
         var split = lastDirective + 1;
@@ -1080,8 +1089,8 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         var rest = SyntaxFactory.TriviaList(leading.Skip(split));
 
         // Only the statement's own indentation (trailing whitespace) is copied
-        // to the declaration; comments or other directives after the last
-        // recognized directive stay solely on the statement.
+        // to the declaration; comments after the last directive stay solely
+        // on the statement.
         var indentStart = rest.Count;
         while (indentStart > 0 && rest[indentStart - 1].IsKind(SyntaxKind.WhitespaceTrivia))
             indentStart--;

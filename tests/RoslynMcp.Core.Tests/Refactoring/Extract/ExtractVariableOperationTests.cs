@@ -1182,6 +1182,9 @@ public class ExtractVariableOperationTests
         var declIndex = updated.IndexOf("var bonus = Next() + 5;", StringComparison.Ordinal);
         var elseIndex = updated.IndexOf("#else", StringComparison.Ordinal);
         Assert.True(ifIndex >= 0 && declIndex > ifIndex && declIndex < elseIndex, updated);
+        // The moved expression must stay inside the #pragma's scope.
+        var pragmaIndex = updated.IndexOf("#pragma warning disable CS0168", StringComparison.Ordinal);
+        Assert.True(pragmaIndex > ifIndex && pragmaIndex < declIndex, updated);
         Assert.Contains("total += bonus;", updated, StringComparison.Ordinal);
         Assert.Contains("\n        var bonus = Next() + 5;\n", updated, StringComparison.Ordinal);
         AssertCompilesInDebugAndRelease(updated);
