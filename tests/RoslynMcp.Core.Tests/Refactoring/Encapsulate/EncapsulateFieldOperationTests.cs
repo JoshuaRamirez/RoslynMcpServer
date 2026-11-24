@@ -813,6 +813,53 @@ public class EncapsulateFieldOperationTests
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
+    [Theory]
+    [InlineData("123x")]
+    [InlineData("1name")]
+    [InlineData("has space")]
+    [InlineData("field-name")]
+    [InlineData("foo.bar")]
+    [InlineData("@class")]
+    public void Validate_InvalidFieldName_ThrowsInvalidSymbolName(string fieldName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                FieldName = fieldName
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+        Assert.Equal("1003", ex.ErrorCode);
+        Assert.Contains("field name", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(fieldName, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("name")]
+    [InlineData("_name")]
+    [InlineData("class")]
+    public void Validate_ValidFieldName_DoesNotThrowInvalidSymbolName(string fieldName)
+    {
+        // Keyword "class" is accepted by the shared char-based helper (same as
+        // propertyName), so a field declared as @class can still be targeted
+        // by Identifier.Text "class". A missing file must surface as
+        // SourceFileNotFound, not InvalidSymbolName.
+        var missing = Path.Combine(
+            Path.GetTempPath(),
+            "RoslynMcpEncapsulateField_ValidId_" + Guid.NewGuid().ToString("N") + ".cs");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                SourceFile = missing,
+                FieldName = fieldName
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        Assert.NotEqual(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+    }
+
     [Fact]
     public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
     {

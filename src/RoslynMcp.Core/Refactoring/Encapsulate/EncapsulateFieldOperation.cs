@@ -77,6 +77,9 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         if (string.IsNullOrWhiteSpace(@params.FieldName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "fieldName is required.");
 
+        if (!IdentifierValidation.IsValidIdentifier(@params.FieldName))
+            throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid field name: {@params.FieldName}");
+
         SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
