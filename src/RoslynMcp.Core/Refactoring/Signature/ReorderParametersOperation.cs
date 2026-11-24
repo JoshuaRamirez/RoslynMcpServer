@@ -683,6 +683,23 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         return targets;
     }
 
+
+    /// <summary>
+    /// True when the invocation is an immediately-invoked delegate conversion
+    /// such as <c>((Func&lt;...&gt;)M)(...)</c> or <c>new Func&lt;...&gt;(M)(...)</c>,
+    /// not a (possibly parenthesized) direct call.
+    /// </summary>
+    private static bool IsDelegateConversionInvocation(InvocationExpressionSyntax invocation)
+    {
+        var expression = invocation.Expression;
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+            expression = parenthesized.Expression;
+
+        return expression is CastExpressionSyntax
+            or ObjectCreationExpressionSyntax
+            or ImplicitObjectCreationExpressionSyntax;
+    }
+
     private async Task<List<CallSite>> CollectCallSitesAsync(
         IReadOnlyList<IMethodSymbol> methods,
         IReadOnlyList<string> fallbackParameterNames,
@@ -714,6 +731,16 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                     var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
                     if (invocation != null && SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
                     {
+                        // Delegate-cast / new Func<>(M) invocations wrap a method-group
+                        // conversion. Reordering args without rewriting the delegate type
+                        // leaves CS0123/CS1503, so refuse like a bare method group (#2914).
+                        if (IsDelegateConversionInvocation(invocation))
+                        {
+                            throw new RefactoringException(
+                                ErrorCodes.UnsupportedCallSite,
+                                $"Method '{method.Name}' is used as a method group or other unsupported reference and cannot be updated automatically.");
+                        }
+
                         if (!seen.Add((document.Id, invocation.Span)))
                             continue;
 
