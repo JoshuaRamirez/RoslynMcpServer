@@ -881,6 +881,45 @@ public class RenameNamespaceOperationTests
     }
 
     [SkippableFact]
+    public async Task RenameNamespace_InactiveOnlyReference_CountsInReferencesUpdated()
+    {
+        async Task<int> RenameAndCountAsync(string program)
+        {
+            await using var workspace = await TempWorkspace.CreateAsync(
+                ("Helper.cs", InactiveHelperSource),
+                ("Program.cs", program));
+            var result = await new RenameNamespaceOperation(workspace.Context).ExecuteAsync(new RenameNamespaceParams
+            {
+                SourceFile = workspace.GetPath("Helper.cs"),
+                NamespaceName = "OldNs",
+                NewName = "NewNs"
+            });
+            Assert.True(result.Success);
+            return result.ReferencesUpdated;
+        }
+
+        var baseline = await RenameAndCountAsync(InactiveNoReferenceProgram);
+        var withInactive = await RenameAndCountAsync(InactiveNotDebugQualifiedProgram);
+
+        Assert.Equal(baseline + 1, withInactive);
+    }
+
+    private const string InactiveNoReferenceProgram = """
+        using System;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always");
+        #if !DEBUG
+                Console.WriteLine("release-only");
+        #endif
+            }
+        }
+        """;
+
+    [SkippableFact]
     public async Task RenameNamespace_InactiveNotDebugQualifiedName_Rewrites()
     {
         await using var workspace = await TempWorkspace.CreateAsync(

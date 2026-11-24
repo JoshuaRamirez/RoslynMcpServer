@@ -153,7 +153,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         ValidateNoNameConflict(namespaceSymbol, newFullName, compilation);
 
         var references = await ReferenceTracker.FindAllReferencesAsync(namespaceSymbol, cancellationToken);
-        var newSolution = await ComputeRenamedSolutionAsync(
+        var (newSolution, inactiveReferenceCount) = await ComputeRenamedSolutionAsync(
             namespaceSymbol,
             oldFullName,
             newFullName,
@@ -206,7 +206,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 FilesDeleted = filesDeleted
             },
             CreateSymbolInfo(namespaceSymbol, oldFullName, newFullName, resultSourceFile),
-            references.TotalReferenceCount,
+            // Inactive #if/#else rewrites are invisible to FindReferences (#2941).
+            references.TotalReferenceCount + inactiveReferenceCount,
             0);
     }
 
@@ -542,7 +543,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         ValidateNoNameConflict(namespaceSymbol, newFullName, compilation);
 
         var beforeSolution = document.Project.Solution;
-        var newSolution = await ComputeRenamedSolutionAsync(
+        var (newSolution, _) = await ComputeRenamedSolutionAsync(
             namespaceSymbol,
             oldFullName,
             newFullName,
@@ -1097,7 +1098,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         return current;
     }
 
-    private async Task<Solution> ComputeRenamedSolutionAsync(
+    private async Task<(Solution Solution, int InactiveReferenceCount)> ComputeRenamedSolutionAsync(
         INamespaceSymbol namespaceSymbol,
         string oldFullName,
         string newFullName,
@@ -1136,12 +1137,13 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     /// inside disabled preprocessor trivia so Release-only <c>using</c> and
     /// qualified names do not stay stale.
     /// </summary>
-    private static async Task<Solution> RewriteInactiveNamespaceTextAsync(
+    private static async Task<(Solution Solution, int EditCount)> RewriteInactiveNamespaceTextAsync(
         Solution solution,
         string oldFullName,
         string newFullName,
         CancellationToken cancellationToken)
     {
+        var editCount = 0;
         foreach (var project in solution.Projects)
         {
             foreach (var document in project.Documents)
@@ -1165,9 +1167,12 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                         original,
                         oldFullName,
                         newFullName,
-                        GetEnclosingNamespaceNames(trivia));
+                        GetEnclosingNamespaceNames(trivia),
+                        out var triviaEdits);
                     if (rewritten == original)
                         continue;
+
+                    editCount += triviaEdits;
 
                     originals.Add(trivia);
                     replacements.Add(SyntaxFactory.DisabledText(rewritten));
@@ -1182,7 +1187,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             }
         }
 
-        return solution;
+        return (solution, editCount);
     }
 
     /// <summary>
@@ -1221,8 +1226,17 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         string text,
         string oldFullName,
         string newFullName,
-        IReadOnlyList<string> enclosingNamespaces)
+        IReadOnlyList<string> enclosingNamespaces) =>
+        ReplaceNamespaceReferences(text, oldFullName, newFullName, enclosingNamespaces, out _);
+
+    internal static string ReplaceNamespaceReferences(
+        string text,
+        string oldFullName,
+        string newFullName,
+        IReadOnlyList<string> enclosingNamespaces,
+        out int editCount)
     {
+        editCount = 0;
         // Candidate (old segments, replacement) pairs: full name first, then
         // forms relative to each enclosing namespace.
         var candidates = new List<(string[] Segments, string Replacement, bool Relative)>
@@ -1284,6 +1298,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 i++;
         }
 
+        editCount = edits.Count;
         if (edits.Count == 0)
             return text;
 
