@@ -534,6 +534,8 @@ public class ConvertToAsyncOperationTests
     [InlineData("int")]
     [InlineData("not a name")]
     [InlineData("foo-bar")]
+    [InlineData("@@Foo")]
+    [InlineData("@@class")]
     public void Validate_InvalidMethodName_ThrowsInvalidSymbolName(string methodName)
     {
         var ex = Assert.Throws<RefactoringException>(() =>
