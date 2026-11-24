@@ -317,7 +317,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 @params.AddNullChecks && typeSymbol.IsReferenceType,
                 visibility,
                 addClassBaseCopy)
-            : GenerateConstructor(members, bodyMembers, typeDeclaration, @params.AddNullChecks, visibility, callBase.Initializer);
+            : GenerateConstructor(members, bodyMembers, typeDeclaration, typeSymbol, @params.AddNullChecks, visibility, callBase.Initializer);
         var replacing = exactMatch != null;
 
         // If preview mode, return without applying (but include generated constructor code)
@@ -680,7 +680,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 @params.AddNullChecks && typeSymbol.IsReferenceType,
                 visibility,
                 addClassBaseCopy)
-            : GenerateConstructor(members, bodyMembers, typeDeclaration, @params.AddNullChecks, visibility, callBase.Initializer);
+            : GenerateConstructor(members, bodyMembers, typeDeclaration, typeSymbol, @params.AddNullChecks, visibility, callBase.Initializer);
 
         try
         {
@@ -1070,6 +1070,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         List<ISymbol> parameterMembers,
         List<ISymbol> bodyMembers,
         TypeDeclarationSyntax typeDeclaration,
+        INamedTypeSymbol typeSymbol,
         bool addNullChecks,
         string visibility,
         ConstructorInitializerSyntax? initializer)
@@ -1134,6 +1135,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             statements.Add(assignment);
         }
 
+        initializer = ApplyStructDefiniteAssignment(typeSymbol, typeDeclaration, bodyMembers, statements, initializer);
+
         // Build constructor
         var constructor = SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
             .WithModifiers(SyntaxFactory.TokenList(VisibilityTokenHelpers.ParseVisibilityTokens(visibility)))
@@ -1191,27 +1194,124 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                     right)));
         }
 
+        ConstructorInitializerSyntax? initializer = null;
+        if (RequiresRecordBaseCopyInitializer(typeSymbol) || addClassBaseCopy)
+        {
+            initializer = SyntaxFactory.ConstructorInitializer(
+                SyntaxKind.BaseConstructorInitializer,
+                SyntaxFactory.ArgumentList(
+                    SyntaxFactory.SingletonSeparatedList(
+                        SyntaxFactory.Argument(
+                            CreateBaseCopyInitializerArgument(
+                                typeSymbol, parameterName, addClassBaseCopy)))));
+        }
+
+        initializer = ApplyStructDefiniteAssignment(typeSymbol, typeDeclaration, members, statements, initializer);
+
         var constructor = SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
             .WithModifiers(SyntaxFactory.TokenList(VisibilityTokenHelpers.ParseVisibilityTokens(visibility)))
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SingletonSeparatedList(parameter)))
             .WithBody(SyntaxFactory.Block(statements));
 
-        // Record language rule (CS8868) keeps : base(other). Class base-copy
-        // casts to the immediate base type so Base(Base) wins over Base(IFoo)
-        // / a more-specific inaccessible Base(Derived).
-        if (RequiresRecordBaseCopyInitializer(typeSymbol) || addClassBaseCopy)
-        {
-            constructor = constructor.WithInitializer(
-                SyntaxFactory.ConstructorInitializer(
-                    SyntaxKind.BaseConstructorInitializer,
-                    SyntaxFactory.ArgumentList(
-                        SyntaxFactory.SingletonSeparatedList(
-                            SyntaxFactory.Argument(
-                                CreateBaseCopyInitializerArgument(
-                                    typeSymbol, parameterName, addClassBaseCopy))))));
-        }
+        if (initializer != null)
+            constructor = constructor.WithInitializer(initializer);
 
         return constructor.NormalizeWhitespace();
+    }
+
+    /// <summary>
+    /// On a struct compiled with LangVersion &lt; 11, a constructor must
+    /// definitely assign every instance field and auto-property (CS0171 /
+    /// CS0843). Prefer <c>: this()</c> when the struct has no user-declared
+    /// parameterless constructor; otherwise assign leftover members to
+    /// <c>default</c>. C# 11+ auto-default structs are left unchanged (#3271).
+    /// </summary>
+    private static ConstructorInitializerSyntax? ApplyStructDefiniteAssignment(
+        INamedTypeSymbol typeSymbol,
+        TypeDeclarationSyntax typeDeclaration,
+        IReadOnlyList<ISymbol> assignedMembers,
+        List<StatementSyntax> statements,
+        ConstructorInitializerSyntax? initializer)
+    {
+        if (!RequiresStructDefiniteAssignment(typeSymbol, typeDeclaration.SyntaxTree))
+            return initializer;
+
+        var leftovers = GetUnassignedStructMembers(typeSymbol, assignedMembers);
+        if (leftovers.Count == 0)
+            return initializer;
+
+        if (initializer == null && !HasUserDeclaredParameterlessInstanceConstructor(typeSymbol))
+        {
+            return SyntaxFactory.ConstructorInitializer(
+                SyntaxKind.ThisConstructorInitializer,
+                SyntaxFactory.ArgumentList());
+        }
+
+        foreach (var leftover in leftovers)
+            statements.Add(CreateDefaultAssignment(leftover));
+
+        return initializer;
+    }
+
+    private static bool RequiresStructDefiniteAssignment(INamedTypeSymbol typeSymbol, SyntaxTree tree)
+    {
+        if (typeSymbol.TypeKind != TypeKind.Struct)
+            return false;
+        if (tree.Options is not CSharpParseOptions parseOptions)
+            return false;
+
+        return parseOptions.LanguageVersion.MapSpecifiedToEffectiveVersion() < LanguageVersion.CSharp11;
+    }
+
+    private static bool HasUserDeclaredParameterlessInstanceConstructor(INamedTypeSymbol typeSymbol)
+    {
+        foreach (var constructor in typeSymbol.InstanceConstructors)
+        {
+            if (!constructor.IsImplicitlyDeclared && constructor.Parameters.Length == 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static List<ISymbol> GetUnassignedStructMembers(
+        INamedTypeSymbol typeSymbol,
+        IReadOnlyList<ISymbol> assignedMembers)
+    {
+        var assigned = new HashSet<ISymbol>(assignedMembers, SymbolEqualityComparer.Default);
+        var leftovers = new List<ISymbol>();
+
+        foreach (var field in typeSymbol.GetMembers().OfType<IFieldSymbol>())
+        {
+            if (field.IsStatic || field.IsConst)
+                continue;
+
+            if (field.IsImplicitlyDeclared)
+            {
+                if (field.AssociatedSymbol is IPropertySymbol property
+                    && !property.IsIndexer
+                    && !assigned.Contains(property))
+                {
+                    leftovers.Add(property);
+                }
+
+                continue;
+            }
+
+            if (!assigned.Contains(field))
+                leftovers.Add(field);
+        }
+
+        return leftovers;
+    }
+
+    private static StatementSyntax CreateDefaultAssignment(ISymbol member)
+    {
+        return SyntaxFactory.ExpressionStatement(
+            SyntaxFactory.AssignmentExpression(
+                SyntaxKind.SimpleAssignmentExpression,
+                SyntaxGenerationHelper.ThisMemberAccess(member.Name),
+                SyntaxFactory.LiteralExpression(SyntaxKind.DefaultLiteralExpression)));
     }
 
     /// <summary>

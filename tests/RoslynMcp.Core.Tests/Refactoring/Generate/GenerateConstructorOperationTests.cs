@@ -6048,6 +6048,312 @@ public class GenerateConstructorOperationTests
         Assert.True(names.IndexOf("Outer") < names.IndexOf("Nested"));
     }
 
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_GetOnlyAutoProperty_ChainsThisAndCompiles()
+    {
+        const string source = """
+            namespace Lib
+            {
+                public struct Money
+                {
+                    private decimal _amount;
+                    private string _currency;
+                    public int Precision { get; }
+
+                    public override string ToString() => _amount + " " + _currency + " p" + Precision;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Money"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Money");
+        Assert.Contains(": this()", ctor, StringComparison.Ordinal);
+        Assert.Contains("_amount = amount", ctor, StringComparison.Ordinal);
+        Assert.Contains("_currency = currency", ctor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Precision =", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_MembersSubset_ChainsThisAndCompiles()
+    {
+        const string source = """
+            public struct Range
+            {
+                private int _start;
+                private int _end;
+                public override string ToString() => _start + ".." + _end;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Range",
+            Members = ["_start"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Range");
+        Assert.Contains("Range(int start)", ctor, StringComparison.Ordinal);
+        Assert.Contains(": this()", ctor, StringComparison.Ordinal);
+        Assert.Contains("_start = start", ctor, StringComparison.Ordinal);
+        Assert.DoesNotContain("_end =", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_IncludePropertiesFalse_ChainsThisAndCompiles()
+    {
+        const string source = """
+            public struct Point
+            {
+                private int _x;
+                private int _y;
+                public string Label { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Point",
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Point");
+        Assert.Contains("Point(int x, int y)", ctor, StringComparison.Ordinal);
+        Assert.Contains(": this()", ctor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Label =", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_CopyConstructor_ChainsThisAndCompiles()
+    {
+        const string source = """
+            public struct Point
+            {
+                private int _x;
+                private int _y;
+                public int Id { get; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Point",
+            CopyConstructor = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Point");
+        Assert.Contains("Point(Point other)", ctor, StringComparison.Ordinal);
+        Assert.Contains(": this()", ctor, StringComparison.Ordinal);
+        Assert.Contains("this._x = other._x", ctor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Id =", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_Preview_StructLangVersion10_MembersSubset_DescribesThisInitializer()
+    {
+        const string source = """
+            public struct Range
+            {
+                private int _start;
+                private int _end;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Range",
+            Members = ["_start"],
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains(": this()", result.PendingChanges![0].AfterSnippet, StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_AllFilesTrue_StructLangVersion10_GetOnlyAutoProperty_ChainsThis()
+    {
+        const string source = """
+            public struct Point
+            {
+                private int _x;
+                private int _y;
+                public int Id { get; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Point");
+        Assert.Contains(": this()", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion11_GetOnlyAutoProperty_DoesNotChainThis()
+    {
+        const string source = """
+            namespace Lib
+            {
+                public struct Money
+                {
+                    private decimal _amount;
+                    private string _currency;
+                    public int Precision { get; }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("11", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Money"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Money");
+        Assert.DoesNotContain(": this()", ctor, StringComparison.Ordinal);
+        Assert.Contains("_amount = amount", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp11);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_AllMembersSelected_DoesNotChainThis()
+    {
+        const string source = """
+            public struct Range
+            {
+                private int _start;
+                private int _end;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Range"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Range");
+        Assert.Contains("Range(int start, int end)", ctor, StringComparison.Ordinal);
+        Assert.DoesNotContain(": this()", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_UserParameterlessCtor_AssignsLeftoversToDefault()
+    {
+        const string source = """
+            public struct Box
+            {
+                public Box() { Value = 1; _extra = 0; }
+                public int Value { get; }
+                private int _extra;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Box(int extra)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public Box(int extra) : this()", updated, StringComparison.Ordinal);
+        Assert.Contains("_extra = extra", updated, StringComparison.Ordinal);
+        Assert.Contains("this.Value = default", updated, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassLangVersion10_DoesNotChainThis()
+    {
+        const string source = """
+            public class Money
+            {
+                private decimal _amount;
+                public int Precision { get; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Money"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Money");
+        Assert.DoesNotContain(": this()", ctor, StringComparison.Ordinal);
+        Assert.Contains("_amount = amount", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+
     #endregion
 
     #region Helper Methods
@@ -6265,7 +6571,7 @@ public class GenerateConstructorOperationTests
         return count;
     }
 
-    private static void AssertGeneratedSourceCompiles(string source)
+    private static void AssertGeneratedSourceCompiles(string source, LanguageVersion languageVersion = LanguageVersion.Default)
     {
         var references = new List<MetadataReference>
         {
@@ -6277,7 +6583,7 @@ public class GenerateConstructorOperationTests
 
         var compilation = CSharpCompilation.Create(
             "ClassBaseCopyCompileTest",
-            new[] { CSharpSyntaxTree.ParseText(source) },
+            new[] { CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(languageVersion)) },
             references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         var errors = compilation.GetDiagnostics()
@@ -6326,9 +6632,20 @@ public class GenerateConstructorOperationTests
             CreateAsync(files);
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Person.cs") =>
-            CreateAsync((fileName, source));
+            CreateCoreAsync(languageVersion: null, (fileName, source));
 
-        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
+        public static Task<TempWorkspace> CreateWithLanguageVersionAsync(
+            string languageVersion,
+            string source,
+            string fileName = "Person.cs") =>
+            CreateCoreAsync(languageVersion, (fileName, source));
+
+        public static Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files) =>
+            CreateCoreAsync(languageVersion: null, files);
+
+        private static async Task<TempWorkspace> CreateCoreAsync(
+            string? languageVersion,
+            params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -6336,14 +6653,19 @@ public class GenerateConstructorOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            await File.WriteAllTextAsync(projectPath, """
-                <Project Sdk="Microsoft.NET.Sdk">
-                  <PropertyGroup>
-                    <TargetFramework>net9.0</TargetFramework>
-                    <Nullable>enable</Nullable>
-                  </PropertyGroup>
-                </Project>
-                """);
+            var langVersionLine = languageVersion is null
+                ? ""
+                : "                    <LangVersion>" + languageVersion + "</LangVersion>" + Environment.NewLine;
+            await File.WriteAllTextAsync(
+                projectPath,
+                "<Project Sdk=\"Microsoft.NET.Sdk\">" + Environment.NewLine +
+                "  <PropertyGroup>" + Environment.NewLine +
+                "    <TargetFramework>net9.0</TargetFramework>" + Environment.NewLine +
+                "    <Nullable>enable</Nullable>" + Environment.NewLine +
+                langVersionLine +
+                "  </PropertyGroup>" + Environment.NewLine +
+                "</Project>" + Environment.NewLine);
+
 
             string? sourcePath = null;
             var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal);
