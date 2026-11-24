@@ -1537,6 +1537,46 @@ public class RenameSymbolOperationTests
     }
 
     [SkippableFact]
+    public async Task RenameSymbol_SingleSite_LocalOntoDisjointSiblingBlockLocal_Renames()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class Host
+            {
+                public int M(bool flag)
+                {
+                    if (flag)
+                    {
+                        int oldName = 1;
+                        return oldName;
+                    }
+                    else
+                    {
+                        int other = 2;
+                        return other;
+                    }
+                }
+            }
+            """, "Host.cs");
+        var operation = new RenameSymbolOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "oldName",
+            NewName = "other",
+            Line = 7,
+            Column = 17,
+            RenameFile = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("int other = 1;", text);
+        Assert.Contains("int other = 2;", text);
+        Assert.DoesNotContain("oldName", text);
+    }
+
+    [SkippableFact]
     public async Task RenameSymbol_AllFilesTrue_LocalVsParameterConflict_Skips()
     {
         await using var workspace = await TempWorkspace.CreateAsync(

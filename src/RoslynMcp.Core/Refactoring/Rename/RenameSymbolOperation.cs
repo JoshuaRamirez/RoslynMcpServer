@@ -111,7 +111,11 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         // Validate rename is allowed
         ValidateRename(symbol, @params);
 
-        if (IsMethodScopedSymbol(symbol) && HasSimpleNameConflict(symbol, @params.NewName))
+        // Only local functions: the method-scope scan is deliberately coarse
+        // (sibling blocks count), so locals / parameters / method type
+        // parameters keep deferring to Renamer for valid disjoint-block renames.
+        if (symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction } &&
+            HasSimpleNameConflict(symbol, @params.NewName))
         {
             throw new RefactoringException(
                 ErrorCodes.NameConflictScope,
