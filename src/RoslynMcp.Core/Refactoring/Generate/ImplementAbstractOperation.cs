@@ -784,6 +784,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     {
         var parameters = method.Parameters.Select(CreateParameter);
         var body = ThrowNotImplementedBodyHelpers.RequiresThrowBody(method, throwNotImplemented)
+            || NullableFlowAttributeHelpers.HasPostconditionAttributes(method, emittingType)
             ? ThrowNotImplementedBodyHelpers.CreateThrowNotImplementedBody()
             : SyntaxGenerationHelper.CreateDefaultReturnBody(method.ReturnType);
         var methodDecl = SyntaxFactory.MethodDeclaration(
@@ -800,7 +801,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                     SyntaxFactory.SeparatedList(method.TypeParameters.Select(tp => SyntaxFactory.TypeParameter(tp.Name)))));
         }
 
-        methodDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(methodDecl, method);
+        methodDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(methodDecl, method, emittingType);
         return methodDecl.NormalizeWhitespace();
     }
 
@@ -822,7 +823,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                 property.Name)
             .WithModifiers(CreateOverrideModifiers(property, emittingType, property.IsRequired))
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(property, emittingType, throwNotImplemented))));
-        propertyDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(propertyDecl, property);
+        propertyDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(propertyDecl, property, emittingType);
         return propertyDecl.NormalizeWhitespace();
     }
 
@@ -841,7 +842,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             .WithModifiers(CreateOverrideModifiers(indexer, emittingType, indexer.IsRequired))
             .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer, emittingType, throwNotImplemented))));
-        indexerDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(indexerDecl, indexer);
+        indexerDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(indexerDecl, indexer, emittingType);
         return indexerDecl.NormalizeWhitespace();
     }
 

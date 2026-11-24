@@ -60,8 +60,11 @@ public static class SyntaxGenerationHelper
         {
             body = CreateBaseCallBody(method);
         }
-        else if (throwNotImplemented)
+        else if (throwNotImplemented
+            || NullableFlowAttributeHelpers.HasPostconditionAttributes(method, emittingType))
         {
+            // A default-valued body cannot honor a copied postcondition
+            // ([DoesNotReturn], [return: NotNull], [MemberNotNull], ...).
             body = CreateThrowNotImplementedBody();
         }
         else
@@ -108,7 +111,7 @@ public static class SyntaxGenerationHelper
                 SyntaxFactory.TypeParameterList(SyntaxFactory.SeparatedList(typeParams)));
         }
 
-        methodDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(methodDecl, method);
+        methodDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(methodDecl, method, emittingType);
         return methodDecl.NormalizeWhitespace();
     }
 
@@ -177,7 +180,7 @@ public static class SyntaxGenerationHelper
             propDecl = propDecl.WithModifiers(SyntaxFactory.TokenList(modifiers));
         }
 
-        propDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(propDecl, property);
+        propDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(propDecl, property, emittingType);
         return propDecl.NormalizeWhitespace();
     }
 
@@ -245,7 +248,7 @@ public static class SyntaxGenerationHelper
             indexerDecl = indexerDecl.WithModifiers(SyntaxFactory.TokenList(modifiers));
         }
 
-        indexerDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(indexerDecl, indexer);
+        indexerDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(indexerDecl, indexer, emittingType);
         return indexerDecl.NormalizeWhitespace();
     }
 

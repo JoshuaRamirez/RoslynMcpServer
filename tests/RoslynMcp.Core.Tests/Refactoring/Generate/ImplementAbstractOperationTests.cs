@@ -4669,6 +4669,58 @@ public class ImplementAbstractOperationTests
     }
 
     [SkippableFact]
+    public async Task ImplementAbstract_ThrowNotImplementedFalse_PostconditionsThrowAndPrivateMemberNotNullDropped()
+    {
+        const string source = """
+            using System.Diagnostics.CodeAnalysis;
+
+            public abstract class Store
+            {
+                private string? _name;
+
+                public string Name => _name ?? string.Empty;
+
+                public void Rename(string name) => _name = name;
+
+                [DoesNotReturn]
+                public abstract void Fail();
+
+                [return: NotNull]
+                public abstract string? Find(string key);
+
+                [MemberNotNull(nameof(_name))]
+                public abstract void Init();
+
+                public abstract string? Plain();
+            }
+
+            public class MemStore : Store
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "MemStore",
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("class MemStore", StringComparison.Ordinal)..];
+        Assert.Contains("[global::System.Diagnostics.CodeAnalysis.DoesNotReturn]", derived, StringComparison.Ordinal);
+        Assert.Contains("[return: global::System.Diagnostics.CodeAnalysis.NotNull]", derived, StringComparison.Ordinal);
+        Assert.DoesNotContain("MemberNotNull", derived, StringComparison.Ordinal);
+        Assert.Equal(3, derived.Split("NotImplementedException").Length - 1);
+        Assert.Contains("return null;", derived, StringComparison.Ordinal);
+        AssertNullableFlowCompiles(updated);
+    }
+
+    [SkippableFact]
     public async Task ImplementAbstract_Preview_DescribesNullableFlowAttributesAndWritesNothing()
     {
         const string source = """
