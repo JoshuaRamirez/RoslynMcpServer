@@ -77,7 +77,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         if (string.IsNullOrWhiteSpace(@params.FieldName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "fieldName is required.");
 
-        if (!IdentifierValidation.IsValidIdentifier(@params.FieldName))
+        if (!IsValidFieldName(@params.FieldName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid field name: {@params.FieldName}");
 
         SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
@@ -93,6 +93,22 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         if (@params.PropertyName != null && !IdentifierValidation.IsValidIdentifier(@params.PropertyName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid property name: {@params.PropertyName}");
+    }
+
+    /// <summary>
+    /// Field lookup keys allow the same char-based identifiers as
+    /// <see cref="IdentifierValidation"/>, plus a verbatim <c>@</c>
+    /// prefix. Roslyn keeps the <c>@</c> in <c>Identifier.Text</c>, so
+    /// <c>int @class;</c> is found as <c>@class</c>, not <c>class</c>.
+    /// </summary>
+    private static bool IsValidFieldName(string name)
+    {
+        if (IdentifierValidation.IsValidIdentifier(name))
+            return true;
+
+        return name.Length > 1 &&
+               name[0] == '@' &&
+               IdentifierValidation.IsValidIdentifier(name[1..]);
     }
 
     /// <inheritdoc />

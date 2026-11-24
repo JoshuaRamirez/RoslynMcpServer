@@ -300,6 +300,38 @@ public class EncapsulateFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task EncapsulateField_VerbatimKeywordFieldName_Encapsulates()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public int @class;
+
+                public int Display() => @class;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "@class",
+            PropertyName = "Kind"
+        });
+
+        Assert.True(result.Success);
+        var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("public int @class", person);
+        Assert.Matches(@"private\s*int\s+@class", person);
+        Assert.Contains("public int Kind", person);
+        Assert.Contains("=> @class", person);
+    }
+
+    [SkippableFact]
     public async Task EncapsulateField_SameClassReferences_StayOnField()
     {
         await using var workspace = await TempWorkspace.CreateAsync(
@@ -819,7 +851,7 @@ public class EncapsulateFieldOperationTests
     [InlineData("has space")]
     [InlineData("field-name")]
     [InlineData("foo.bar")]
-    [InlineData("@class")]
+    [InlineData("@123x")]
     public void Validate_InvalidFieldName_ThrowsInvalidSymbolName(string fieldName)
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -839,12 +871,14 @@ public class EncapsulateFieldOperationTests
     [InlineData("name")]
     [InlineData("_name")]
     [InlineData("class")]
+    [InlineData("@class")]
     public void Validate_ValidFieldName_DoesNotThrowInvalidSymbolName(string fieldName)
     {
-        // Keyword "class" is accepted by the shared char-based helper (same as
-        // propertyName), so a field declared as @class can still be targeted
-        // by Identifier.Text "class". A missing file must surface as
-        // SourceFileNotFound, not InvalidSymbolName.
+        // Char-based identifiers, reserved keywords such as "class", and
+        // verbatim "@class" must pass Validate. Identifier.Text keeps the
+        // @ prefix, so "@class" is the name that selects int @class;.
+        // A missing file must surface as SourceFileNotFound, not
+        // InvalidSymbolName.
         var missing = Path.Combine(
             Path.GetTempPath(),
             "RoslynMcpEncapsulateField_ValidId_" + Guid.NewGuid().ToString("N") + ".cs");
