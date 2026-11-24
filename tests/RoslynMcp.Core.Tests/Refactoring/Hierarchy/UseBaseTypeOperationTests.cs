@@ -2007,6 +2007,7 @@ public class UseBaseTypeOperationTests
     [InlineData(nameof(InactivePublicPropertyBreedSource))]
     [InlineData(nameof(InactiveMethodReturnBreedSource))]
     [InlineData(nameof(InactiveHiddenOverloadSource))]
+    [InlineData(nameof(InactiveNestedMethodReturnSource))]
     public async Task UseBaseType_InactiveDerivedOnlyUse_CodexFollowUps_Throws(string sourceName)
     {
         var source = sourceName switch
@@ -2014,6 +2015,7 @@ public class UseBaseTypeOperationTests
             nameof(InactiveFieldBreedSource) => InactiveFieldBreedSource,
             nameof(InactivePublicPropertyBreedSource) => InactivePublicPropertyBreedSource,
             nameof(InactiveMethodReturnBreedSource) => InactiveMethodReturnBreedSource,
+            nameof(InactiveNestedMethodReturnSource) => InactiveNestedMethodReturnSource,
             _ => InactiveHiddenOverloadSource
         };
         await using var workspace = await TempWorkspace.CreateAsync(source);
@@ -2134,6 +2136,34 @@ public class UseBaseTypeOperationTests
                 Console.WriteLine(Get().Name);
         #if !DEBUG
                 Console.WriteLine(Get().Breed);
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveNestedMethodReturnSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+        class Program
+        {
+            static Dog Get(Dog fallback) => fallback;
+
+            static void Show()
+            {
+                Console.WriteLine(Get(new Dog("Rex", "lab")).Name);
+        #if !DEBUG
+                Console.WriteLine(Get(Get(null!)).Name);
         #endif
             }
         }

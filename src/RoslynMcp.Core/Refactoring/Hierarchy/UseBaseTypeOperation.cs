@@ -1237,7 +1237,19 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
             .Where(token => !token.IsKind(SyntaxKind.EndOfFileToken))
             .ToList();
 
-        for (var index = 0; index < tokens.Count; index++)
+        return InactiveTokensCompatibleWithBase(tokens, 0, tokens.Count, identifier, derived, baseType, isMethodReturn);
+    }
+
+    private static bool InactiveTokensCompatibleWithBase(
+        List<SyntaxToken> tokens,
+        int start,
+        int end,
+        string identifier,
+        INamedTypeSymbol derived,
+        INamedTypeSymbol baseType,
+        bool isMethodReturn)
+    {
+        for (var index = start; index < end; index++)
         {
             var token = tokens[index];
             if (!token.IsKind(SyntaxKind.IdentifierToken) || token.ValueText != identifier)
@@ -1250,7 +1262,12 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
                 if (i >= tokens.Count || !tokens[i].IsKind(SyntaxKind.OpenParenToken))
                     return false;
 
+                var argsStart = i + 1;
                 i = SkipBalanced(tokens, i, SyntaxKind.OpenParenToken, SyntaxKind.CloseParenToken);
+
+                // Nested calls in the argument list (Get(Get(x)).M) are uses too.
+                if (!InactiveTokensCompatibleWithBase(tokens, argsStart, Math.Max(argsStart, i - 1), identifier, derived, baseType, isMethodReturn))
+                    return false;
             }
 
             if (i < tokens.Count && tokens[i].IsKind(SyntaxKind.QuestionToken))
