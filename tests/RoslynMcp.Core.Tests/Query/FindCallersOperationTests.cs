@@ -1695,6 +1695,114 @@ public class FindCallersOperationTests
         Assert.Equal(expected.Length, result.Data.TotalCount);
     }
 
+    // Auto-property / field-like event initializers (#2956): same sources as the find_references
+    // peer. CallerName is the declared property or event (Retries), not <Retries>k__BackingField.
+    private static readonly Dictionary<string, string> BackingFieldKindSources = new()
+    {
+        ["Calc.cs"] = """
+            using System;
+            namespace App;
+            public static class Calc
+            {
+                public static int Tick() => 1;
+                public static Action Noop() => () => { };
+            }
+            """,
+        ["Settings.cs"] = """
+            using System;
+            namespace App;
+            public class Settings
+            {
+                public int Retries { get; set; } = Calc.Tick();
+                public int Timeout { get; init; } = Calc.Tick();
+                public event Action Changed = Calc.Noop();
+                public int Field = Calc.Tick();
+                public int Body() => Calc.Tick();
+            }
+            """
+    };
+
+    [SkippableTheory]
+    [InlineData("Property", new[] { "Retries", "Timeout" })]
+    [InlineData("property", new[] { "Retries", "Timeout" })]
+    [InlineData("Field", new[] { "Field" })]
+    [InlineData("Method", new[] { "Body" })]
+    [InlineData("Event", new string[0])]
+    [InlineData("Constant", new string[0])]
+    public async Task FindCallers_KindFilter_AutoPropertyInitializerIsJudgedAsProperty(
+        string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(BackingFieldKindSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Calc.cs"),
+            SymbolName = "Tick",
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success, kindFilter);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+        Assert.DoesNotContain(result.Data.Callers, c => c.CallerName.Contains("k__BackingField", StringComparison.Ordinal));
+    }
+
+    [SkippableTheory]
+    [InlineData("Event", new[] { "Changed" })]
+    [InlineData("event", new[] { "Changed" })]
+    [InlineData("Field", new string[0])]
+    [InlineData("Property", new string[0])]
+    [InlineData("Method", new string[0])]
+    public async Task FindCallers_KindFilter_FieldLikeEventInitializerIsJudgedAsEvent(
+        string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(BackingFieldKindSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Calc.cs"),
+            SymbolName = "Noop",
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success, kindFilter);
+        Assert.Equal(expected, SortedCallerNames(result.Data!.Callers));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_AutoPropertyInitializer_ReportsPropertyNameAndQualifiedName()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(BackingFieldKindSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Calc.cs"),
+            SymbolName = "Tick",
+            KindFilter = "Property",
+            NameFilter = "Retries"
+        });
+        var byBackingFieldName = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Calc.cs"),
+            SymbolName = "Tick",
+            NameFilter = "k__BackingField"
+        });
+
+        Assert.True(result.Success);
+        var retries = Assert.Single(result.Data!.Callers);
+        Assert.Equal("Retries", retries.CallerName);
+        Assert.Equal("App.Settings.Retries", retries.CallerFullyQualifiedName);
+        Assert.True(byBackingFieldName.Success);
+        Assert.Empty(byBackingFieldName.Data!.Callers);
+        Assert.Equal(0, byBackingFieldName.Data.TotalCount);
+    }
+
     #endregion
 
     #region StaticFilter
@@ -1984,13 +2092,13 @@ public class FindCallersOperationTests
     // Static edge callers of Target.Run in Edges.cs (lambda sites report the enclosing member, once per site).
     private static readonly string[] StaticEdgeCallerNames =
     [
-        "<AutoProp>k__BackingField", "InnerStatic", "StaticChanged", "StaticLocal",
+        "AutoProp", "InnerStatic", "StaticChanged", "StaticLocal",
         "StaticWithLambda", "StaticWithLambda"
     ];
 
     private static readonly string[] InstanceEdgeCallerNames =
     [
-        "<InstanceAutoProp>k__BackingField", "Changed", "Finalize", "InnerInstance", "InstanceLocal",
+        "Changed", "Finalize", "InnerInstance", "InstanceAutoProp", "InstanceLocal",
         "InstanceWithLambda", "InstanceWithLambda", "this[]"
     ];
 
@@ -2016,7 +2124,7 @@ public class FindCallersOperationTests
         // - Lambdas (static or not) report the enclosing member and are judged on it.
         // - A finalizer reports Finalize (instance); an indexer reports this[] and is judged on the indexer.
         // - A custom event accessor reports the event and is judged on it.
-        // - An auto-property initializer reports <P>k__BackingField and is judged on the backing field.
+        // - An auto-property initializer reports the property and is judged on it.
         // - Nested-type members are judged on their own staticness.
         Assert.True(result.Success);
         var expected = SortedNames(staticFilter switch
