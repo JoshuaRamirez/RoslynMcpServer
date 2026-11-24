@@ -91,7 +91,7 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "endColumn must be >= 1.");
 
         if (@params.EndLine.Value < @params.StartLine.Value ||
-            (@params.EndLine.Value == @params.StartLine.Value && @params.EndColumn.Value < @params.StartColumn.Value))
+            (@params.EndLine.Value == @params.StartLine.Value && @params.EndColumn.Value <= @params.StartColumn.Value))
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
 
         if (!File.Exists(@params.SourceFile))
@@ -565,13 +565,20 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
                method.ReturnType.Name is "Task" or "ValueTask";
     }
 
-    internal static TextSpan GetSelectionSpan(SourceText sourceText, SafeDeleteParams @params) =>
-        SyntaxLineHelpers.GetSelectionSpan(
+    internal static TextSpan GetSelectionSpan(SourceText sourceText, SafeDeleteParams @params)
+    {
+        var span = SyntaxLineHelpers.GetSelectionSpan(
             sourceText,
             @params.StartLine!.Value,
             @params.StartColumn!.Value,
             @params.EndLine!.Value,
             @params.EndColumn!.Value);
+
+        if (span.IsEmpty)
+            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
+
+        return span;
+    }
 
 
     private static ISymbol ResolveSelectedSymbol(
