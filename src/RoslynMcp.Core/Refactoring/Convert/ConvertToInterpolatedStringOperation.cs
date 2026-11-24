@@ -571,7 +571,10 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     /// <c>IFormattable.ToString(null, culture)</c>, which can silently
     /// change the printed value. Built-in special types are left as bare
     /// holes because those two paths match. Custom formattable types are
-    /// written as <c>{expr.ToString()}</c> so concat semantics are kept.
+    /// written as <c>{expr.ToString()}</c> (non-nullable value types) or
+    /// <c>{expr?.ToString()}</c> (anything that can be null, so a null
+    /// operand still prints empty as concat does) so concat semantics are
+    /// kept. Operand comments are carried onto the rewritten hole.
     /// </summary>
     private static ExpressionSyntax WrapFormattableConcatOperand(
         ExpressionSyntax expression,
@@ -579,21 +582,40 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     {
         var type = semanticModel.GetTypeInfo(expression).Type
             ?? semanticModel.GetTypeInfo(expression).ConvertedType;
-        if (type == null || !RequiresExplicitToStringInConcatHole(type))
+        if (type == null)
+            return expression;
+
+        var isNullableValueType = type is INamedTypeSymbol
+        {
+            OriginalDefinition.SpecialType: SpecialType.System_Nullable_T
+        };
+        var formattedType = isNullableValueType
+            ? ((INamedTypeSymbol)type).TypeArguments[0]
+            : type;
+        if (!RequiresExplicitToStringInConcatHole(formattedType))
             return expression;
 
         if (IsParameterlessToStringCall(expression))
             return expression;
 
-        var receiver = NeedsMemberAccessParentheses(expression)
-            ? SyntaxFactory.ParenthesizedExpression(expression.WithoutTrivia())
-            : expression.WithoutTrivia();
+        var bare = expression.WithoutTrivia();
+        var receiver = NeedsMemberAccessParentheses(bare)
+            ? SyntaxFactory.ParenthesizedExpression(bare)
+            : bare;
 
-        return SyntaxFactory.InvocationExpression(
-            SyntaxFactory.MemberAccessExpression(
-                SyntaxKind.SimpleMemberAccessExpression,
+        ExpressionSyntax call = type.IsValueType && !isNullableValueType
+            ? SyntaxFactory.InvocationExpression(
+                SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    receiver,
+                    SyntaxFactory.IdentifierName("ToString")))
+            : SyntaxFactory.ConditionalAccessExpression(
                 receiver,
-                SyntaxFactory.IdentifierName("ToString")));
+                SyntaxFactory.InvocationExpression(
+                    SyntaxFactory.MemberBindingExpression(
+                        SyntaxFactory.IdentifierName("ToString"))));
+
+        return call.WithTriviaFrom(expression);
     }
 
     private static bool RequiresExplicitToStringInConcatHole(ITypeSymbol type)
@@ -601,17 +623,25 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         if (type.SpecialType != SpecialType.None)
             return false;
 
+        // AllInterfaces does not include the type itself, so an operand
+        // statically typed as IFormattable / ISpanFormattable is checked
+        // directly.
+        if (IsSystemFormattableInterface(type))
+            return true;
+
         foreach (var iface in type.AllInterfaces)
         {
-            if (iface.ContainingNamespace?.ToDisplayString() == "System"
-                && iface.Name is "IFormattable" or "ISpanFormattable")
-            {
+            if (IsSystemFormattableInterface(iface))
                 return true;
-            }
         }
 
         return false;
     }
+
+    private static bool IsSystemFormattableInterface(ITypeSymbol type) =>
+        type.TypeKind == TypeKind.Interface
+        && type.ContainingNamespace?.ToDisplayString() == "System"
+        && type.Name is "IFormattable" or "ISpanFormattable";
 
     private static bool IsParameterlessToStringCall(ExpressionSyntax expression) =>
         expression is InvocationExpressionSyntax { ArgumentList.Arguments.Count: 0 } invocation
