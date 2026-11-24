@@ -1105,7 +1105,10 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         if (symbol is IMethodSymbol method &&
             GetOutermostTypeSyntax(candidate.TypeSyntax).Parent is MethodDeclarationSyntax or LocalFunctionStatementSyntax)
         {
-            return await AnalyzeMethodReturnUsagesAsync(method, derived, baseType, cancellationToken);
+            if (!await AnalyzeMethodReturnUsagesAsync(method, derived, baseType, cancellationToken))
+                return false;
+
+            return await InactiveUsagesCompatibleWithBaseAsync(method, derived, baseType, isMethodReturn: true, cancellationToken);
         }
 
         var references = await SymbolFinder.FindReferencesAsync(symbol, Context.Solution, cancellationToken);
@@ -1131,130 +1134,209 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         // FindReferencesAsync only sees the active configuration. A derived-only
         // member under #else / #if !DEBUG would otherwise allow a widen that
         // breaks Release (CS1061, #2944).
-        return InactiveUsagesCompatibleWithBase(symbol, baseType);
+        return await InactiveUsagesCompatibleWithBaseAsync(symbol, derived, baseType, isMethodReturn: false, cancellationToken);
     }
 
     /// <summary>
-    /// False when disabled preprocessor text in the declaration's enclosing
-    /// method uses <paramref name="symbol"/> in a way <paramref name="baseType"/>
-    /// cannot satisfy.
+    /// False when disabled preprocessor text that can see <paramref name="symbol"/>
+    /// uses it in a way <paramref name="baseType"/> cannot satisfy. Locals and
+    /// parameters scan their enclosing member; private members scan their
+    /// containing type; other members scan every C# document (#2944).
     /// </summary>
-    private static bool InactiveUsagesCompatibleWithBase(ISymbol symbol, INamedTypeSymbol baseType)
+    private async Task<bool> InactiveUsagesCompatibleWithBaseAsync(
+        ISymbol symbol,
+        INamedTypeSymbol derived,
+        INamedTypeSymbol baseType,
+        bool isMethodReturn,
+        CancellationToken cancellationToken)
     {
-        foreach (var syntaxRef in symbol.DeclaringSyntaxReferences)
+        foreach (var scope in await GetInactiveScanScopesAsync(symbol, cancellationToken))
         {
-            var node = syntaxRef.GetSyntax();
-            SyntaxNode? scope = node.FirstAncestorOrSelf<MethodDeclarationSyntax>();
-            scope ??= node.FirstAncestorOrSelf<LocalFunctionStatementSyntax>();
-            scope ??= node.FirstAncestorOrSelf<AccessorDeclarationSyntax>();
-            scope ??= node.FirstAncestorOrSelf<BaseMethodDeclarationSyntax>();
-            if (scope == null)
-                continue;
-
-            if (!InactiveIdentifierUsesCompatible(scope, symbol.Name, baseType))
+            if (!InactiveIdentifierUsesCompatible(scope, symbol.Name, derived, baseType, isMethodReturn))
                 return false;
         }
 
         return true;
     }
 
+    private async Task<IReadOnlyList<SyntaxNode>> GetInactiveScanScopesAsync(
+        ISymbol symbol,
+        CancellationToken cancellationToken)
+    {
+        var scopes = new List<SyntaxNode>();
+        var isLocal = symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol ||
+                      symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction };
+        if (isLocal)
+        {
+            foreach (var syntaxRef in symbol.DeclaringSyntaxReferences)
+            {
+                var node = await syntaxRef.GetSyntaxAsync(cancellationToken);
+                SyntaxNode? scope = node.FirstAncestorOrSelf<MethodDeclarationSyntax>();
+                scope ??= node.FirstAncestorOrSelf<AccessorDeclarationSyntax>();
+                scope ??= node.FirstAncestorOrSelf<BaseMethodDeclarationSyntax>();
+                scope ??= node.FirstAncestorOrSelf<BasePropertyDeclarationSyntax>();
+                scope ??= node.FirstAncestorOrSelf<TypeDeclarationSyntax>();
+                scope ??= node.SyntaxTree.GetRoot(cancellationToken);
+                scopes.Add(scope);
+            }
+
+            return scopes;
+        }
+
+        if (symbol.DeclaredAccessibility == Accessibility.Private && symbol.ContainingType != null)
+        {
+            foreach (var syntaxRef in symbol.ContainingType.DeclaringSyntaxReferences)
+                scopes.Add(await syntaxRef.GetSyntaxAsync(cancellationToken));
+
+            return scopes;
+        }
+
+        foreach (var document in AllFilesDocumentHelpers.EnumerateCsharpDocuments(Context.Solution))
+        {
+            var root = await document.GetSyntaxRootAsync(cancellationToken);
+            if (root != null)
+                scopes.Add(root);
+        }
+
+        return scopes;
+    }
+
     private static bool InactiveIdentifierUsesCompatible(
         SyntaxNode scope,
         string identifier,
-        INamedTypeSymbol baseType)
+        INamedTypeSymbol derived,
+        INamedTypeSymbol baseType,
+        bool isMethodReturn)
     {
         foreach (var trivia in scope.DescendantTrivia(descendIntoTrivia: true))
         {
             if (!trivia.IsKind(SyntaxKind.DisabledTextTrivia))
                 continue;
 
-            if (!InactiveTextCompatibleWithBase(trivia.ToFullString(), identifier, baseType))
+            if (!InactiveTextCompatibleWithBase(trivia.ToFullString(), identifier, derived, baseType, isMethodReturn))
                 return false;
         }
 
         return true;
     }
 
-    private static bool InactiveTextCompatibleWithBase(
+    /// <summary>
+    /// Lexes disabled text so comments and string literals are not treated as
+    /// code, then requires every use of <paramref name="identifier"/> to be a
+    /// member access the base can satisfy (<c>x.M</c> / <c>x?.M</c>, or
+    /// <c>Get().M</c> for a method-return candidate).
+    /// </summary>
+    internal static bool InactiveTextCompatibleWithBase(
         string text,
         string identifier,
-        INamedTypeSymbol baseType)
+        INamedTypeSymbol derived,
+        INamedTypeSymbol baseType,
+        bool isMethodReturn)
     {
-        var start = 0;
-        while (true)
+        var tokens = SyntaxFactory.ParseTokens(text)
+            .Where(token => !token.IsKind(SyntaxKind.EndOfFileToken))
+            .ToList();
+
+        for (var index = 0; index < tokens.Count; index++)
         {
-            var index = IndexOfWholeIdentifier(text, identifier, start);
-            if (index < 0)
-                return true;
+            var token = tokens[index];
+            if (!token.IsKind(SyntaxKind.IdentifierToken) || token.ValueText != identifier)
+                continue;
 
-            var i = index + identifier.Length;
-            while (i < text.Length && char.IsWhiteSpace(text[i]))
-                i++;
-
-            if (i < text.Length && text[i] == '?')
-                i++;
-
-            if (i < text.Length && text[i] == '.')
+            var i = index + 1;
+            if (isMethodReturn)
             {
-                i++;
-                while (i < text.Length && char.IsWhiteSpace(text[i]))
-                    i++;
+                i = SkipBalanced(tokens, i, SyntaxKind.LessThanToken, SyntaxKind.GreaterThanToken);
+                if (i >= tokens.Count || !tokens[i].IsKind(SyntaxKind.OpenParenToken))
+                    return false;
 
-                var memberStart = i;
-                if (i < text.Length && (char.IsLetter(text[i]) || text[i] == '_'))
-                {
-                    i++;
-                    while (i < text.Length && IsIdentifierPart(text[i]))
-                        i++;
-
-                    var memberName = text[memberStart..i];
-                    if (!IsMemberAvailableOnBase(memberName, baseType))
-                        return false;
-
-                    start = i;
-                    continue;
-                }
+                i = SkipBalanced(tokens, i, SyntaxKind.OpenParenToken, SyntaxKind.CloseParenToken);
             }
+
+            if (i < tokens.Count && tokens[i].IsKind(SyntaxKind.QuestionToken))
+                i++;
 
             // Some other use of the identifier (call argument, assignment, …)
             // cannot be proven safe without a bind.
-            return false;
+            if (i + 1 >= tokens.Count ||
+                !tokens[i].IsKind(SyntaxKind.DotToken) ||
+                !tokens[i + 1].IsKind(SyntaxKind.IdentifierToken))
+            {
+                return false;
+            }
+
+            if (!IsMemberAvailableOnBase(tokens[i + 1].ValueText, derived, baseType))
+                return false;
+
+            index = i + 1;
         }
+
+        return true;
     }
 
-    private static int IndexOfWholeIdentifier(string text, string identifier, int start)
+    private static int SkipBalanced(List<SyntaxToken> tokens, int i, SyntaxKind open, SyntaxKind close)
     {
-        while (true)
+        if (i >= tokens.Count || !tokens[i].IsKind(open))
+            return i;
+
+        var depth = 0;
+        for (; i < tokens.Count; i++)
         {
-            var index = text.IndexOf(identifier, start, StringComparison.Ordinal);
-            if (index < 0)
-                return -1;
-
-            var beforeOk = index == 0 || !IsIdentifierPart(text[index - 1]);
-            var after = index + identifier.Length;
-            var afterOk = after >= text.Length || !IsIdentifierPart(text[after]);
-            if (beforeOk && afterOk)
-                return index;
-
-            start = index + identifier.Length;
+            if (tokens[i].IsKind(open))
+                depth++;
+            else if (tokens[i].IsKind(close) && --depth == 0)
+                return i + 1;
         }
+
+        return i;
     }
 
-    private static bool IsIdentifierPart(char c) =>
-        char.IsLetterOrDigit(c) || c == '_';
-
-    private static bool IsMemberAvailableOnBase(string memberName, INamedTypeSymbol baseType)
+    /// <summary>
+    /// True only when looking up <paramref name="memberName"/> through the base
+    /// resolves the same member set as through the derived type: no derived
+    /// member of that name hides or overloads the base, and the base exposes an
+    /// accessible instance member of that name.
+    /// </summary>
+    private static bool IsMemberAvailableOnBase(string memberName, INamedTypeSymbol derived, INamedTypeSymbol baseType)
     {
+        for (var type = (INamedTypeSymbol?)derived; type != null; type = type.BaseType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, baseType.OriginalDefinition))
+                break;
+
+            foreach (var member in type.GetMembers(memberName))
+            {
+                if (member.IsImplicitlyDeclared)
+                    continue;
+
+                if (!IsAvailableOn(member, baseType))
+                    return false;
+            }
+        }
+
+        var baseSide = new List<INamedTypeSymbol>();
         for (var type = (INamedTypeSymbol?)baseType; type != null; type = type.BaseType)
+            baseSide.Add(type);
+        baseSide.AddRange(baseType.AllInterfaces);
+        if (baseType.TypeKind == TypeKind.Interface)
         {
-            if (type.GetMembers(memberName).Length > 0)
-                return true;
+            var root = derived;
+            while (root.BaseType != null)
+                root = root.BaseType;
+            if (root.SpecialType == SpecialType.System_Object)
+                baseSide.Add(root);
         }
 
-        foreach (var iface in baseType.AllInterfaces)
+        foreach (var type in baseSide)
         {
-            if (iface.GetMembers(memberName).Length > 0)
-                return true;
+            foreach (var member in type.GetMembers(memberName))
+            {
+                if (member.IsStatic || member is ITypeSymbol)
+                    continue;
+
+                if (member.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal or Accessibility.ProtectedOrInternal)
+                    return true;
+            }
         }
 
         return false;

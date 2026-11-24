@@ -2002,6 +2002,205 @@ public class UseBaseTypeOperationTests
         }
         """;
 
+    [SkippableTheory]
+    [InlineData(nameof(InactiveFieldBreedSource))]
+    [InlineData(nameof(InactivePublicPropertyBreedSource))]
+    [InlineData(nameof(InactiveMethodReturnBreedSource))]
+    [InlineData(nameof(InactiveHiddenOverloadSource))]
+    public async Task UseBaseType_InactiveDerivedOnlyUse_CodexFollowUps_Throws(string sourceName)
+    {
+        var source = sourceName switch
+        {
+            nameof(InactiveFieldBreedSource) => InactiveFieldBreedSource,
+            nameof(InactivePublicPropertyBreedSource) => InactivePublicPropertyBreedSource,
+            nameof(InactiveMethodReturnBreedSource) => InactiveMethodReturnBreedSource,
+            _ => InactiveHiddenOverloadSource
+        };
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                TargetBaseType = "Animal"
+            }));
+
+        Assert.Equal(ErrorCodes.BaseCannotSatisfyUsedMembers, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_InactiveCommentAndLiteralMentions_StillRewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InactiveCommentLiteralSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            TargetBaseType = "Animal"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Describe(Animal d)", updated);
+        Assert.DoesNotContain("Describe(Dog d)", updated);
+    }
+
+    private const string InactiveFieldBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+        class Program
+        {
+            private Dog _dog = new Dog("Rex", "lab");
+
+            void Show() => Console.WriteLine(_dog.Name);
+
+            void Other()
+            {
+        #if !DEBUG
+                Console.WriteLine(_dog.Breed);
+        #endif
+            }
+        }
+        """;
+
+    private const string InactivePublicPropertyBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+        class Holder
+        {
+            public Dog Pet { get; } = new Dog("Rex", "lab");
+        }
+
+        class Program
+        {
+            static void Show(Holder h)
+            {
+                Console.WriteLine(h.Pet.Name);
+        #if !DEBUG
+                Console.WriteLine(h.Pet.Breed);
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveMethodReturnBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+        class Program
+        {
+            static Dog Get() => new Dog("Rex", "lab");
+
+            static void Show()
+            {
+                Console.WriteLine(Get().Name);
+        #if !DEBUG
+                Console.WriteLine(Get().Breed);
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveHiddenOverloadSource = """
+        using System;
+
+        class Animal
+        {
+            public void M(int value) => Console.WriteLine(value);
+        }
+
+        class Dog : Animal
+        {
+            public void M(string value) => Console.WriteLine(value);
+        }
+
+        class Program
+        {
+            static void Describe(Dog d)
+            {
+                d.M(1);
+        #if !DEBUG
+                d.M("x");
+        #endif
+            }
+
+            static void Main()
+            {
+                Describe(new Dog());
+            }
+        }
+        """;
+
+    private const string InactiveCommentLiteralSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+        class Program
+        {
+            static void Describe(Dog d)
+            {
+                Console.WriteLine(d.Name);
+        #if !DEBUG
+                // d is unused here
+                Console.WriteLine("d");
+        #endif
+            }
+
+            static void Main()
+            {
+                Describe(new Dog("Rex", "lab"));
+            }
+        }
+        """;
+
     #endregion
 
     [SkippableFact]
