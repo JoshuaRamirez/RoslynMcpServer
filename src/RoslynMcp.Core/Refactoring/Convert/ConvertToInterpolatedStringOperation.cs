@@ -571,7 +571,8 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     /// <c>IFormattable.ToString(null, culture)</c>, which can silently
     /// change the printed value. Built-in special types are left as bare
     /// holes because those two paths match. Custom formattable types are
-    /// written as <c>{expr.ToString()}</c> (non-nullable value types) or
+    /// written as <c>{expr.ToString()}</c> (non-nullable value types;
+    /// <c>{((object)expr).ToString()}</c> when that call could mutate) or
     /// <c>{expr?.ToString()}</c> (anything that can be null, so a null
     /// operand still prints empty as concat does) so concat semantics are
     /// kept. Operand comments are carried onto the rewritten hole.
@@ -599,9 +600,17 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             return expression;
 
         var bare = expression.WithoutTrivia();
-        var receiver = NeedsMemberAccessParentheses(bare)
-            ? SyntaxFactory.ParenthesizedExpression(bare)
-            : bare;
+        // Concat calls ToString() on a boxed copy of a value-type operand,
+        // so a mutating override never changes the variable. Keep that by
+        // calling through `(object)` unless the call cannot mutate.
+        ExpressionSyntax receiver = type.IsValueType && !isNullableValueType && ToStringMayMutate(type)
+            ? SyntaxFactory.ParenthesizedExpression(
+                SyntaxFactory.CastExpression(
+                    SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.ObjectKeyword)),
+                    NeedsMemberAccessParentheses(bare) ? SyntaxFactory.ParenthesizedExpression(bare) : bare))
+            : NeedsMemberAccessParentheses(bare)
+                ? SyntaxFactory.ParenthesizedExpression(bare)
+                : bare;
 
         ExpressionSyntax call = type.IsValueType && !isNullableValueType
             ? SyntaxFactory.InvocationExpression(
@@ -616,6 +625,27 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
                         SyntaxFactory.IdentifierName("ToString"))));
 
         return call.WithTriviaFrom(expression);
+    }
+
+    /// <summary>
+    /// True when invoking parameterless <c>ToString()</c> directly on a
+    /// value-type variable could mutate it: the type is not an enum or
+    /// readonly struct and its user-declared override is not
+    /// <c>readonly</c>. Inherited <c>System.ValueType.ToString</c> never
+    /// mutates the receiver.
+    /// </summary>
+    private static bool ToStringMayMutate(ITypeSymbol type)
+    {
+        if (type.TypeKind == TypeKind.Enum || type.IsReadOnly)
+            return false;
+
+        if (type is ITypeParameterSymbol)
+            return true;
+
+        var toString = type.GetMembers("ToString")
+            .OfType<IMethodSymbol>()
+            .FirstOrDefault(method => method.Parameters.Length == 0 && !method.IsStatic);
+        return toString is { IsReadOnly: false };
     }
 
     private static bool RequiresExplicitToStringInConcatHole(ITypeSymbol type)

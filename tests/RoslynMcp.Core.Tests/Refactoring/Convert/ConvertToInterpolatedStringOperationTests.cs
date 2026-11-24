@@ -1269,8 +1269,92 @@ public class ConvertToInterpolatedStringOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("$\"x={w.ToString()}\"", updated, StringComparison.Ordinal);
+        Assert.Contains("$\"x={((object)w).ToString()}\"", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("$\"x={w}\"", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_Concat_MutatingFormattableStruct_CallsToStringOnBoxedCopy()
+    {
+        const string source = """
+            using System;
+
+            public struct Counter : IFormattable
+            {
+                public int Calls;
+
+                public override string ToString() => (++Calls).ToString();
+
+                public string ToString(string? format, IFormatProvider? provider) => "IFORMATTABLE";
+            }
+
+            public static class Program
+            {
+                public static string Render()
+                {
+                    var c = new Counter();
+                    var s = "x=" + c;
+                    return s + c.Calls;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "\"x=\" + c")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        // Concat boxes the operand, so the override's mutation never
+        // reaches `c`; calling through (object) keeps that.
+        Assert.Contains("$\"x={((object)c).ToString()}\"", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("{c.ToString()}", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableTheory]
+    [InlineData("public readonly struct Weird : IFormattable", "public override string ToString() => \"TOSTRING\";")]
+    [InlineData("public struct Weird : IFormattable", "public readonly override string ToString() => \"TOSTRING\";")]
+    public async Task Convert_Concat_ReadOnlyToStringStruct_CallsToStringDirectly(string declaration, string toString)
+    {
+        var source = $$"""
+            using System;
+
+            {{declaration}}
+            {
+                {{toString}}
+
+                public string ToString(string? format, IFormatProvider? provider) => "IFORMATTABLE";
+            }
+
+            public static class Program
+            {
+                public static string Render()
+                {
+                    var w = new Weird();
+                    return "x=" + w;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "\"x=\" + w")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("$\"x={w.ToString()}\"", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
 
@@ -1388,7 +1472,7 @@ public class ConvertToInterpolatedStringOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         // The comment is leading trivia of the operand and must survive
         // the ToString() rewrite.
-        Assert.Contains("/* explanation */ w.ToString()}", updated, StringComparison.Ordinal);
+        Assert.Contains("/* explanation */ ((object)w).ToString()}", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
 
@@ -1432,7 +1516,7 @@ public class ConvertToInterpolatedStringOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("$\"x={w.ToString()}\"", updated, StringComparison.Ordinal);
+        Assert.Contains("$\"x={((object)w).ToString()}\"", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
 
@@ -1575,7 +1659,7 @@ public class ConvertToInterpolatedStringOperationTests
 
         Assert.True(result.Success);
         Assert.True(result.Preview);
-        Assert.Contains("$\"x={w.ToString()}\"", result.PendingChanges![0].AfterSnippet, StringComparison.Ordinal);
+        Assert.Contains("$\"x={((object)w).ToString()}\"", result.PendingChanges![0].AfterSnippet, StringComparison.Ordinal);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -1612,7 +1696,7 @@ public class ConvertToInterpolatedStringOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("$\"x={w.ToString()}\"", updated, StringComparison.Ordinal);
+        Assert.Contains("$\"x={((object)w).ToString()}\"", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
 
