@@ -990,6 +990,74 @@ public class RenameNamespaceOperationTests
         Assert.Equal(beforeProgram, await File.ReadAllTextAsync(workspace.GetPath("Program.cs")));
     }
 
+    [SkippableFact]
+    public async Task RenameNamespace_InactiveStringCommentAndUnrelatedNamespace_Untouched()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", InactiveHelperSource),
+            ("Program.cs", InactiveNonReferenceProgram));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            NamespaceName = "OldNs",
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("NewNs.Helper.Tag()", program);
+        Assert.Contains("\"OldNs\"", program);
+        Assert.Contains("// OldNs stays in this comment", program);
+        Assert.Contains("namespace Other.OldNs", program);
+        Assert.DoesNotContain("OldNs.Helper", program);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_InactiveRelativeNestedReferences_Rewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", NestedHelperSource),
+            ("Program.cs", InactiveRelativeNestedProgram));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            NamespaceName = "A.B",
+            NewName = "A.C"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace A.C", await File.ReadAllTextAsync(workspace.GetPath("Helper.cs")));
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("using C;", program);
+        Assert.Contains("C.Helper.Tag()", program);
+        Assert.DoesNotContain("using B;", program);
+        Assert.DoesNotContain("B.Helper", program);
+    }
+
+    [Fact]
+    public void ReplaceNamespaceReferences_SkipsLiteralsCommentsAndSuffixMatches()
+    {
+        var text = "var s = \"OldNs\"; // OldNs\nOldNs.Helper.Tag(); X.OldNs.Y(); global::OldNs.Z();\n";
+
+        var rewritten = RenameNamespaceOperation.ReplaceNamespaceReferences(text, "OldNs", "NewNs", Array.Empty<string>());
+
+        Assert.Equal("var s = \"OldNs\"; // OldNs\nNewNs.Helper.Tag(); X.OldNs.Y(); global::NewNs.Z();\n", rewritten);
+    }
+
+    [Fact]
+    public void ReplaceNamespaceReferences_RelativeForms_OnlyInNamespaceContexts()
+    {
+        var text = "using B;\nvar x = B + 1;\nB.Helper.Tag();\nglobal::B.Other();\nA.B.Helper.Tag();\n";
+
+        var rewritten = RenameNamespaceOperation.ReplaceNamespaceReferences(text, "A.B", "A.C", new[] { "A" });
+
+        Assert.Equal("using C;\nvar x = B + 1;\nC.Helper.Tag();\nglobal::B.Other();\nA.C.Helper.Tag();\n", rewritten);
+    }
+
     private static int CountOccurrences(string text, string value)
     {
         var count = 0;
@@ -1064,6 +1132,63 @@ public class RenameNamespaceOperationTests
         #else
                 Console.WriteLine("release " + Helper.Tag());
         #endif
+            }
+        }
+        """;
+
+    private const string InactiveNonReferenceProgram = """
+        using System;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always");
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                // OldNs stays in this comment
+                Console.WriteLine("OldNs");
+                Console.WriteLine("release " + OldNs.Helper.Tag());
+        #endif
+            }
+        }
+
+        #if !DEBUG
+        namespace Other.OldNs
+        {
+            public class Unrelated { }
+        }
+        #endif
+        """;
+
+    private const string NestedHelperSource = """
+        namespace A.B
+        {
+            public class Helper
+            {
+                public static string Tag() => "helper";
+            }
+        }
+        """;
+
+    private const string InactiveRelativeNestedProgram = """
+        namespace A
+        {
+        #if !DEBUG
+            using B;
+        #endif
+
+            public static class Program
+            {
+                public static string Run()
+                {
+        #if DEBUG
+                    return "debug";
+        #else
+                    return B.Helper.Tag() + Helper.Tag();
+        #endif
+                }
             }
         }
         """;
