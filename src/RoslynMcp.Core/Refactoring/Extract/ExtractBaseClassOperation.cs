@@ -80,6 +80,9 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         if (string.IsNullOrWhiteSpace(@params.TypeName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "typeName is required.");
 
+        if (!IdentifierValidation.IsValidIdentifier(@params.TypeName!))
+            throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid type name: {@params.TypeName}");
+
         if (string.IsNullOrWhiteSpace(@params.BaseClassName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "baseClassName is required.");
 
