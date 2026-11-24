@@ -63,6 +63,9 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
         if (string.IsNullOrWhiteSpace(@params.VariableName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "variableName is required.");
 
+        if (!SyntaxIdentifierValidation.IsValidIdentifier(@params.VariableName))
+            throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid variable name: {@params.VariableName}");
+
         if (!@params.Line.HasValue)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "line is required.");
 
