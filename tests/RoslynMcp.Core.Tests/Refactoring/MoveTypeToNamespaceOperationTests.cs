@@ -1867,6 +1867,72 @@ public class MoveTypeToNamespaceOperationTests
         }
         """;
 
+    [SkippableTheory]
+    [InlineData("$\"release-only {Helper.Tag()}\"")]
+    [InlineData("$@\"release-only {Helper.Tag()}\"")]
+    [InlineData("@$\"release-only {Helper.Tag()}\"")]
+    [InlineData("$\"\"\"release-only {Helper.Tag()}\"\"\"")]
+    [InlineData("$$\"\"\"release-only {x} {{Helper.Tag()}}\"\"\"")]
+    [InlineData("$\"\"\"\n            release-only {Helper.Tag()}\n            \"\"\"")]
+    [InlineData("$\"outer {$\"inner {Helper.Tag()}\"}\"")]
+    [InlineData("$\"{1,Helper.Width:D}\"")]
+    public async Task MoveTypeToNamespace_InactiveUseInInterpolationHole_AddsUsing(string interpolated)
+    {
+        await using var workspace = await CreateInactiveReferenceWorkspace(
+            InactiveInterpolatedProgramTemplate.Replace("__EXPR__", interpolated, StringComparison.Ordinal));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("using NewNs;", program);
+    }
+
+    [SkippableTheory]
+    [InlineData("$\"Helper text only {x}\"")]
+    [InlineData("$\"{obj.Helper} {\"Helper\"}\"")]
+    public async Task MoveTypeToNamespace_InactiveInterpolationWithoutHoleUse_DoesNotAddUsing(string interpolated)
+    {
+        await using var workspace = await CreateInactiveReferenceWorkspace(
+            InactiveInterpolatedProgramTemplate.Replace("__EXPR__", interpolated, StringComparison.Ordinal));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            SymbolName = "Helper",
+            TargetNamespace = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesAdded);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.DoesNotContain("using NewNs;", program);
+    }
+
+    private const string InactiveInterpolatedProgramTemplate = """
+        using System;
+        using OldNs;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always " + Sibling.Tag());
+        #if !DEBUG
+                Console.WriteLine(__EXPR__);
+        #endif
+            }
+        }
+        """;
+
     private static Task<TempWorkspace> CreateInactiveReferenceWorkspace(string program, bool instanceHelper = false) =>
         TempWorkspace.CreateAsync(
             ("Helper.cs", instanceHelper ? InactiveHelperInstanceSource : InactiveHelperSource),

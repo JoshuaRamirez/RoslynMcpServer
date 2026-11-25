@@ -813,7 +813,50 @@ public sealed class MoveTypeToNamespaceOperation
                 return true;
             }
 
+            if (token.IsKind(SyntaxKind.InterpolatedStringToken) &&
+                InterpolationHolesContainIdentifier(token.Text, identifier))
+            {
+                return true;
+            }
+
             previous = token;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// <c>ParseTokens</c> lexes a whole interpolated string (<c>$"…"</c>,
+    /// <c>$@"…"</c>, <c>@$"…"</c>, raw <c>$"""…"""</c> / <c>$$"""…"""</c>) as
+    /// one token, so a use inside a hole was invisible to the scan (#2939).
+    /// Re-parses the token and scans each hole expression and alignment with
+    /// <see cref="ContainsIdentifierToken"/>, which recurses into nested
+    /// interpolated strings. A token that does not re-parse cleanly but whose
+    /// text mentions the identifier counts as a use (an extra using is
+    /// harmless; a missing one breaks the inactive build).
+    /// </summary>
+    private static bool InterpolationHolesContainIdentifier(string tokenText, string identifier)
+    {
+        if (tokenText.IndexOf(identifier, StringComparison.Ordinal) < 0)
+            return false;
+
+        if (SyntaxFactory.ParseExpression(tokenText) is not InterpolatedStringExpressionSyntax interpolated ||
+            interpolated.FullSpan.Length != tokenText.Length ||
+            interpolated.ContainsDiagnostics)
+        {
+            return true;
+        }
+
+        foreach (var hole in interpolated.Contents.OfType<InterpolationSyntax>())
+        {
+            if (ContainsIdentifierToken(hole.Expression.ToString(), identifier))
+                return true;
+
+            if (hole.AlignmentClause != null &&
+                ContainsIdentifierToken(hole.AlignmentClause.Value.ToString(), identifier))
+            {
+                return true;
+            }
         }
 
         return false;
