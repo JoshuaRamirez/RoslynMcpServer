@@ -6,10 +6,25 @@ on:
   pull_request:
     branches: [ master ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
 jobs:
   code-quality:
+    # Required status check "quality". Runs on Linux for speed; the same
+    # warnings-as-errors build runs on Windows in nightly.yml.
     name: quality
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
     - name: Checkout code
@@ -19,6 +34,13 @@ jobs:
       uses: actions/setup-dotnet@v5
       with:
         dotnet-version: '9.0.x'
+
+    - name: Restore NuGet cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+        restore-keys: nuget-${{ runner.os }}-
 
     - name: Restore dependencies
       run: dotnet restore RoslynMcp.sln
@@ -32,6 +54,7 @@ jobs:
   format-check:
     name: Format Check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
     - name: Checkout code
@@ -42,9 +65,15 @@ jobs:
       with:
         dotnet-version: '9.0.x'
 
+    - name: Restore NuGet cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+        restore-keys: nuget-${{ runner.os }}-
+
     - name: Restore dependencies
       run: dotnet restore RoslynMcp.sln
 
     - name: Check code formatting
-      run: dotnet format RoslynMcp.sln --verify-no-changes --verbosity diagnostic
-
+      run: dotnet format RoslynMcp.sln --no-restore --verify-no-changes --verbosity diagnostic
