@@ -202,6 +202,53 @@ public class InlineVariableOperationTests
         Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("123x")]
+    [InlineData("class")]
+    [InlineData("has space")]
+    public void Validate_InvalidVariableName_ThrowsInvalidSymbolName(string variableName)
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpInlineVariableInvalid.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                InlineVariableOperation.Validate(new InlineVariableParams
+                {
+                    SourceFile = path,
+                    VariableName = variableName
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+            Assert.Contains(variableName, ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData("total")]
+    [InlineData("@class")]
+    public void Validate_ValidVariableName_DoesNotThrow(string variableName)
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpInlineVariableValid.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            InlineVariableOperation.Validate(new InlineVariableParams
+            {
+                SourceFile = path,
+                VariableName = variableName
+            });
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
     public void BuildAllFilesDescription_SingularAndPlural()
     {
