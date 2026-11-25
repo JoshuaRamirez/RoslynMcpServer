@@ -1272,6 +1272,12 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 return true;
         }
 
+        foreach (var eventSymbol in typeSymbol.GetMembers().OfType<IEventSymbol>())
+        {
+            if (!eventSymbol.IsStatic && HasDeclarationInitializer(eventSymbol))
+                return true;
+        }
+
         return false;
     }
 
@@ -1325,7 +1331,46 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 leftovers.Add(field);
         }
 
+        // A field-like event (`public event Action E;`) has a compiler-generated
+        // backing field that must also be definitely assigned (CS0171). Its
+        // backing field is not surfaced as an ordinary field above, so look at
+        // the events themselves; `this.E = default;` assigns that field.
+        foreach (var eventSymbol in typeSymbol.GetMembers().OfType<IEventSymbol>())
+        {
+            if (eventSymbol.IsStatic
+                || !IsFieldLikeEvent(eventSymbol)
+                || assigned.Contains(eventSymbol)
+                || HasDeclarationInitializer(eventSymbol))
+            {
+                continue;
+            }
+
+            leftovers.Add(eventSymbol);
+        }
+
         return leftovers;
+    }
+
+    /// <summary>
+    /// True for a field-like event (<c>event Action E;</c>), which owns an
+    /// implicit backing field; false for events with explicit
+    /// <c>add</c>/<c>remove</c> accessors, which store nothing in the struct.
+    /// </summary>
+    private static bool IsFieldLikeEvent(IEventSymbol eventSymbol)
+    {
+        if (eventSymbol.IsAbstract || eventSymbol.IsExtern)
+            return false;
+
+        foreach (var reference in eventSymbol.DeclaringSyntaxReferences)
+        {
+            if (reference.GetSyntax() is VariableDeclaratorSyntax
+                { Parent: VariableDeclarationSyntax { Parent: EventFieldDeclarationSyntax } })
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

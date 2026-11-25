@@ -6461,6 +6461,157 @@ public class GenerateConstructorOperationTests
         AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
     }
 
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_UserParameterlessCtor_AssignsFieldLikeEventToDefault()
+    {
+        const string source = """
+            public struct Box
+            {
+                public Box() { _b = 0; E = null; }
+                private int _b;
+                public event System.Action E;
+                public void Raise() => E?.Invoke();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["_b"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Box(int b)", updated, StringComparison.Ordinal);
+        Assert.Contains("_b = b", updated, StringComparison.Ordinal);
+        Assert.Contains("this.E = default", updated, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_InitializedFieldLikeEvent_UsesDefaultsNotThisChain()
+    {
+        const string source = """
+            public struct Box
+            {
+                public Box(string s) { _a = 0; _b = 0; }
+                private int _a;
+                private int _b;
+                public event System.Action E = () => { };
+                public void Raise() => E?.Invoke();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["_a"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Box(int a)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public Box(int a) : this()", updated, StringComparison.Ordinal);
+        Assert.Contains("this._b = default", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("E = default", updated, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_UserParameterlessCtor_LeavesInitializedFieldLikeEventAlone()
+    {
+        const string source = """
+            public struct Box
+            {
+                public Box() { _b = 0; }
+                private int _b;
+                public event System.Action E = null;
+                public void Raise() => E?.Invoke();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["_b"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Box(int b)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("E = default", updated, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_UserParameterlessCtor_IgnoresAccessorEvent()
+    {
+        const string source = """
+            public struct Box
+            {
+                public Box() { _b = 0; }
+                private int _b;
+                public event System.Action E { add { } remove { } }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["_b"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Box(int b)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("E = default", updated, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_FieldLikeEventOnly_ChainsThis()
+    {
+        const string source = """
+            public struct Box
+            {
+                private int _b;
+                public event System.Action E;
+                public void Raise() => E?.Invoke();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["_b"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Box(int b) : this()", updated, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
 
     #endregion
 
