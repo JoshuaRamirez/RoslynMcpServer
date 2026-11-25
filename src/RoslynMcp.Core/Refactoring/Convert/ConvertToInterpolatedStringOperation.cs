@@ -61,7 +61,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
         if (target is BinaryExpressionSyntax concat)
         {
-            return await ConvertConcatenation(operationId, document, root, concat, @params, cancellationToken);
+            return await ConvertConcatenation(operationId, document, root, concat, semanticModel, @params, cancellationToken);
         }
 
         var location = @params.Column.HasValue
@@ -126,7 +126,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
                 var passReplacements = new Dictionary<SyntaxNode, SyntaxNode>();
                 foreach (var expression in CollectConvertibleExpressions(root, semanticModel))
                 {
-                    if (TryConvert(expression, out var converted))
+                    if (TryConvert(expression, semanticModel, out var converted))
                         passReplacements[expression] = converted;
                 }
 
@@ -215,7 +215,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         SemanticModel semanticModel)
     {
         var convertibleFormats = EnumerateFormatInvocations(root, semanticModel)
-            .Where(invocation => TryConvert(invocation, out _))
+            .Where(invocation => TryConvert(invocation, semanticModel, out _))
             .ToList();
 
         // Innermost convertible Format wins so a nested literal Format is not
@@ -228,7 +228,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         var concats = EnumerateConcatenations(root, semanticModel)
             .Select(OuterConcatenation)
             .Distinct()
-            .Where(concat => TryConvert(concat, out _))
+            .Where(concat => TryConvert(concat, semanticModel, out _))
             .Where(concat => !convertibleFormats.Any(format => concat.Contains(format)));
 
         return formats.Concat(concats).ToList();
@@ -301,7 +301,10 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     /// Attempts a conversion without throwing. Used by allFiles so expressions
     /// that cannot convert stay no-ops.
     /// </summary>
-    internal static bool TryConvert(ExpressionSyntax expression, out ExpressionSyntax converted)
+    internal static bool TryConvert(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        out ExpressionSyntax converted)
     {
         try
         {
@@ -313,7 +316,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
             if (expression is BinaryExpressionSyntax concat)
             {
-                converted = ConvertConcatenationExpression(concat);
+                converted = ConvertConcatenationExpression(concat, semanticModel);
                 return true;
             }
 
@@ -402,10 +405,11 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
     private async Task<RefactoringResult> ConvertConcatenation(
         Guid operationId, Document document, SyntaxNode root,
-        BinaryExpressionSyntax concat, ConvertToInterpolatedStringParams @params,
+        BinaryExpressionSyntax concat, SemanticModel semanticModel,
+        ConvertToInterpolatedStringParams @params,
         CancellationToken cancellationToken)
     {
-        var interpolatedString = ConvertConcatenationExpression(concat);
+        var interpolatedString = ConvertConcatenationExpression(concat, semanticModel);
         var outerConcat = OuterConcatenation(concat);
 
         var before = outerConcat.NormalizeWhitespace().ToFullString();
@@ -525,7 +529,9 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             SyntaxFactory.List(contents));
     }
 
-    private static InterpolatedStringExpressionSyntax ConvertConcatenationExpression(BinaryExpressionSyntax concat)
+    private static InterpolatedStringExpressionSyntax ConvertConcatenationExpression(
+        BinaryExpressionSyntax concat,
+        SemanticModel semanticModel)
     {
         // Flatten the outermost concatenation so a column (or omitted first
         // match) on an inner operand of a 3+ chain still keeps later parts.
@@ -547,7 +553,10 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             }
             else
             {
-                contents.Add(SyntaxFactory.Interpolation(part));
+                // Concat uses object.ToString(); an interpolated hole uses
+                // ISpanFormattable / IFormattable and can change output (#2954).
+                contents.Add(SyntaxFactory.Interpolation(
+                    WrapFormattableConcatOperand(part, semanticModel)));
             }
         }
 
@@ -555,6 +564,160 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             SyntaxFactory.Token(SyntaxKind.InterpolatedStringStartToken),
             SyntaxFactory.List(contents));
     }
+
+    /// <summary>
+    /// Concatenation formats an operand with parameterless <c>ToString()</c>.
+    /// An interpolated hole uses <c>ISpanFormattable.TryFormat</c> or
+    /// <c>IFormattable.ToString(null, culture)</c>, which can silently
+    /// change the printed value. Built-in special types are left as bare
+    /// holes because those two paths match. Custom formattable types are
+    /// written as <c>{expr.ToString()}</c> (non-nullable value types;
+    /// <c>{((object)expr).ToString()}</c> when that call could mutate) or
+    /// <c>{expr?.ToString()}</c> (anything that can be null, so a null
+    /// operand still prints empty as concat does) so concat semantics are
+    /// kept. Operand comments are carried onto the rewritten hole.
+    /// </summary>
+    private static ExpressionSyntax WrapFormattableConcatOperand(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel)
+    {
+        var type = semanticModel.GetTypeInfo(expression).Type
+            ?? semanticModel.GetTypeInfo(expression).ConvertedType;
+        if (type == null)
+            return expression;
+
+        var isNullableValueType = type is INamedTypeSymbol
+        {
+            OriginalDefinition.SpecialType: SpecialType.System_Nullable_T
+        };
+        var formattedType = isNullableValueType
+            ? ((INamedTypeSymbol)type).TypeArguments[0]
+            : type;
+        if (!RequiresExplicitToStringInConcatHole(formattedType))
+            return expression;
+
+        if (IsParameterlessToStringCall(expression))
+            return expression;
+
+        var bare = expression.WithoutTrivia();
+        // Concat calls ToString() on a boxed copy of a value-type operand,
+        // so a mutating override never changes the variable. Keep that by
+        // calling through `(object)` unless the call cannot mutate.
+        ExpressionSyntax receiver = type.IsValueType && !isNullableValueType && ToStringMayMutate(type)
+            ? SyntaxFactory.ParenthesizedExpression(
+                SyntaxFactory.CastExpression(
+                    SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.ObjectKeyword)),
+                    NeedsMemberAccessParentheses(bare) ? SyntaxFactory.ParenthesizedExpression(bare) : bare))
+            : NeedsMemberAccessParentheses(bare)
+                ? SyntaxFactory.ParenthesizedExpression(bare)
+                : bare;
+
+        ExpressionSyntax call = type.IsValueType && !isNullableValueType
+            ? SyntaxFactory.InvocationExpression(
+                SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    receiver,
+                    SyntaxFactory.IdentifierName("ToString")))
+            : SyntaxFactory.ConditionalAccessExpression(
+                receiver,
+                SyntaxFactory.InvocationExpression(
+                    SyntaxFactory.MemberBindingExpression(
+                        SyntaxFactory.IdentifierName("ToString"))));
+
+        return call.WithTriviaFrom(expression);
+    }
+
+    /// <summary>
+    /// True when invoking parameterless <c>ToString()</c> directly on a
+    /// value-type variable could mutate it: the type is not an enum or
+    /// readonly struct and its user-declared override is not
+    /// <c>readonly</c>. Inherited <c>System.ValueType.ToString</c> never
+    /// mutates the receiver.
+    /// </summary>
+    private static bool ToStringMayMutate(ITypeSymbol type)
+    {
+        if (type.TypeKind == TypeKind.Enum || type.IsReadOnly)
+            return false;
+
+        if (type is ITypeParameterSymbol)
+            return true;
+
+        var toString = type.GetMembers("ToString")
+            .OfType<IMethodSymbol>()
+            .FirstOrDefault(method => method.Parameters.Length == 0 && !method.IsStatic);
+        return toString is { IsReadOnly: false };
+    }
+
+    private static bool RequiresExplicitToStringInConcatHole(ITypeSymbol type) =>
+        RequiresExplicitToStringInConcatHole(type, new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default));
+
+    private static bool RequiresExplicitToStringInConcatHole(
+        ITypeSymbol type,
+        HashSet<ITypeParameterSymbol> visitedTypeParameters)
+    {
+        // A type parameter's AllInterfaces does not include its constraint
+        // types, so `T : IFormattable`, `T : struct, IFormattable`,
+        // `T : U` where `U : IFormattable`, and `T : SomeFormattableClass`
+        // are found by walking ConstraintTypes (interfaces, the effective
+        // base class, and other type parameters) recursively.
+        if (type is ITypeParameterSymbol typeParameter)
+        {
+            if (!visitedTypeParameters.Add(typeParameter))
+                return false;
+
+            foreach (var constraint in typeParameter.ConstraintTypes)
+            {
+                if (RequiresExplicitToStringInConcatHole(constraint, visitedTypeParameters))
+                    return true;
+            }
+
+            return false;
+        }
+
+        if (type.SpecialType != SpecialType.None)
+            return false;
+
+        // AllInterfaces does not include the type itself, so an operand
+        // statically typed as IFormattable / ISpanFormattable is checked
+        // directly.
+        if (IsSystemFormattableInterface(type))
+            return true;
+
+        foreach (var iface in type.AllInterfaces)
+        {
+            if (IsSystemFormattableInterface(iface))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsSystemFormattableInterface(ITypeSymbol type) =>
+        type.TypeKind == TypeKind.Interface
+        && type.ContainingNamespace?.ToDisplayString() == "System"
+        && type.Name is "IFormattable" or "ISpanFormattable";
+
+    private static bool IsParameterlessToStringCall(ExpressionSyntax expression) =>
+        expression is InvocationExpressionSyntax { ArgumentList.Arguments.Count: 0 } invocation
+        && invocation.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "ToString" };
+
+    private static bool NeedsMemberAccessParentheses(ExpressionSyntax expression) =>
+        expression is not (
+            IdentifierNameSyntax or
+            MemberAccessExpressionSyntax or
+            InvocationExpressionSyntax or
+            ElementAccessExpressionSyntax or
+            ConditionalAccessExpressionSyntax or
+            ThisExpressionSyntax or
+            BaseExpressionSyntax or
+            LiteralExpressionSyntax or
+            ParenthesizedExpressionSyntax or
+            ObjectCreationExpressionSyntax or
+            ImplicitObjectCreationExpressionSyntax or
+            PostfixUnaryExpressionSyntax or
+            DefaultExpressionSyntax or
+            TypeOfExpressionSyntax or
+            InterpolatedStringExpressionSyntax);
 
     private static List<ExpressionSyntax> FlattenConcatenation(ExpressionSyntax expr)
     {
