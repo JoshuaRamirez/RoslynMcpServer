@@ -336,8 +336,9 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     /// every iteration and is fine; a local declared in a <c>for</c>
     /// initializer is created once and still counts as outside. A field,
     /// parameter, captured outer local or member-access accumulator is
-    /// declared outside every such loop. Returns false for foreach that do
-    /// not match a convertible pattern.
+    /// declared outside every such loop. A parenthesized receiver is
+    /// unwrapped first. Returns false for foreach that do not match a
+    /// convertible pattern.
     /// </summary>
     internal static bool AccumulatorDeclaredOutsideEnclosingLoop(ForEachStatementSyntax foreachStmt)
     {
@@ -369,6 +370,11 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
 
         if (enclosingLoopBodies.Count == 0)
             return false;
+
+        // TryMatchAdd accepts any receiver, so a parenthesized local such as
+        // (all).Add(x) must resolve to the same declaration as all.Add(x).
+        while (accumulator is ParenthesizedExpressionSyntax parenthesized)
+            accumulator = parenthesized.Expression;
 
         SyntaxNode? declaration = null;
         if (accumulator is IdentifierNameSyntax identifier && EnclosingBody(foreachStmt) is { } body &&
