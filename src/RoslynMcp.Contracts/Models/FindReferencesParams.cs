@@ -139,8 +139,10 @@ public sealed class FindReferencesParams
     /// enclosing each usage, not the target symbol; lambdas / anonymous methods and local functions are looked
     /// through to the member declaring them) — has that shared kind classification are returned via
     /// <c>SymbolKindMapper.Map</c>: methods, constructors, operators, and property/event accessors are
-    /// <c>Method</c>; a field initializer is <c>Field</c> (<c>Constant</c> for a const); a property declaration
-    /// site (definition) is <c>Property</c>. Definition locations (when <see cref="IncludeDeclaration"/> is on)
+    /// <c>Method</c>; a field initializer is <c>Field</c> (<c>Constant</c> for a const); an auto-property
+    /// initializer (including <c>init</c>) is <c>Property</c>, not the synthesized backing field; a
+    /// field-like event initializer is <c>Event</c>; a property declaration site (definition) is
+    /// <c>Property</c>. Definition locations (when <see cref="IncludeDeclaration"/> is on)
     /// are judged by the declared symbol itself, or for a local / parameter / local function by the member
     /// declaring it. Namespace-level sites never match a named kind filter; top-level statements, enclosed by the
     /// synthesized <c>&lt;Main&gt;$</c> entry point, are namespace-level sites and never match any kind, including
@@ -176,8 +178,9 @@ public sealed class FindReferencesParams
     /// (static or not, including a non-static local function in a static method) and lambdas (including
     /// <c>static</c> lambdas) are judged on the member declaring them; a finalizer is instance; an
     /// indexer is instance (C# has no static indexers); a site in a custom event accessor follows the
-    /// event's staticness; an auto-property initializer is judged on the compiler backing field
-    /// <c>&lt;P&gt;k__BackingField</c>, which shares the property's staticness; a <c>const</c>
+    /// event's staticness; an auto-property initializer is judged on the property, not its
+    /// synthesized backing field (staticness is unchanged); a field-like event initializer is
+    /// judged on the event; a <c>const</c>
     /// initializer that references another <c>const</c> is static; members of a nested type are judged
     /// on their own staticness, not the containing type's; a site inside a delegate's synthesized
     /// members is judged on the delegate type (never static); top-level statements, including top-level
@@ -188,7 +191,8 @@ public sealed class FindReferencesParams
     /// as static (<c>&lt;Main&gt;$</c> is kept by <c>true</c>) while <c>find_references</c> never
     /// matches them; <c>find_callers</c> judges a local function as its own calling symbol while
     /// <c>find_references</c> judges it on the declaring member; both judge an auto-property
-    /// initializer on the backing field <c>&lt;P&gt;k__BackingField</c>; signature, attribute,
+    /// initializer on the property, not its synthesized backing field, and a field-like event
+    /// initializer on the event; signature, attribute,
     /// <c>cref</c>, constraint, and base-list sites have no <c>find_callers</c> counterpart (they are
     /// not calls). <c>get_diagnostics</c> also looks local functions and lambdas through to the
     /// declaring member and never matches top-level statements, but judges a declaration-attached site
