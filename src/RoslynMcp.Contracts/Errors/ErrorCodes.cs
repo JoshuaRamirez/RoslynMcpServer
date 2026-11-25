@@ -307,6 +307,9 @@ public static class ErrorCodes
     /// <summary>No call sites found for the method.</summary>
     public const string NoCallSitesFound = "3097";
 
+    /// <summary>Method body contains preprocessor directives that cannot be safely inlined.</summary>
+    public const string CannotInlineDirectives = "3098";
+
     /// <summary>Field is not a const or compile-time constant (inline spec 3055 NOT_A_CONSTANT).</summary>
     public const string NotAConstant = "3055";
 
