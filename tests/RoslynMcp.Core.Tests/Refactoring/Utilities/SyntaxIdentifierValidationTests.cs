@@ -42,6 +42,14 @@ public class SyntaxIdentifierValidationTests
     }
 
     [Theory]
+    [InlineData("@@Foo")]
+    [InlineData("@@class")]
+    public void IsValidIdentifier_False_ForDoubleVerbatimPrefix(string name)
+    {
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier(name));
+    }
+
+    [Theory]
     [InlineData("@class", "class")]
     [InlineData("@namespace", "namespace")]
     [InlineData("MaxRetries", "MaxRetries")]

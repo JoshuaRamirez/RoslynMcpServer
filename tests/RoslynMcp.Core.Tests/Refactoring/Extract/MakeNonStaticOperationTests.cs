@@ -82,6 +82,39 @@ public class MakeNonStaticOperationTests
     }
 
     [Fact]
+    public void Validate_SameLineEqualColumns_ThrowsInvalidSelectionRange()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MakeNonStaticOperation.Validate(new MakeNonStaticParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                StartLine = 1,
+                StartColumn = 5,
+                EndLine = 1,
+                EndColumn = 5
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetSelectionSpan_SameLineEqualColumns_ThrowsInvalidSelectionRange()
+    {
+        var text = SourceText.From("class C { public static void M() { } }");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MakeNonStaticOperation.GetSelectionSpan(text, new MakeNonStaticParams
+            {
+                StartLine = 1,
+                StartColumn = 5,
+                EndLine = 1,
+                EndColumn = 5
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+    }
+
+    [Fact]
     public void Validate_MissingFile_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
