@@ -30,7 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
-- CI: pull-request Build and Test runs the real build and tests on `ubuntu-latest` only. The `build (windows-latest)` and `build (macos-latest)` cells still report (they are required status checks on `master`) but skip the build and run on Ubuntu so they do not wait for those runners. Push to `master` and `develop` still runs the full Windows, Linux, and macOS matrix. Each of those pushes uses its own concurrency group (keyed by `run_id`) so a burst of merges does not cancel pending Windows or macOS builds for earlier commits. Superseded pull-request runs are cancelled automatically.
+- CI: pull-request and push Build and Test now runs on Linux only and finishes in roughly 10 minutes instead of 35–55. `RoslynMcp.Core.Tests` is split across 6 parallel shards (whole test classes, with the largest class split by method; the last shard runs everything not assigned elsewhere, so no test is dropped), Server and CLI tests run in their own job, NuGet packages are cached, and each job restores and builds once. The required checks `build (windows-latest)`, `build (ubuntu-latest)`, and `build (macos-latest)` still report; `build (ubuntu-latest)` passes only when every Linux test job passed, and the Windows and macOS checks are quick stubs. The `quality` check now runs on Linux. Superseded pull-request runs are cancelled, and each master/develop push keeps its own concurrency group.
+- CI: new `Nightly Full Matrix` workflow (`.github/workflows/nightly.yml`) runs the full build and every test on Windows, Linux, and macOS plus the Windows warnings-as-errors build at 09:00 UTC (2:00 AM MST), skipping nights when master has not changed; it can also be run by hand. A failed nightly opens or updates one issue labelled `ci-nightly`, and the next green nightly closes it.
 
 ## [0.16.0] - 2026-11-02
 

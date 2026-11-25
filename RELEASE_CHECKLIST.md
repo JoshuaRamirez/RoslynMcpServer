@@ -49,8 +49,8 @@ This document tracks the completion status of all tasks required for public GitH
 ## ✅ Phase 3: CI/CD Pipeline (COMPLETE)
 
 - [x] **`.github/workflows/build.yml` created**:
-  - Pull-request CI builds and tests Linux only
-  - Push to `master`/`develop` runs the full 3-OS matrix (Windows, Linux, macOS)
+  - Pull-request and push CI builds and tests on Linux only, with Core tests in 6 parallel shards
+  - Windows and macOS required checks are quick stubs; the full matrix runs nightly
   - Test result artifact uploads
   - Build summary job
   
@@ -59,6 +59,11 @@ This document tracks the completion status of all tasks required for public GitH
   - Code analysis enabled
   - Format checking with `dotnet format`
   
+- [x] **`.github/workflows/nightly.yml` created**:
+  - Full Windows, Linux, and macOS build and tests at 09:00 UTC (2:00 AM MST) and on manual dispatch
+  - Windows warnings-as-errors build
+  - Failed nightly opens or updates a `ci-nightly` issue
+
 - [x] **`.github/workflows/publish.yml` created**:
   - Triggered on GitHub releases
   - Manual workflow dispatch option

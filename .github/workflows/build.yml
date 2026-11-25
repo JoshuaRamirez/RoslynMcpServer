@@ -1,5 +1,9 @@
 name: Build and Test
 
+# Fast CI for pull requests and pushes to master/develop: build and test on
+# Linux only, with the Core test suite split across parallel shards. The full
+# Windows/Linux/macOS matrix runs every night in nightly.yml.
+
 on:
   push:
     branches: [ master, develop ]
@@ -7,83 +11,166 @@ on:
     branches: [ master ]
 
 # Cancel superseded pull-request runs. Each master/develop push gets its own
-# group (keyed by run_id) so a burst of merges does not cancel pending
-# Windows/macOS builds for earlier commits. cancel-in-progress is true only
-# for pull_request; it is never set for push.
+# group (keyed by run_id) so a burst of merges never cancels an earlier
+# commit's run. cancel-in-progress is true only for pull_request.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # Must match the length of the test-core shard list below.
+  CORE_TEST_SHARDS: 6
+
 jobs:
-  build:
+  test-core:
+    # RoslynMcp.Core.Tests holds almost all of the test time (about 35 minutes
+    # in one job), so it is split into shards that run in parallel.
+    name: test core (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
-      matrix:
-        # Keep all three OS values on every event so the required status checks
-        # "build (windows-latest)", "build (ubuntu-latest)", and
-        # "build (macos-latest)" still report on pull requests. Master branch
-        # protection requires those names; dropping the cells would block merges.
-        os: [windows-latest, ubuntu-latest, macos-latest]
       fail-fast: false
-    # On pull requests only Ubuntu runs the real build. The Windows and macOS
-    # cells still use the required check names, but they run on ubuntu-latest
-    # and skip the build so they do not wait for those runners. Push to
-    # master/develop (and any future non-PR trigger) keeps the full matrix.
-    runs-on: ${{ github.event_name == 'pull_request' && matrix.os != 'ubuntu-latest' && 'ubuntu-latest' || matrix.os }}
-    env:
-      # True on pull-request Windows/macOS cells, which run as Ubuntu stubs.
-      SKIP_NON_LINUX: ${{ github.event_name == 'pull_request' && matrix.os != 'ubuntu-latest' }}
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
 
     steps:
-    - name: Skip non-Linux builds on pull requests
-      if: env.SKIP_NON_LINUX == 'true'
-      run: |
-        echo "Skipping the ${{ matrix.os }} build on pull requests."
-        echo "The full Windows, Linux, and macOS matrix still runs on push to master."
-        echo "This job reports the required status check 'build (${{ matrix.os }})'."
-
     - name: Checkout code
-      if: env.SKIP_NON_LINUX != 'true'
       uses: actions/checkout@v6
 
     - name: Setup .NET
-      if: env.SKIP_NON_LINUX != 'true'
       uses: actions/setup-dotnet@v5
       with:
         dotnet-version: '9.0.x'
 
-    - name: Display .NET version
-      if: env.SKIP_NON_LINUX != 'true'
-      run: dotnet --version
+    - name: Restore NuGet cache
+      # Read-only here; test-server-cli restores the whole solution and saves the cache.
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+        restore-keys: nuget-${{ runner.os }}-
 
-    - name: Restore dependencies
-      if: env.SKIP_NON_LINUX != 'true'
+    - name: Restore
+      run: dotnet restore tests/RoslynMcp.Core.Tests/RoslynMcp.Core.Tests.csproj
+
+    - name: Build
+      run: dotnet build tests/RoslynMcp.Core.Tests/RoslynMcp.Core.Tests.csproj -c Release --no-restore
+
+    - name: Pick this shard's tests
+      run: |
+        dotnet test tests/RoslynMcp.Core.Tests/RoslynMcp.Core.Tests.csproj -c Release --no-build --list-tests > "$RUNNER_TEMP/core-tests.txt"
+        python3 .github/scripts/plan_test_shards.py "$RUNNER_TEMP/core-tests.txt" "${{ matrix.shard }}" "$CORE_TEST_SHARDS" > "$RUNNER_TEMP/core-filter.txt"
+
+    - name: Run tests
+      run: |
+        dotnet test tests/RoslynMcp.Core.Tests/RoslynMcp.Core.Tests.csproj -c Release --no-build \
+          --filter "$(cat "$RUNNER_TEMP/core-filter.txt")" \
+          --logger "trx;LogFileName=test-results.trx" --logger "console;verbosity=minimal"
+
+    - name: Upload test results
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: test-results-core-${{ matrix.shard }}
+        path: '**/test-results.trx'
+
+  test-server-cli:
+    # Builds the whole solution (so every project must compile) and runs the
+    # Server and CLI tests, which take well under a minute.
+    name: test server + cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Cache NuGet packages
+      uses: actions/cache@v6
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+        restore-keys: nuget-${{ runner.os }}-
+
+    - name: Restore
       run: dotnet restore RoslynMcp.sln
 
     - name: Build solution
-      if: env.SKIP_NON_LINUX != 'true'
       run: dotnet build RoslynMcp.sln -c Release --no-restore
 
-    - name: Run tests
-      if: env.SKIP_NON_LINUX != 'true'
-      run: dotnet test RoslynMcp.sln -c Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx"
+    - name: Run Server tests
+      run: dotnet test tests/RoslynMcp.Server.Tests/RoslynMcp.Server.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test-results.trx" --logger "console;verbosity=minimal"
+
+    - name: Run CLI tests
+      if: ${{ !cancelled() }}
+      run: dotnet test tests/RoslynMcp.Cli.Tests/RoslynMcp.Cli.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test-results.trx" --logger "console;verbosity=minimal"
 
     - name: Upload test results
-      if: always() && env.SKIP_NON_LINUX != 'true'
+      if: ${{ !cancelled() }}
       uses: actions/upload-artifact@v7
       with:
-        name: test-results-${{ matrix.os }}
+        name: test-results-server-cli
         path: '**/test-results.trx'
+
+  build:
+    # Master branch protection requires the checks "build (windows-latest)",
+    # "build (ubuntu-latest)", and "build (macos-latest)", so these three names
+    # must keep reporting. "build (ubuntu-latest)" passes only if every Linux
+    # test job above passed. The Windows and macOS cells are quick stubs on
+    # Ubuntu; those platforms are built and tested in full by nightly.yml.
+    name: build (${{ matrix.os }})
+    needs: [test-core, test-server-cli]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+    - name: Check Linux build and tests
+      if: matrix.os == 'ubuntu-latest'
+      env:
+        CORE_RESULT: ${{ needs.test-core.result }}
+        SERVER_CLI_RESULT: ${{ needs.test-server-cli.result }}
+      run: |
+        echo "test core shards: $CORE_RESULT"
+        echo "test server + cli: $SERVER_CLI_RESULT"
+        if [ "$CORE_RESULT" != "success" ] || [ "$SERVER_CLI_RESULT" != "success" ]; then
+          echo "::error::Linux build or tests failed"
+          exit 1
+        fi
+
+    - name: Windows/macOS run nightly
+      if: matrix.os != 'ubuntu-latest'
+      run: |
+        echo "The ${{ matrix.os }} build and tests run in the nightly full-matrix workflow (nightly.yml)."
+        echo "This job reports the required status check 'build (${{ matrix.os }})'."
 
   build-summary:
     name: Build Summary
     needs: build
     runs-on: ubuntu-latest
-    if: always()
+    if: ${{ !cancelled() }}
 
     steps:
     - name: Check build status
+      env:
+        BUILD_RESULT: ${{ needs.build.result }}
       run: |
-        if [ "${{ needs.build.result }}" == "success" ]; then
+        if [ "$BUILD_RESULT" == "success" ]; then
           echo "✅ All builds passed successfully!"
         else
           echo "❌ Some builds failed"

@@ -1,0 +1,169 @@
+name: Nightly Full Matrix
+
+# The "long version" of CI: full build and every test on Windows, Linux, and
+# macOS, plus the warnings-as-errors build on Windows. Pull requests and pushes
+# run the fast Linux-only workflow in build.yml.
+#
+# Schedule: 09:00 UTC = 2:00 AM MST (Arizona, no daylight saving).
+# A scheduled run is skipped when master has not changed since the last
+# successful nightly. Run it by hand from the Actions tab (workflow_dispatch)
+# at any time; a manual run always builds.
+#
+# When a nightly run on master fails, one open issue labelled "ci-nightly" is
+# created or updated. The next green nightly comments on it and closes it.
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  changes:
+    name: check for new commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+    - name: Compare with last successful nightly
+      id: check
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        if [ "${{ github.event_name }}" != "schedule" ]; then
+          echo "Manual run: building."
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        last=$(gh run list --workflow nightly.yml --branch "${{ github.ref_name }}" --status success --limit 1 --json headSha --jq '.[0].headSha // ""')
+        if [ "$last" = "${{ github.sha }}" ]; then
+          echo "No new commits since the last successful nightly ($last); skipping."
+          echo "run=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "Last successful nightly: ${last:-none}; now ${{ github.sha }}: building."
+          echo "run=true" >> "$GITHUB_OUTPUT"
+        fi
+
+  build:
+    name: nightly build (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Cache NuGet packages
+      uses: actions/cache@v6
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+        restore-keys: nuget-${{ runner.os }}-
+
+    - name: Restore dependencies
+      run: dotnet restore RoslynMcp.sln
+
+    - name: Build solution
+      run: dotnet build RoslynMcp.sln -c Release --no-restore
+
+    - name: Run tests
+      run: dotnet test RoslynMcp.sln -c Release --no-build --logger "trx;LogFileName=test-results.trx" --logger "console;verbosity=minimal"
+
+    - name: Upload test results
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: nightly-test-results-${{ matrix.os }}
+        path: '**/test-results.trx'
+
+  quality-windows:
+    name: nightly quality (windows-latest)
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore RoslynMcp.sln
+
+    - name: Build with warnings as errors
+      run: dotnet build RoslynMcp.sln -c Release --no-restore /p:TreatWarningsAsErrors=true
+
+    - name: Run code analysis
+      run: dotnet build RoslynMcp.sln -c Release --no-restore /p:RunAnalyzers=true /p:EnforceCodeStyleInBuild=true
+
+  report:
+    name: report nightly result
+    needs: [changes, build, quality-windows]
+    if: ${{ always() && needs.changes.outputs.run == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+    - name: Open, update, or close the ci-nightly issue
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        BUILD_RESULT: ${{ needs.build.result }}
+        QUALITY_RESULT: ${{ needs.quality-windows.result }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        SHA: ${{ github.sha }}
+      run: |
+        issue=$(gh issue list --label ci-nightly --state open --limit 1 --json number --jq '.[0].number // ""')
+        if [ "$BUILD_RESULT" = "success" ] && [ "$QUALITY_RESULT" = "success" ]; then
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "Nightly full matrix is green again at $SHA: $RUN_URL"
+            gh issue close "$issue"
+          fi
+          echo "Nightly passed."
+          exit 0
+        fi
+        body="Nightly full matrix failed at $SHA.
+
+        - Windows/Linux/macOS build and tests: $BUILD_RESULT
+        - Windows warnings-as-errors build: $QUALITY_RESULT
+
+        Run: $RUN_URL"
+        if [ -n "$issue" ]; then
+          gh issue comment "$issue" --body "$body"
+        else
+          gh label create ci-nightly --color B60205 --description "Nightly full-matrix CI failure" 2>/dev/null || true
+          gh issue create --title "Nightly full-matrix CI is failing" --label ci-nightly --body "$body"
+        fi
+        exit 0
