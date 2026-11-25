@@ -3713,9 +3713,129 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.True(names.IndexOf("Outer") < names.IndexOf("Nested"));
     }
 
+    [SkippableFact]
+    public async Task GenerateEquals_DynamicMember_UsesObjectComparerAndCompiles()
+    {
+        const string source = """
+            namespace N;
+
+            public class Bag
+            {
+                public dynamic D = 1;
+                public int X;
+                public string Name = "";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Bag"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var objectEquals = ExtractMethod(updated, "public override bool Equals(object?");
+        Assert.Contains("EqualityComparer<object>.Default.Equals((object)D, (object)other.D)", objectEquals, StringComparison.Ordinal);
+        Assert.Contains("X == other.X", objectEquals, StringComparison.Ordinal);
+        Assert.DoesNotContain("EqualityComparer<dynamic>", objectEquals, StringComparison.Ordinal);
+        AssertGeneratedEqualsCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ImplementIEquatable_DynamicMember_UsesObjectComparer()
+    {
+        const string source = """
+            namespace N;
+
+            public class Bag
+            {
+                public dynamic D = 1;
+                public int X;
+                public string Name = "";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Bag",
+            ImplementIEquatable = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var typedEquals = ExtractMethod(updated, "public bool Equals(Bag?");
+        Assert.Contains("EqualityComparer<object>.Default.Equals((object)D, (object)other.D)", typedEquals, StringComparison.Ordinal);
+        Assert.DoesNotContain("EqualityComparer<dynamic>", typedEquals, StringComparison.Ordinal);
+        AssertGeneratedEqualsCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_Preview_DynamicMember_DescribesObjectComparerAndWritesNothing()
+    {
+        const string source = """
+            namespace N;
+
+            public class Bag
+            {
+                public dynamic D = 1;
+                public int X;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Bag",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains(
+            "EqualityComparer<object>.Default.Equals((object)D, (object)other.D)",
+            result.PendingChanges![0].AfterSnippet,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("EqualityComparer<dynamic>", result.PendingChanges[0].AfterSnippet, StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+
     #endregion
 
     #region Helpers
+
+    private static void AssertGeneratedEqualsCompiles(string source)
+    {
+        source = "using System.Collections.Generic;\n" + source;
+        var assemblies = (string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!;
+        var references = assemblies
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(path => (MetadataReference)MetadataReference.CreateFromFile(path))
+            .ToList();
+
+        var compilation = CSharpCompilation.Create(
+            "GenerateEqualsDynamicCompileTest",
+            new[] { CSharpSyntaxTree.ParseText(source, CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview)) },
+            references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error || d.Id == "CS8602")
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Generated equals/hashcode did not compile cleanly:\n" + string.Join("\n", errors) + "\n\n" + source);
+    }
 
     private static void AssertNoBaseEqualityCalls(string text)
     {

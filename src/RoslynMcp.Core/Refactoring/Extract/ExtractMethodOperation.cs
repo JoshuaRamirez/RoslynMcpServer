@@ -778,6 +778,17 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         _ = semanticModel;
         _ = cancellationToken;
 
+        // Leading/trailing trivia on a selected statement can carry #if / #else /
+        // #endif / #region / disabled text that sits outside the user's span.
+        // PreserveInnerTrivia would copy that trivia into the extracted method
+        // while the call site keeps it too, producing unmatched directives.
+        if (ContainsPreprocessorDirectives(nodes))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSelection,
+                "Selection contains preprocessor directives and cannot be safely extracted.");
+        }
+
         var returnCount = 0;
         foreach (var node in nodes)
         {
@@ -1447,6 +1458,30 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
+
+    /// <summary>
+    /// True when any selected node carries preprocessor or region directive
+    /// trivia (including disabled text) in its leading or trailing trivia, or
+    /// inside its span. Those directives cannot be split or duplicated by
+    /// extraction without breaking the file.
+    /// </summary>
+    private static bool ContainsPreprocessorDirectives(IEnumerable<SyntaxNode> nodes) =>
+        nodes.Any(node =>
+            node.GetLeadingTrivia().Any(IsProtectedDirectiveTrivia)
+            || node.GetTrailingTrivia().Any(IsProtectedDirectiveTrivia)
+            || node.DescendantTrivia(descendIntoTrivia: true).Any(trivia =>
+                IsProtectedDirectiveTrivia(trivia)
+                && trivia.Span.Start >= node.Span.Start
+                && trivia.Span.Start < node.Span.End));
+
+    private static bool IsProtectedDirectiveTrivia(SyntaxTrivia trivia) =>
+        trivia.IsKind(SyntaxKind.IfDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.ElifDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.ElseDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.EndIfDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.DisabledTextTrivia)
+        || trivia.IsKind(SyntaxKind.RegionDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.EndRegionDirectiveTrivia);
 
     /// <summary>
     /// Preserves inner trivia (comments, etc.) within a statement while stripping only
