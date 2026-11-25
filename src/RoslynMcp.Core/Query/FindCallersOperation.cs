@@ -105,7 +105,9 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         // - nameFilter: simple Name contains the trimmed value, ordinal case-insensitive. Free text, so there is
         //   no validation error.
         // - kindFilter: SymbolKindMapper kind (methods / constructors / lambdas → Method, property bodies →
-        //   Property, field initializers → Field or Constant). Invalid values already rejected in ValidateParams.
+        //   Property, field initializers → Field or Constant, auto-property / field-like event initializers →
+        //   Property / Event after associating the synthesized backing field). Invalid values already
+        //   rejected in ValidateParams.
         // - staticFilter: ISymbol.IsStatic equality (find_references / get_diagnostics staticFilter judge sites
         //   differently).
         // Omitted / blank values impose no filter. namespaceFilter is deliberately not passed: find_callers judges
@@ -126,7 +128,12 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
             // DeclaredAccessibility match (implicit defaults count; protected internal ≠
             // protected / internal). Name is ISymbol.Name substring (OrdinalIgnoreCase). Kind is
             // SymbolKindMapper.Map equality. Static is ISymbol.IsStatic equality.
-            if (!callingSymbolFilter.Matches(caller.CallingSymbol))
+            // Associate a synthesized auto-property / field-like event backing field to the
+            // declared property or event before kind/accessibility/name/static filters and reporting
+            // (CallerName / CallerFullyQualifiedName). Ordinary user-declared fields are unchanged.
+            var callingSymbol = DeclaringSiteSymbol.AssociateSynthesizedBackingField(caller.CallingSymbol)
+                ?? caller.CallingSymbol;
+            if (!callingSymbolFilter.Matches(callingSymbol))
                 continue;
 
             foreach (var location in caller.Locations)
@@ -179,8 +186,8 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
 
                     callers.Add(new CallerInfo
                     {
-                        CallerName = caller.CallingSymbol.Name,
-                        CallerFullyQualifiedName = caller.CallingSymbol.ToDisplayString(),
+                        CallerName = callingSymbol.Name,
+                        CallerFullyQualifiedName = callingSymbol.ToDisplayString(),
                         File = lineSpan.Path,
                         Line = lineSpan.StartLinePosition.Line + 1,
                         Column = lineSpan.StartLinePosition.Character + 1,
