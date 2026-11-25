@@ -68,6 +68,9 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
         if (@params.Line.HasValue && @params.Line < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
+
+        if (!SyntaxIdentifierValidation.IsValidIdentifier(@params.VariableName!))
+            throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"'{@params.VariableName}' is not a valid variable name.");
     }
 
     /// <inheritdoc />
