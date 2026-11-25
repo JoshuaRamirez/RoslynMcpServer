@@ -5,6 +5,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Rename;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -152,7 +153,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         ValidateNoNameConflict(namespaceSymbol, newFullName, compilation);
 
         var references = await ReferenceTracker.FindAllReferencesAsync(namespaceSymbol, cancellationToken);
-        var newSolution = await ComputeRenamedSolutionAsync(
+        var (newSolution, inactiveReferenceCount) = await ComputeRenamedSolutionAsync(
             namespaceSymbol,
             oldFullName,
             newFullName,
@@ -205,7 +206,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 FilesDeleted = filesDeleted
             },
             CreateSymbolInfo(namespaceSymbol, oldFullName, newFullName, resultSourceFile),
-            references.TotalReferenceCount,
+            // Inactive #if/#else rewrites are invisible to FindReferences (#2941).
+            references.TotalReferenceCount + inactiveReferenceCount,
             0);
     }
 
@@ -541,7 +543,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         ValidateNoNameConflict(namespaceSymbol, newFullName, compilation);
 
         var beforeSolution = document.Project.Solution;
-        var newSolution = await ComputeRenamedSolutionAsync(
+        var (newSolution, _) = await ComputeRenamedSolutionAsync(
             namespaceSymbol,
             oldFullName,
             newFullName,
@@ -1096,7 +1098,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         return current;
     }
 
-    private async Task<Solution> ComputeRenamedSolutionAsync(
+    private async Task<(Solution Solution, int InactiveReferenceCount)> ComputeRenamedSolutionAsync(
         INamespaceSymbol namespaceSymbol,
         string oldFullName,
         string newFullName,
@@ -1104,6 +1106,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         bool renameInStrings,
         CancellationToken cancellationToken)
     {
+        Solution solution;
         if (IsLastSegmentRename(oldFullName, newFullName))
         {
             var options = new SymbolRenameOptions(
@@ -1112,15 +1115,312 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 RenameInComments: renameInComments,
                 RenameFile: false);
 
-            return await Renamer.RenameSymbolAsync(
+            solution = await Renamer.RenameSymbolAsync(
                 Context.Solution,
                 namespaceSymbol,
                 options,
                 GetLastSegment(newFullName),
                 cancellationToken);
         }
+        else
+        {
+            solution = await RewriteFullNamespaceAsync(namespaceSymbol, oldFullName, newFullName, cancellationToken);
+        }
 
-        return await RewriteFullNamespaceAsync(namespaceSymbol, oldFullName, newFullName, cancellationToken);
+        // Renamer / GetSymbolInfo only see the active preprocessor configuration.
+        // Rewrite using OldNs; and OldNs.… still sitting in disabled #else / #if !DEBUG text (#2941).
+        return await RewriteInactiveNamespaceTextAsync(solution, oldFullName, newFullName, cancellationToken);
+    }
+
+    /// <summary>
+    /// Rewrites <paramref name="oldFullName"/> to <paramref name="newFullName"/>
+    /// inside disabled preprocessor trivia so Release-only <c>using</c> and
+    /// qualified names do not stay stale.
+    /// </summary>
+    private static async Task<(Solution Solution, int EditCount)> RewriteInactiveNamespaceTextAsync(
+        Solution solution,
+        string oldFullName,
+        string newFullName,
+        CancellationToken cancellationToken)
+    {
+        var editCount = 0;
+        foreach (var project in solution.Projects)
+        {
+            foreach (var document in project.Documents)
+            {
+                if (!document.SupportsSyntaxTree)
+                    continue;
+
+                var root = await document.GetSyntaxRootAsync(cancellationToken);
+                if (root == null)
+                    continue;
+
+                var originals = new List<SyntaxTrivia>();
+                var replacements = new List<SyntaxTrivia>();
+                foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
+                {
+                    if (!trivia.IsKind(SyntaxKind.DisabledTextTrivia))
+                        continue;
+
+                    var original = trivia.ToFullString();
+                    var rewritten = ReplaceNamespaceReferences(
+                        original,
+                        oldFullName,
+                        newFullName,
+                        GetEnclosingNamespaceNames(trivia),
+                        out var triviaEdits);
+                    if (rewritten == original)
+                        continue;
+
+                    editCount += triviaEdits;
+
+                    originals.Add(trivia);
+                    replacements.Add(SyntaxFactory.DisabledText(rewritten));
+                }
+
+                if (originals.Count == 0)
+                    continue;
+
+                var index = 0;
+                root = root.ReplaceTrivia(originals, (_, _) => replacements[index++]);
+                solution = solution.WithDocumentSyntaxRoot(document.Id, root);
+            }
+        }
+
+        return (solution, editCount);
+    }
+
+    /// <summary>
+    /// Full names of the active namespace declarations enclosing
+    /// <paramref name="trivia"/>, innermost first (e.g. <c>A.D</c>, <c>A</c>).
+    /// </summary>
+    private static List<string> GetEnclosingNamespaceNames(SyntaxTrivia trivia)
+    {
+        var parts = trivia.Token.Parent?
+            .AncestorsAndSelf()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Select(n => n.Name.ToString())
+            .Reverse()
+            .ToList() ?? new List<string>();
+
+        var names = new List<string>();
+        var current = string.Empty;
+        foreach (var part in parts)
+        {
+            current = current.Length == 0 ? part : current + "." + part;
+            names.Insert(0, current);
+        }
+
+        return names;
+    }
+
+    /// <summary>
+    /// Lexes disabled text and rewrites only dotted identifier sequences that
+    /// name <paramref name="oldFullName"/>: the full name (not as the suffix of
+    /// another qualified name such as <c>X.OldNs</c>), or a name relative to an
+    /// enclosing namespace (<c>using B;</c> / <c>B.Type</c> inside
+    /// <c>namespace A</c> for <c>A.B</c>). Comments and string/char literals are
+    /// separate tokens/trivia and are never touched.
+    /// </summary>
+    internal static string ReplaceNamespaceReferences(
+        string text,
+        string oldFullName,
+        string newFullName,
+        IReadOnlyList<string> enclosingNamespaces) =>
+        ReplaceNamespaceReferences(text, oldFullName, newFullName, enclosingNamespaces, out _);
+
+    internal static string ReplaceNamespaceReferences(
+        string text,
+        string oldFullName,
+        string newFullName,
+        IReadOnlyList<string> enclosingNamespaces,
+        out int editCount)
+    {
+        editCount = 0;
+        // Candidate (old segments, replacement) pairs: full name first, then
+        // forms relative to each enclosing namespace.
+        var candidates = new List<(string[] Segments, string Replacement, bool Relative)>
+        {
+            (oldFullName.Split('.'), newFullName, false)
+        };
+        foreach (var enclosing in enclosingNamespaces)
+        {
+            var prefix = enclosing + ".";
+            if (!oldFullName.StartsWith(prefix, StringComparison.Ordinal) ||
+                oldFullName.Length == prefix.Length)
+            {
+                continue;
+            }
+
+            var relative = oldFullName.Substring(prefix.Length);
+            var replacement = newFullName.StartsWith(prefix, StringComparison.Ordinal) &&
+                              newFullName.Length > prefix.Length
+                ? newFullName.Substring(prefix.Length)
+                : newFullName;
+            candidates.Add((relative.Split('.'), replacement, true));
+        }
+
+        if (!candidates.Any(c => text.Contains(c.Segments[0], StringComparison.Ordinal)))
+            return text;
+
+        var tokens = SyntaxFactory.ParseTokens(text)
+            .Where(t => !t.IsKind(SyntaxKind.EndOfFileToken))
+            .ToList();
+
+        var edits = new List<(TextSpan Span, string Replacement)>();
+        // A hole edit is one span that may carry several reference rewrites;
+        // holeEditCount adds the extra rewrites to editCount.
+        var holeEditCount = 0;
+        var i = 0;
+        while (i < tokens.Count)
+        {
+            var matched = false;
+            if (tokens[i].IsKind(SyntaxKind.IdentifierToken) &&
+                (i == 0 || !tokens[i - 1].IsKind(SyntaxKind.DotToken)))
+            {
+                foreach (var (segments, replacement, relative) in candidates)
+                {
+                    var end = MatchDottedName(tokens, i, segments);
+                    if (end < 0)
+                        continue;
+
+                    // A relative name is only treated as the namespace in a
+                    // using/namespace directive or as a qualifier (B.Type), never
+                    // as a bare identifier (a local or member named B).
+                    if (relative && !IsRelativeNamespaceContext(tokens, i, end))
+                        continue;
+
+                    edits.Add((TextSpan.FromBounds(tokens[i].SpanStart, tokens[end].Span.End), replacement));
+                    i = end + 1;
+                    matched = true;
+                    break;
+                }
+            }
+
+            if (!matched)
+            {
+                if (tokens[i].IsKind(SyntaxKind.InterpolatedStringToken))
+                {
+                    AddInterpolationHoleEdits(
+                        tokens[i], oldFullName, newFullName, enclosingNamespaces, edits, ref holeEditCount);
+                }
+
+                i++;
+            }
+        }
+
+        editCount = edits.Count + holeEditCount;
+        if (edits.Count == 0)
+            return text;
+
+        var builder = new System.Text.StringBuilder(text);
+        for (var e = edits.Count - 1; e >= 0; e--)
+        {
+            builder.Remove(edits[e].Span.Start, edits[e].Span.Length);
+            builder.Insert(edits[e].Span.Start, edits[e].Replacement);
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// <c>ParseTokens</c> lexes a whole interpolated string (<c>$"…"</c>,
+    /// <c>$@"…"</c>, <c>@$"…"</c>, raw <c>$"""…"""</c> / <c>$$"""…"""</c>) as
+    /// one token, so namespace references inside its holes were invisible to
+    /// the disabled-text scan (#2941). Re-parses the token and rewrites each
+    /// hole expression and alignment through
+    /// <see cref="ReplaceNamespaceReferences(string, string, string, IReadOnlyList{string}, out int)"/>,
+    /// which recurses into nested interpolated strings. A token that does not
+    /// re-parse cleanly is left untouched.
+    /// </summary>
+    private static void AddInterpolationHoleEdits(
+        SyntaxToken token,
+        string oldFullName,
+        string newFullName,
+        IReadOnlyList<string> enclosingNamespaces,
+        List<(TextSpan Span, string Replacement)> edits,
+        ref int holeEditCount)
+    {
+        var tokenText = token.Text;
+        if (SyntaxFactory.ParseExpression(tokenText) is not InterpolatedStringExpressionSyntax interpolated ||
+            interpolated.FullSpan.Length != tokenText.Length ||
+            interpolated.ContainsDiagnostics)
+        {
+            return;
+        }
+
+        var extra = 0;
+        foreach (var hole in interpolated.Contents.OfType<InterpolationSyntax>())
+        {
+            AddHolePartEdit(hole.Expression);
+            if (hole.AlignmentClause != null)
+                AddHolePartEdit(hole.AlignmentClause.Value);
+        }
+
+        holeEditCount += extra;
+
+        void AddHolePartEdit(ExpressionSyntax part)
+        {
+            var partText = part.ToString();
+            var rewritten = ReplaceNamespaceReferences(
+                partText, oldFullName, newFullName, enclosingNamespaces, out var partEdits);
+            if (partEdits == 0)
+                return;
+
+            edits.Add((new TextSpan(token.SpanStart + part.SpanStart, partText.Length), rewritten));
+            extra += partEdits - 1;
+        }
+    }
+
+    private static bool IsRelativeNamespaceContext(List<SyntaxToken> tokens, int start, int end)
+    {
+        if (start > 0)
+        {
+            var previous = tokens[start - 1];
+            if (previous.IsKind(SyntaxKind.ColonColonToken))
+                return false;
+            if (previous.IsKind(SyntaxKind.UsingKeyword) || previous.IsKind(SyntaxKind.NamespaceKeyword))
+                return true;
+            // Alias target: `using Alias = B;`
+            if (previous.IsKind(SyntaxKind.EqualsToken) && start >= 3 &&
+                tokens[start - 2].IsKind(SyntaxKind.IdentifierToken) &&
+                tokens[start - 3].IsKind(SyntaxKind.UsingKeyword))
+            {
+                return true;
+            }
+        }
+
+        return end + 1 < tokens.Count && tokens[end + 1].IsKind(SyntaxKind.DotToken);
+    }
+
+    /// <summary>
+    /// Returns the index of the last identifier token when the tokens starting
+    /// at <paramref name="start"/> spell <paramref name="segments"/> joined by
+    /// dots; otherwise -1.
+    /// </summary>
+    private static int MatchDottedName(List<SyntaxToken> tokens, int start, string[] segments)
+    {
+        var index = start;
+        for (var s = 0; s < segments.Length; s++)
+        {
+            if (s > 0)
+            {
+                if (index >= tokens.Count || !tokens[index].IsKind(SyntaxKind.DotToken))
+                    return -1;
+                index++;
+            }
+
+            if (index >= tokens.Count ||
+                !tokens[index].IsKind(SyntaxKind.IdentifierToken) ||
+                !string.Equals(tokens[index].ValueText, segments[s], StringComparison.Ordinal))
+            {
+                return -1;
+            }
+
+            index++;
+        }
+
+        return index - 1;
     }
 
     /// <summary>

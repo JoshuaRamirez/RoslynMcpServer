@@ -683,6 +683,39 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         return targets;
     }
 
+
+    /// <summary>
+    /// True when the reference is not the invocation's direct callee name, e.g.
+    /// an immediately-invoked delegate conversion such as
+    /// <c>((Func&lt;...&gt;)M)(...)</c>, <c>new Func&lt;...&gt;(M)(...)</c>, or one
+    /// nested in a composite callee like <c>(flag ? (Func&lt;...&gt;)M : f)(...)</c>.
+    /// A (possibly parenthesized or null-forgiven) direct call returns false.
+    /// </summary>
+    private static bool IsDelegateConversionInvocation(InvocationExpressionSyntax invocation, TextSpan referenceSpan)
+    {
+        var expression = invocation.Expression;
+        while (true)
+        {
+            if (expression is ParenthesizedExpressionSyntax parenthesized)
+                expression = parenthesized.Expression;
+            else if (expression is PostfixUnaryExpressionSyntax postfix
+                && postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression))
+                expression = postfix.Operand;
+            else
+                break;
+        }
+
+        SimpleNameSyntax? calleeName = expression switch
+        {
+            SimpleNameSyntax simple => simple,
+            MemberAccessExpressionSyntax member => member.Name,
+            MemberBindingExpressionSyntax binding => binding.Name,
+            _ => null
+        };
+
+        return calleeName == null || !calleeName.Span.IntersectsWith(referenceSpan);
+    }
+
     private async Task<List<CallSite>> CollectCallSitesAsync(
         IReadOnlyList<IMethodSymbol> methods,
         IReadOnlyList<string> fallbackParameterNames,
@@ -714,6 +747,16 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                     var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
                     if (invocation != null && SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
                     {
+                        // Delegate-cast / new Func<>(M) invocations wrap a method-group
+                        // conversion. Reordering args without rewriting the delegate type
+                        // leaves CS0123/CS1503, so refuse like a bare method group (#2914).
+                        if (IsDelegateConversionInvocation(invocation, location.Location.SourceSpan))
+                        {
+                            throw new RefactoringException(
+                                ErrorCodes.UnsupportedCallSite,
+                                $"Method '{method.Name}' is used as a method group or other unsupported reference and cannot be updated automatically.");
+                        }
+
                         if (!seen.Add((document.Id, invocation.Span)))
                             continue;
 

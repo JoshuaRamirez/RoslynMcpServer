@@ -217,6 +217,41 @@ public class IntroduceParameterOperationTests
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
+    [Theory]
+    [InlineData("123bad")]
+    [InlineData("a-b")]
+    [InlineData("class")]
+    public void Validate_InvalidVariableName_ThrowsInvalidSymbolName(string variableName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            IntroduceParameterOperation.Validate(new IntroduceParameterParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                VariableName = variableName,
+                Line = 5
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+        Assert.Equal("1003", ex.ErrorCode);
+        Assert.Contains("Invalid variable name", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("total")]
+    [InlineData("@class")]
+    public void Validate_ValidVariableName_ProceedsToSourceFileLookup(string variableName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            IntroduceParameterOperation.Validate(new IntroduceParameterParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                VariableName = variableName,
+                Line = 5
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
     [Fact]
     public void Validate_InvalidLine_WithColumn_ThrowsInvalidLineNumber()
     {

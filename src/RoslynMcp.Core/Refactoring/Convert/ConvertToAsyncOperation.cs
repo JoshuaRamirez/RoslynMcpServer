@@ -69,6 +69,9 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         if (string.IsNullOrWhiteSpace(@params.MethodName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
 
+        if (!SyntaxIdentifierValidation.IsValidIdentifier(@params.MethodName!))
+            throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"'{@params.MethodName}' is not a valid method name.");
+
         SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)

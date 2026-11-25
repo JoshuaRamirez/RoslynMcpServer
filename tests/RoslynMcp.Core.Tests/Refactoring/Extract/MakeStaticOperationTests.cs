@@ -82,6 +82,39 @@ public class MakeStaticOperationTests
     }
 
     [Fact]
+    public void Validate_SameLineEqualColumns_ThrowsInvalidSelectionRange()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MakeStaticOperation.Validate(new MakeStaticParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                StartLine = 1,
+                StartColumn = 5,
+                EndLine = 1,
+                EndColumn = 5
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetSelectionSpan_SameLineEqualColumns_ThrowsInvalidSelectionRange()
+    {
+        var text = SourceText.From("class C { public void M() { } }");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MakeStaticOperation.GetSelectionSpan(text, new MakeStaticParams
+            {
+                StartLine = 1,
+                StartColumn = 5,
+                EndLine = 1,
+                EndColumn = 5
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+    }
+
+    [Fact]
     public void Validate_MissingFile_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
