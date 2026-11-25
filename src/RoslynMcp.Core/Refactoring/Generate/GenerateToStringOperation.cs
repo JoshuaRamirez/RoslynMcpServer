@@ -673,7 +673,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (callSuper)
             pieces.Add("{base.ToString()}");
         foreach (var member in members)
-            pieces.Add($"{member.Name} = {{{member.Name}}}");
+            pieces.Add($"{member.Name} = {{{SyntaxGenerationHelper.EscapedIdentifierText(member.Name)}}}");
 
         var inner = string.Join(", ", pieces);
         var interpolatedString = SyntaxFactory.ParseExpression("$\"" + typeName + " {{ " + inner + " }}\"");

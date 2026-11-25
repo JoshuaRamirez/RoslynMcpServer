@@ -1083,7 +1083,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             var type = GetMemberType(member);
             var paramName = ToCamelCase(member.Name);
 
-            var parameter = SyntaxFactory.Parameter(SyntaxFactory.Identifier(paramName))
+            var parameter = SyntaxFactory.Parameter(SyntaxGenerationHelper.EscapedIdentifier(paramName))
                 .WithType(SyntaxFactory.ParseTypeName(type.ToDisplayString()).WithTrailingTrivia(SyntaxFactory.Space));
 
             parameters.Add(parameter);
@@ -1123,14 +1123,14 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             }
             else
             {
-                left = SyntaxFactory.IdentifierName(member.Name);
+                left = SyntaxGenerationHelper.CreateEscapedIdentifierName(member.Name);
             }
 
             var assignment = SyntaxFactory.ExpressionStatement(
                 SyntaxFactory.AssignmentExpression(
                     SyntaxKind.SimpleAssignmentExpression,
                     left,
-                    SyntaxFactory.IdentifierName(paramName)));
+                    SyntaxGenerationHelper.CreateEscapedIdentifierName(paramName)));
 
             statements.Add(assignment);
         }
@@ -1171,7 +1171,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         bool addClassBaseCopy)
     {
         var selfTypeName = TypeDeclarationHelpers.GetSelfTypeName(typeDeclaration);
-        var parameter = SyntaxFactory.Parameter(SyntaxFactory.Identifier(parameterName))
+        var parameter = SyntaxFactory.Parameter(SyntaxGenerationHelper.EscapedIdentifier(parameterName))
             .WithType(SyntaxFactory.ParseTypeName(selfTypeName).WithTrailingTrivia(SyntaxFactory.Space));
 
         var statements = new List<StatementSyntax>();
@@ -1184,8 +1184,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             var left = SyntaxGenerationHelper.ThisMemberAccess(member.Name);
             var right = SyntaxFactory.MemberAccessExpression(
                 SyntaxKind.SimpleMemberAccessExpression,
-                SyntaxFactory.IdentifierName(parameterName),
-                SyntaxFactory.IdentifierName(member.Name));
+                SyntaxGenerationHelper.CreateEscapedIdentifierName(parameterName),
+                SyntaxGenerationHelper.CreateEscapedIdentifierName(member.Name));
 
             statements.Add(SyntaxFactory.ExpressionStatement(
                 SyntaxFactory.AssignmentExpression(
@@ -1431,7 +1431,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         string parameterName,
         bool addClassBaseCopy)
     {
-        var parameter = SyntaxFactory.IdentifierName(parameterName);
+        var parameter = SyntaxGenerationHelper.CreateEscapedIdentifierName(parameterName);
         if (!addClassBaseCopy || typeSymbol.BaseType == null)
             return parameter;
 
@@ -1597,7 +1597,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         var selected = SelectCallBaseCandidate(candidates, generatedNames, baseType);
         var count = selected.Parameters.Length;
         var arguments = generatedNames.Take(count)
-            .Select(name => SyntaxFactory.Argument(SyntaxFactory.IdentifierName(name)));
+            .Select(name => SyntaxFactory.Argument(SyntaxGenerationHelper.CreateEscapedIdentifierName(name)));
         var initializer = SyntaxFactory.ConstructorInitializer(
             SyntaxKind.BaseConstructorInitializer,
             SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(arguments)));
@@ -1700,7 +1700,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         return SyntaxFactory.IfStatement(
             SyntaxFactory.BinaryExpression(
                 SyntaxKind.EqualsExpression,
-                SyntaxFactory.IdentifierName(paramName),
+                SyntaxGenerationHelper.CreateEscapedIdentifierName(paramName),
                 SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression)),
             SyntaxFactory.ThrowStatement(
                 SyntaxFactory.ObjectCreationExpression(
@@ -1713,7 +1713,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                             .WithArgumentList(SyntaxFactory.ArgumentList(
                                 SyntaxFactory.SingletonSeparatedList(
                                     SyntaxFactory.Argument(
-                                        SyntaxFactory.IdentifierName(paramName)))))))))));
+                                        SyntaxGenerationHelper.CreateEscapedIdentifierName(paramName)))))))))));
     }
 
     private static TypeDeclarationSyntax InsertConstructor(

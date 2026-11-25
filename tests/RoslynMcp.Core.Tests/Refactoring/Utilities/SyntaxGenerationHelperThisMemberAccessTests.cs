@@ -42,4 +42,46 @@ public class SyntaxGenerationHelperThisMemberAccessTests
         Assert.True(actual.IsEquivalentTo(expected));
         Assert.Equal(expected.ToFullString(), actual.ToFullString());
     }
+
+    [Theory]
+    [InlineData("event")]
+    [InlineData("class")]
+    [InlineData("int")]
+    public void ThisMemberAccess_ReservedKeywordName_KeepsVerbatimPrefix(string memberName)
+    {
+        var access = SyntaxGenerationHelper.ThisMemberAccess(memberName);
+
+        var name = Assert.IsType<IdentifierNameSyntax>(access.Name);
+        Assert.Equal($"@{memberName}", name.Identifier.Text);
+        Assert.Equal(memberName, name.Identifier.ValueText);
+        Assert.Equal($"this.@{memberName}", access.ToString());
+
+        var reparsed = SyntaxFactory.ParseExpression($"{access} = default");
+        Assert.False(reparsed.ContainsDiagnostics);
+    }
+
+    [Theory]
+    [InlineData("value")]
+    [InlineData("var")]
+    [InlineData("async")]
+    public void ThisMemberAccess_ContextualKeywordName_StaysBare(string memberName)
+    {
+        var access = SyntaxGenerationHelper.ThisMemberAccess(memberName);
+
+        Assert.Equal($"this.{memberName}", access.ToString());
+    }
+
+    [Theory]
+    [InlineData("class", "@class")]
+    [InlineData("event", "@event")]
+    [InlineData("value", "value")]
+    [InlineData("Class", "Class")]
+    public void CreateEscapedIdentifierName_EscapesOnlyReservedKeywords(string name, string expectedText)
+    {
+        var identifier = SyntaxGenerationHelper.CreateEscapedIdentifierName(name);
+
+        Assert.Equal(expectedText, identifier.Identifier.Text);
+        Assert.Equal(name, identifier.Identifier.ValueText);
+        Assert.Equal(expectedText, SyntaxGenerationHelper.EscapedIdentifierText(name));
+    }
 }

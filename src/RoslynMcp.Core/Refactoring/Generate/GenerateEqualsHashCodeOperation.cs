@@ -1009,11 +1009,11 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         ExpressionSyntax? comparison = null;
         foreach (var member in members)
         {
-            var left = SyntaxFactory.IdentifierName(member.Name);
+            var left = SyntaxGenerationHelper.CreateEscapedIdentifierName(member.Name);
             var right = SyntaxFactory.MemberAccessExpression(
                 SyntaxKind.SimpleMemberAccessExpression,
                 SyntaxFactory.IdentifierName("other"),
-                SyntaxFactory.IdentifierName(member.Name));
+                SyntaxGenerationHelper.CreateEscapedIdentifierName(member.Name));
 
             var memberType = EqualityMemberCollector.GetMemberType(member);
             ExpressionSyntax eq;

@@ -3777,6 +3777,83 @@ public class GenerateEqualsHashCodeOperationTests
         AssertGeneratedEqualsCompiles(updated);
     }
 
+    private const string KeywordNamedMembersSource = """
+        namespace N;
+
+        public class Bag
+        {
+            private int @class;
+            private string @event = "";
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateEquals_GenerateOperators_KeywordNamedMembers_EscapesComparisons()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KeywordNamedMembersSource, "Foo.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Bag",
+            GenerateOperators = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var equals = ExtractMethod(updated, "public override bool Equals(object?");
+        Assert.Contains("@class == other.@class", equals, StringComparison.Ordinal);
+        Assert.Contains("EqualityComparer<string>.Default.Equals(@event, other.@event)", equals, StringComparison.Ordinal);
+        Assert.Contains("public static bool operator ==(Bag? left, Bag? right)", updated, StringComparison.Ordinal);
+        AssertGeneratedEqualsCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ImplementIEquatable_KeywordNamedMembers_EscapesComparisons()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KeywordNamedMembersSource, "Foo.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Bag",
+            ImplementIEquatable = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var equals = ExtractMethod(updated, "public bool Equals(Bag?");
+        Assert.Contains("@class == other.@class", equals, StringComparison.Ordinal);
+        Assert.Contains("EqualityComparer<string>.Default.Equals(@event, other.@event)", equals, StringComparison.Ordinal);
+        AssertGeneratedEqualsCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_NoHashCodeCombine_KeywordNamedMembers_EscapesComparisons()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KeywordNamedMembersSource, "Foo.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Bag",
+            UseHashCodeCombine = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var equals = ExtractMethod(updated, "public override bool Equals(object?");
+        Assert.Contains("@class == other.@class", equals, StringComparison.Ordinal);
+        Assert.Contains("EqualityComparer<string>.Default.Equals(@event, other.@event)", equals, StringComparison.Ordinal);
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("this.@class", getHashCode, StringComparison.Ordinal);
+        Assert.Contains("this.@event", getHashCode, StringComparison.Ordinal);
+        AssertGeneratedEqualsCompiles(updated);
+    }
+
     [SkippableFact]
     public async Task GenerateEquals_Preview_DynamicMember_DescribesObjectComparerAndWritesNothing()
     {
