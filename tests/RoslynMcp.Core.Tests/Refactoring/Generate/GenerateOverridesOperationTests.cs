@@ -4181,9 +4181,281 @@ public class GenerateOverridesOperationTests
         AssertCompiles(updatedA, updatedB);
     }
 
+    [SkippableFact]
+    public async Task GenerateOverrides_CopiesNullableFlowAttributesAndCompilesClean()
+    {
+        const string source = """
+            using System;
+            using System.Diagnostics.CodeAnalysis;
+
+            public class Store
+            {
+                public virtual bool TryGet(string key, [NotNullWhen(true)] out string? value)
+                {
+                    value = key == "a" ? "alpha" : null;
+                    return value != null;
+                }
+
+                [return: NotNullIfNotNull(nameof(input))]
+                public virtual string? Normalize(string? input) => input?.Trim();
+
+                public virtual void Put(string key, [DisallowNull] string? value) { }
+
+                [AllowNull]
+                public virtual string Label { get; set; } = "none";
+            }
+
+            public class MemStore : Store
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "MemStore",
+            Members = new[] { "TryGet", "Normalize", "Put", "Label" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("[global::System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? value", updated, StringComparison.Ordinal);
+        Assert.Contains("[return: global::System.Diagnostics.CodeAnalysis.NotNullIfNotNull(\"input\")]", updated, StringComparison.Ordinal);
+        Assert.Contains("[global::System.Diagnostics.CodeAnalysis.DisallowNull] string? value", updated, StringComparison.Ordinal);
+        Assert.Contains("[global::System.Diagnostics.CodeAnalysis.AllowNull]", updated, StringComparison.Ordinal);
+        AssertNullableFlowCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CallBaseFalse_PostconditionAttributes_ThrowAndCompileClean()
+    {
+        const string source = """
+            using System;
+            using System.Diagnostics.CodeAnalysis;
+
+            public class Store
+            {
+                [DoesNotReturn]
+                public virtual void Fail() => throw new InvalidOperationException();
+
+                [return: NotNull]
+                public virtual string? Find(string key) => key;
+
+                public virtual string? Plain() => null;
+            }
+
+            public class MemStore : Store
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "MemStore",
+            Members = new[] { "Fail", "Find", "Plain" },
+            CallBase = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("class MemStore", StringComparison.Ordinal)..];
+        Assert.Contains("[global::System.Diagnostics.CodeAnalysis.DoesNotReturn]", derived, StringComparison.Ordinal);
+        Assert.Contains("[return: global::System.Diagnostics.CodeAnalysis.NotNull]", derived, StringComparison.Ordinal);
+        Assert.Equal(2, CountOccurrences(derived, "NotImplementedException"));
+        Assert.Contains("return null;", derived, StringComparison.Ordinal);
+        AssertNullableFlowCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CallBaseFalse_GetterPostconditions_ThrowAndCompileClean()
+    {
+        const string source = """
+            using System;
+            using System.Diagnostics.CodeAnalysis;
+
+            public class Store
+            {
+                public virtual string? Name
+                {
+                    [return: NotNull]
+                    get => string.Empty;
+                }
+
+                [NotNull]
+                public virtual string? Title { get => string.Empty; set { } }
+
+                public virtual string? this[string? key]
+                {
+                    [return: NotNullIfNotNull(nameof(key))]
+                    get => key;
+                }
+
+                public virtual string? Plain => null;
+            }
+
+            public class MemStore : Store
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "MemStore",
+            Members = new[] { "Name", "Title", "this[]", "Plain" },
+            CallBase = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("class MemStore", StringComparison.Ordinal)..];
+        Assert.Contains("[return: global::System.Diagnostics.CodeAnalysis.NotNull]", derived, StringComparison.Ordinal);
+        Assert.Contains("NotNullIfNotNull", derived, StringComparison.Ordinal);
+        Assert.Equal(3, CountOccurrences(derived, "NotImplementedException"));
+        Assert.Contains("return null;", derived, StringComparison.Ordinal);
+        AssertNullableFlowCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_MemberNotNull_DropsInheritedTargetsAndCompilesClean()
+    {
+        const string source = """
+            using System.Diagnostics.CodeAnalysis;
+
+            public class Store
+            {
+                private string? _name;
+                protected string? Shared;
+
+                public string Name => _name ?? string.Empty;
+
+                [MemberNotNull(nameof(_name))]
+                public virtual void Init() => _name = "n";
+
+                [MemberNotNull(nameof(_name), nameof(Shared))]
+                public virtual void InitBoth()
+                {
+                    _name = "n";
+                    Shared = "s";
+                }
+
+                [MemberNotNullWhen(true, nameof(_name))]
+                public virtual bool TryInit()
+                {
+                    _name = "n";
+                    return true;
+                }
+            }
+
+            public class MemStore : Store
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "MemStore",
+            Members = new[] { "Init", "InitBoth", "TryInit" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("class MemStore", StringComparison.Ordinal)..];
+        Assert.DoesNotContain("MemberNotNull", derived, StringComparison.Ordinal);
+        Assert.Contains("base.InitBoth()", derived, StringComparison.Ordinal);
+        AssertNullableFlowCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_Preview_DescribesNullableFlowAttributesAndWritesNothing()
+    {
+        const string source = """
+            using System.Diagnostics.CodeAnalysis;
+
+            public class Store
+            {
+                public virtual bool TryGet(string key, [NotNullWhen(true)] out string? value)
+                {
+                    value = null;
+                    return false;
+                }
+            }
+
+            public class MemStore : Store
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "MemStore",
+            Members = new[] { "TryGet" },
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains(
+            "[global::System.Diagnostics.CodeAnalysis.NotNullWhen(true)]",
+            result.PendingChanges![0].AfterSnippet,
+            StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+
     #endregion
 
     #region Helpers
+
+    private static void AssertNullableFlowCompiles(string source)
+    {
+        var assemblies = (string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!;
+        var references = assemblies
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(path => (MetadataReference)MetadataReference.CreateFromFile(path))
+            .ToList();
+        var compilation = CSharpCompilation.Create(
+            "NullableFlowOverrideCompileTest",
+            new[]
+            {
+                CSharpSyntaxTree.ParseText(
+                    source,
+                    CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview))
+            },
+            references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                .WithNullableContextOptions(NullableContextOptions.Enable)
+                .WithGeneralDiagnosticOption(ReportDiagnostic.Error)
+                .WithSpecificDiagnosticOptions(new Dictionary<string, ReportDiagnostic>
+                {
+                    // Unused usings and similar noise from the snippet should not fail the test.
+                    ["CS8019"] = ReportDiagnostic.Suppress
+                }));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Generated stubs were not nullable-clean:\n" + string.Join("\n", errors) + "\n\n" + source);
+    }
 
     private const string MissingVirtualEventSource = """
         namespace TestApp;
