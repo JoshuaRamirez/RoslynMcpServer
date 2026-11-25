@@ -96,6 +96,15 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
                 "foreach body contains preprocessor directives and cannot be safely converted to LINQ.");
         }
 
+        if (TryAnalyzePattern(foreachStmt, out var analyzed) &&
+            AccumulatorHasDirectiveGuardedCodeBeforeLoop(foreachStmt, analyzed!.ListName))
+        {
+            throw new RefactoringException(ErrorCodes.CannotConvert,
+                "Preprocessor directives (#if / #elif / #else / #endif) guard code between the accumulator's " +
+                "declaration and the foreach; the LINQ assignment would discard writes made there in some " +
+                "build configuration, so the loop cannot be safely converted.");
+        }
+
         if (!TryConvert(foreachStmt, @params.PreferQuerySyntax, out var conversion, out var assignment))
         {
             throw new RefactoringException(ErrorCodes.CannotConvert,
@@ -284,18 +293,118 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         if (StatementContainsPreprocessorDirectives(foreachStmt))
             return false;
 
+        if (!TryAnalyzePattern(foreachStmt, out var analyzed))
+            return false;
+
+        // The rewrite assigns over the accumulator, so writes between its
+        // declaration and the loop are lost. Directive-guarded code there
+        // (inactive text or an active #if branch) may write to it in some
+        // build configuration, so refuse rather than discard it (#3476).
+        if (AccumulatorHasDirectiveGuardedCodeBeforeLoop(foreachStmt, analyzed!.ListName))
+            return false;
+
+        conversion = analyzed;
+        assignment = BuildLinqAssignment(conversion, preferQuerySyntax);
+        return true;
+    }
+
+    private static bool TryAnalyzePattern(ForEachStatementSyntax foreachStmt, out ForeachLinqConversion? analyzed)
+    {
         var body = foreachStmt.Statement;
         var statements = body is BlockSyntax block ? block.Statements.ToList() : new List<StatementSyntax> { body };
 
-        if (!TryAnalyzeAddPattern(foreachStmt, statements, out var analyzed) &&
-            !TryAnalyzeFilterPattern(foreachStmt, statements, out analyzed))
-        {
+        return TryAnalyzeAddPattern(foreachStmt, statements, out analyzed) ||
+               TryAnalyzeFilterPattern(foreachStmt, statements, out analyzed);
+    }
+
+    /// <summary>
+    /// True when the accumulator is a local declared before the loop and the
+    /// text between the end of that declaration and the <c>foreach</c>
+    /// keyword contains disabled text (an inactive <c>#if</c> branch) or a
+    /// conditional directive other than an <c>#if</c> that opens in the
+    /// foreach's own leading trivia (a loop wrapped as a whole in
+    /// <c>#if</c> still converts). Such code can write to the accumulator in
+    /// some build configuration, and the LINQ assignment would silently
+    /// discard those writes (#3476).
+    /// </summary>
+    internal static bool AccumulatorHasDirectiveGuardedCodeBeforeLoop(
+        ForEachStatementSyntax foreachStmt,
+        ExpressionSyntax accumulator)
+    {
+        var declaration = FindAccumulatorDeclaration(foreachStmt, accumulator);
+        if (declaration == null)
             return false;
+
+        var start = declaration.Span.End;
+        var end = foreachStmt.SpanStart;
+        if (end <= start)
+            return false;
+
+        var foreachLeading = foreachStmt.GetLeadingTrivia();
+        var root = foreachStmt.SyntaxTree.GetRoot();
+        foreach (var trivia in root.DescendantTrivia(TextSpan.FromBounds(start, end), descendIntoTrivia: true))
+        {
+            if (trivia.SpanStart < start || trivia.Span.End > end)
+                continue;
+
+            if (trivia.IsKind(SyntaxKind.DisabledTextTrivia))
+                return true;
+
+            if (trivia.IsKind(SyntaxKind.ElifDirectiveTrivia) ||
+                trivia.IsKind(SyntaxKind.ElseDirectiveTrivia) ||
+                trivia.IsKind(SyntaxKind.EndIfDirectiveTrivia))
+            {
+                return true;
+            }
+
+            if (trivia.IsKind(SyntaxKind.IfDirectiveTrivia) && !foreachLeading.Contains(trivia))
+                return true;
         }
 
-        conversion = analyzed!;
-        assignment = BuildLinqAssignment(conversion, preferQuerySyntax);
-        return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Nearest local declaration statement before <paramref name="foreachStmt"/>
+    /// (in the same or an enclosing block of the same body) that declares the
+    /// simple-name accumulator, or null (fields, parameters, member access).
+    /// </summary>
+    private static LocalDeclarationStatementSyntax? FindAccumulatorDeclaration(
+        ForEachStatementSyntax foreachStmt,
+        ExpressionSyntax accumulator)
+    {
+        if (accumulator is not IdentifierNameSyntax identifier)
+            return null;
+
+        var name = identifier.Identifier.ValueText;
+        SyntaxNode current = foreachStmt;
+        while (current.Parent is { } parent)
+        {
+            if (parent is (MemberDeclarationSyntax and not GlobalStatementSyntax) or LocalFunctionStatementSyntax or
+                AnonymousFunctionExpressionSyntax or AccessorDeclarationSyntax)
+            {
+                return null;
+            }
+
+            var siblings = parent is GlobalStatementSyntax global
+                ? global.Parent!.ChildNodes().OfType<GlobalStatementSyntax>().Select(g => g.Statement)
+                : parent.ChildNodes().OfType<StatementSyntax>();
+            var anchor = parent is GlobalStatementSyntax ? parent : current;
+
+            var match = siblings
+                .OfType<LocalDeclarationStatementSyntax>()
+                .Where(statement => statement.Span.End <= anchor.SpanStart &&
+                                    statement.Declaration.Variables.Any(v => v.Identifier.ValueText == name))
+                .LastOrDefault();
+            if (match != null)
+                return match;
+
+            current = parent is GlobalStatementSyntax ? parent.Parent! : parent;
+            if (current is CompilationUnitSyntax)
+                return null;
+        }
+
+        return null;
     }
 
     /// <summary>

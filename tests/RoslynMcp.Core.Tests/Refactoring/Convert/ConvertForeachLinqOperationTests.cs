@@ -1898,6 +1898,179 @@ public class ConvertForeachLinqOperationTests
 
     #endregion
 
+    #region Directive-guarded accumulator writes before the loop (#3476)
+
+    private const string ReleaseOnlyWriteBeforeLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+        #if !DEBUG
+                result.Add(-1);
+        #endif
+                foreach (var v in values)
+                {
+                    result.Add(v * 10);
+                }
+                return result;
+            }
+        }
+        """;
+
+    private const string DebugOnlyWriteBeforeLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+        #if DEBUG
+                result.Add(-1);
+        #endif
+                foreach (var v in values)
+                {
+                    result.Add(v * 10);
+                }
+                return result;
+            }
+        }
+        """;
+
+    private const string IfElseWriteBeforeLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+        #if DEBUG
+                result.Add(-1);
+        #else
+                result.Add(-2);
+        #endif
+                foreach (var v in values)
+                    result.Add(v * 10);
+                return result;
+            }
+        }
+        """;
+
+    private const string NoDirectivesBeforeLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+                foreach (var v in values)
+                {
+                    result.Add(v * 10);
+                }
+                return result;
+            }
+        }
+        """;
+
+    [Theory]
+    [InlineData(ReleaseOnlyWriteBeforeLoop)]
+    [InlineData(DebugOnlyWriteBeforeLoop)]
+    [InlineData(IfElseWriteBeforeLoop)]
+    public void TryConvert_DirectiveGuardedWriteBeforeLoop_ReturnsFalse(string source)
+    {
+        var foreachStmt = ParseSingleForeach(source);
+        Assert.False(ConvertForeachLinqOperation.StatementContainsPreprocessorDirectives(foreachStmt));
+        Assert.False(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: false, out _, out _));
+        Assert.False(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: true, out _, out _));
+    }
+
+    [Theory]
+    [InlineData(NoDirectivesBeforeLoop)]
+    [InlineData(ForeachWrappedInIfDebug)]
+    public void TryConvert_NoDirectiveGuardedWriteBeforeLoop_StillConverts(string source)
+    {
+        var foreachStmt = ParseSingleForeach(source);
+        Assert.True(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: false, out _, out _));
+    }
+
+    [SkippableTheory]
+    [InlineData(ReleaseOnlyWriteBeforeLoop, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoop, true)]
+    [InlineData(DebugOnlyWriteBeforeLoop, false)]
+    [InlineData(IfElseWriteBeforeLoop, false)]
+    public async Task ConvertForeachLinq_DirectiveGuardedWriteBeforeLoop_ThrowsCannotConvert(string source, bool preview)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertForeachLinqParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(source, "foreach (var v in values)"),
+                Preview = preview
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("accumulator", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertForeachLinq_NoDirectivesBeforeLoop_StillConverts()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NoDirectivesBeforeLoop);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(NoDirectivesBeforeLoop, "foreach (var v in values)")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("foreach", updated, StringComparison.Ordinal);
+        Assert.Contains(".Select", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertForeachLinq_AllFiles_SkipsDirectiveGuardedWriteBeforeLoop()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ReleaseOnlyWriteBeforeLoop);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helpers
 
     private const string SharedItemSource = """
