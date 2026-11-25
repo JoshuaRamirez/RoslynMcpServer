@@ -2741,6 +2741,128 @@ public class FindReferencesOperationTests
         Assert.Equal(new[] { "Consumer.cs:5" }, Sites(method.Data!.References));
     }
 
+    // Auto-property / field-like event initializers (#2956): Tick is referenced from Retries / Timeout
+    // (auto-property and init-only auto-property initializers), Field (a real field), and Body (a
+    // method). Noop is referenced only from the field-like event Changed. Line numbers are 1-based
+    // in Settings.cs as written below.
+    private static readonly Dictionary<string, string> BackingFieldKindSources = new()
+    {
+        ["Calc.cs"] = """
+            using System;
+            namespace App;
+            public static class Calc
+            {
+                public static int Tick() => 1;
+                public static Action Noop() => () => { };
+            }
+            """,
+        ["Settings.cs"] = """
+            using System;
+            namespace App;
+            public class Settings
+            {
+                public int Retries { get; set; } = Calc.Tick();
+                public int Timeout { get; init; } = Calc.Tick();
+                public event Action Changed = Calc.Noop();
+                public int Field = Calc.Tick();
+                public int Body() => Calc.Tick();
+            }
+            """
+    };
+
+    [SkippableTheory]
+    [InlineData("Property", new[] { "Settings.cs:5", "Settings.cs:6" })]
+    [InlineData("property", new[] { "Settings.cs:5", "Settings.cs:6" })]
+    [InlineData("Field", new[] { "Settings.cs:8" })]
+    [InlineData("Method", new[] { "Settings.cs:9" })]
+    [InlineData("Event", new string[0])]
+    [InlineData("Constant", new string[0])]
+    public async Task FindReferences_KindFilter_AutoPropertyInitializerIsJudgedAsProperty(
+        string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(BackingFieldKindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Calc.cs"),
+            SymbolName = "Tick",
+            IncludeDeclaration = false,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success, kindFilter);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Event", new[] { "Settings.cs:7" })]
+    [InlineData("event", new[] { "Settings.cs:7" })]
+    [InlineData("Field", new string[0])]
+    [InlineData("Property", new string[0])]
+    [InlineData("Method", new string[0])]
+    public async Task FindReferences_KindFilter_FieldLikeEventInitializerIsJudgedAsEvent(
+        string kindFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(BackingFieldKindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Calc.cs"),
+            SymbolName = "Noop",
+            IncludeDeclaration = false,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(result.Success, kindFilter);
+        Assert.Equal(expected, Sites(result.Data!.References));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_KindFilter_AutoPropertyInitializerNameFilterUsesPropertyName()
+    {
+        // After associating the backing field, nameFilter matches the property name, not
+        // <Retries>k__BackingField. An unfiltered search still includes every Tick usage.
+        await using var workspace = await TempWorkspace.CreateAsync(BackingFieldKindSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var unfiltered = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Calc.cs"),
+            SymbolName = "Tick",
+            IncludeDeclaration = false
+        });
+        var byPropertyName = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Calc.cs"),
+            SymbolName = "Tick",
+            IncludeDeclaration = false,
+            KindFilter = "Property",
+            NameFilter = "Retries"
+        });
+        var byBackingFieldName = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Calc.cs"),
+            SymbolName = "Tick",
+            IncludeDeclaration = false,
+            NameFilter = "k__BackingField"
+        });
+
+        Assert.True(unfiltered.Success);
+        Assert.Equal(new[] { "Settings.cs:5", "Settings.cs:6", "Settings.cs:8", "Settings.cs:9" },
+            Sites(unfiltered.Data!.References));
+        Assert.True(byPropertyName.Success);
+        Assert.Equal(new[] { "Settings.cs:5" }, Sites(byPropertyName.Data!.References));
+        Assert.True(byBackingFieldName.Success);
+        Assert.Empty(byBackingFieldName.Data!.References);
+        Assert.Equal(0, byBackingFieldName.Data.TotalCount);
+    }
+
     #endregion
 
 
@@ -3106,24 +3228,14 @@ public class FindReferencesOperationTests
     [SkippableTheory]
     [InlineData(true, new[] { "Edges.cs:28" })]
     [InlineData(false, new[] { "Edges.cs:29" })]
-    public async Task FindReferences_StaticFilter_AutoPropertyInitializerIsJudgedOnTheBackingField(
+    public async Task FindReferences_StaticFilter_AutoPropertyInitializerIsJudgedOnTheProperty(
         bool staticFilter, string[] expected)
     {
-        // Same as find_callers: the site of an auto-property initializer is the compiler backing field
-        // <P>k__BackingField (a Field whose name contains k__BackingField), not the property, and it
-        // shares the property's staticness.
+        // An auto-property initializer is judged as the property (Property), not the synthesized
+        // backing field. Staticness still follows the property (unchanged from the backing field).
         await using var workspace = await TempWorkspace.CreateAsync(StaticEdgeSources);
         var operation = new FindReferencesOperation(workspace.Context);
 
-        var result = await operation.ExecuteAsync(new FindReferencesParams
-        {
-            SourceFile = workspace.PathOf("Target.cs"),
-            SymbolName = "T",
-            IncludeDeclaration = false,
-            KindFilter = "Field",
-            NameFilter = "k__BackingField",
-            StaticFilter = staticFilter
-        });
         var asProperty = await operation.ExecuteAsync(new FindReferencesParams
         {
             SourceFile = workspace.PathOf("Target.cs"),
@@ -3132,11 +3244,20 @@ public class FindReferencesOperationTests
             KindFilter = "Property",
             StaticFilter = staticFilter
         });
+        var asBackingField = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "T",
+            IncludeDeclaration = false,
+            KindFilter = "Field",
+            NameFilter = "k__BackingField",
+            StaticFilter = staticFilter
+        });
 
-        Assert.True(result.Success);
-        Assert.Equal(expected, Sites(result.Data!.References));
         Assert.True(asProperty.Success);
-        Assert.Empty(asProperty.Data!.References);
+        Assert.Equal(expected, Sites(asProperty.Data!.References));
+        Assert.True(asBackingField.Success);
+        Assert.Empty(asBackingField.Data!.References);
     }
 
     #endregion
