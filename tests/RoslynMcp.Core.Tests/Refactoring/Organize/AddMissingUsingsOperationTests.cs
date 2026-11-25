@@ -326,6 +326,226 @@ public class AddMissingUsingsOperationTests
 
     #endregion
 
+
+    #region CS0234 qualified middle segment (#2949)
+
+    [SkippableFact]
+    public async Task AddMissingUsings_Cs0234MiddleSegment_DoesNotAddUsing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Lib.cs", Cs0234Lib),
+            ("Program.cs", Cs0234ProgramQualified));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = workspace.SourcePaths["Program.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesAdded);
+        Assert.Empty(result.Changes!.FilesModified);
+        var after = await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]);
+        Assert.Equal(before, after);
+        Assert.DoesNotContain("System.Threading.Tasks", after);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_UnqualifiedType_StillAddsUsing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Lib.cs", Cs0234Lib),
+            ("Program.cs", Cs0234ProgramUnqualified));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = workspace.SourcePaths["Program.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        var after = await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]);
+        Assert.Contains("using App.Core;", after);
+        Assert.DoesNotContain("System.Threading.Tasks", after);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_Cs0234MiddleSegment_Preview_DoesNotProposeUsing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Lib.cs", Cs0234Lib),
+            ("Program.cs", Cs0234ProgramQualified));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = workspace.SourcePaths["Program.cs"],
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesAdded);
+        Assert.True(result.PendingChanges is null || result.PendingChanges.Count == 0);
+        var after = await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]);
+        Assert.DoesNotContain("System.Threading.Tasks", after);
+        Assert.DoesNotContain(
+            "System.Threading.Tasks",
+            string.Join(" ", (result.PendingChanges ?? []).Select(c => $"{c.Description} {c.AfterSnippet}")));
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_Cs0234MiddleSegment_AllFiles_DoesNotAddUsing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Lib.cs", Cs0234Lib),
+            ("Program.cs", Cs0234ProgramQualified));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+        var beforeProgram = await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]);
+        var beforeLib = await File.ReadAllTextAsync(workspace.SourcePaths["Lib.cs"]);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.UsingDirectivesAdded);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Equal(beforeProgram, await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]));
+        Assert.Equal(beforeLib, await File.ReadAllTextAsync(workspace.SourcePaths["Lib.cs"]));
+        Assert.DoesNotContain("System.Threading.Tasks", beforeProgram);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_Cs0234MiddleSegment_WithUnqualifiedMissingType_AddsOnlyUnqualifiedUsing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Lib.cs", Cs0234Lib),
+            ("Program.cs", Cs0234ProgramQualifiedWithList));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = workspace.SourcePaths["Program.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        var after = await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]);
+        Assert.Contains("using System.Collections.Generic;", after);
+        Assert.DoesNotContain("System.Threading.Tasks", after);
+        Assert.Contains("new App.Task.Widget()", after);
+    }
+
+    [SkippableTheory]
+    [InlineData("QualifiedGeneric")]
+    [InlineData("MemberGeneric")]
+    public async Task AddMissingUsings_UnresolvedGenericArgumentOfQualifiedName_AddsUsing(string shape)
+    {
+        var program = shape == "QualifiedGeneric" ? Cs0246QualifiedGenericArgument : Cs0246MemberGenericArgument;
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Lib.cs", Cs0234Lib),
+            ("Program.cs", program));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = workspace.SourcePaths["Program.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        var after = await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]);
+        Assert.Contains("using System.Collections.Generic;", after);
+    }
+
+    private const string Cs0246QualifiedGenericArgument = """
+        using System;
+
+        class Program
+        {
+            static void Main()
+            {
+                var map = new System.Collections.Generic.Dictionary<int, List<int>>();
+                Console.WriteLine(map.Count);
+            }
+        }
+        """;
+
+    private const string Cs0246MemberGenericArgument = """
+        using System;
+
+        class Holder
+        {
+            public int Method<T>() => 0;
+        }
+
+        class Program
+        {
+            static void Main()
+            {
+                var obj = new Holder();
+                Console.WriteLine(obj.Method<List<int>>());
+            }
+        }
+        """;
+
+    private const string Cs0234Lib = """
+        namespace App
+        {
+            public static class Marker { public static int Id => 1; }
+        }
+
+        namespace App.Core
+        {
+            public class Widget
+            {
+                public int Size() => 7;
+            }
+        }
+        """;
+
+    private const string Cs0234ProgramQualified = """
+        using System;
+
+        class Program
+        {
+            static void Main()
+            {
+                var w = new App.Task.Widget();
+                Console.WriteLine(w.Size() + App.Marker.Id);
+            }
+        }
+        """;
+
+    private const string Cs0234ProgramUnqualified = """
+        using System;
+
+        class Program
+        {
+            static void Main()
+            {
+                var w = new Widget();
+                Console.WriteLine(w.Size() + App.Marker.Id);
+            }
+        }
+        """;
+
+    private const string Cs0234ProgramQualifiedWithList = """
+        using System;
+
+        class Program
+        {
+            static void Main()
+            {
+                var w = new App.Task.Widget();
+                List<int> items = new List<int>();
+                Console.WriteLine(w.Size() + items.Count + App.Marker.Id);
+            }
+        }
+        """;
+
+    #endregion
+
     #region AllFiles optional sourceFile
 
     [SkippableFact]
