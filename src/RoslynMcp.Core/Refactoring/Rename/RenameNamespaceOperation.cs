@@ -1268,6 +1268,9 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             .ToList();
 
         var edits = new List<(TextSpan Span, string Replacement)>();
+        // A hole edit is one span that may carry several reference rewrites;
+        // holeEditCount adds the extra rewrites to editCount.
+        var holeEditCount = 0;
         var i = 0;
         while (i < tokens.Count)
         {
@@ -1295,10 +1298,18 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             }
 
             if (!matched)
+            {
+                if (tokens[i].IsKind(SyntaxKind.InterpolatedStringToken))
+                {
+                    AddInterpolationHoleEdits(
+                        tokens[i], oldFullName, newFullName, enclosingNamespaces, edits, ref holeEditCount);
+                }
+
                 i++;
+            }
         }
 
-        editCount = edits.Count;
+        editCount = edits.Count + holeEditCount;
         if (edits.Count == 0)
             return text;
 
@@ -1310,6 +1321,55 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// <c>ParseTokens</c> lexes a whole interpolated string (<c>$"…"</c>,
+    /// <c>$@"…"</c>, <c>@$"…"</c>, raw <c>$"""…"""</c> / <c>$$"""…"""</c>) as
+    /// one token, so namespace references inside its holes were invisible to
+    /// the disabled-text scan (#2941). Re-parses the token and rewrites each
+    /// hole expression and alignment through
+    /// <see cref="ReplaceNamespaceReferences(string, string, string, IReadOnlyList{string}, out int)"/>,
+    /// which recurses into nested interpolated strings. A token that does not
+    /// re-parse cleanly is left untouched.
+    /// </summary>
+    private static void AddInterpolationHoleEdits(
+        SyntaxToken token,
+        string oldFullName,
+        string newFullName,
+        IReadOnlyList<string> enclosingNamespaces,
+        List<(TextSpan Span, string Replacement)> edits,
+        ref int holeEditCount)
+    {
+        var tokenText = token.Text;
+        if (SyntaxFactory.ParseExpression(tokenText) is not InterpolatedStringExpressionSyntax interpolated ||
+            interpolated.FullSpan.Length != tokenText.Length ||
+            interpolated.ContainsDiagnostics)
+        {
+            return;
+        }
+
+        var extra = 0;
+        foreach (var hole in interpolated.Contents.OfType<InterpolationSyntax>())
+        {
+            AddHolePartEdit(hole.Expression);
+            if (hole.AlignmentClause != null)
+                AddHolePartEdit(hole.AlignmentClause.Value);
+        }
+
+        holeEditCount += extra;
+
+        void AddHolePartEdit(ExpressionSyntax part)
+        {
+            var partText = part.ToString();
+            var rewritten = ReplaceNamespaceReferences(
+                partText, oldFullName, newFullName, enclosingNamespaces, out var partEdits);
+            if (partEdits == 0)
+                return;
+
+            edits.Add((new TextSpan(token.SpanStart + part.SpanStart, partText.Length), rewritten));
+            extra += partEdits - 1;
+        }
     }
 
     private static bool IsRelativeNamespaceContext(List<SyntaxToken> tokens, int start, int end)

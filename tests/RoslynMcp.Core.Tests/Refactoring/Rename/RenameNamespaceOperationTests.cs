@@ -1107,6 +1107,74 @@ public class RenameNamespaceOperationTests
         Assert.Equal("using Alias = C;\nusing T = C.Helper;\nvar y = z = B;\n", rewritten);
     }
 
+    [SkippableFact]
+    public async Task RenameNamespace_InactiveInterpolationHole_Rewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Helper.cs", InactiveHelperSource),
+            ("Program.cs", InactiveInterpolatedProgram));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Helper.cs"),
+            NamespaceName = "OldNs",
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        var program = await File.ReadAllTextAsync(workspace.GetPath("Program.cs"));
+        Assert.Contains("$\"{NewNs.Helper.Tag()}\"", program);
+        Assert.Contains("$@\"verbatim {NewNs.Helper.Tag()}\"", program);
+        Assert.DoesNotContain("OldNs.Helper", program);
+    }
+
+    private const string InactiveInterpolatedProgram = """
+        using System;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                Console.WriteLine("always");
+        #if !DEBUG
+                Console.WriteLine("release-only " + $"{OldNs.Helper.Tag()}");
+                Console.WriteLine($@"verbatim {OldNs.Helper.Tag()}");
+        #endif
+            }
+        }
+        """;
+
+    [Theory]
+    [InlineData("var a = $\"{OldNs.H.T()}\";", "var a = $\"{NewNs.H.T()}\";", 1)]
+    [InlineData("var a = $@\"x {OldNs.H.T()} y\";", "var a = $@\"x {NewNs.H.T()} y\";", 1)]
+    [InlineData("var a = @$\"x {OldNs.H.T()} y\";", "var a = @$\"x {NewNs.H.T()} y\";", 1)]
+    [InlineData("var a = $\"\"\"{OldNs.H.T()}\"\"\";", "var a = $\"\"\"{NewNs.H.T()}\"\"\";", 1)]
+    [InlineData("var a = $$\"\"\"{x} {{OldNs.H.T()}}\"\"\";", "var a = $$\"\"\"{x} {{NewNs.H.T()}}\"\"\";", 1)]
+    [InlineData("var a = $\"\"\"\n    {OldNs.H.T()}\n    \"\"\";", "var a = $\"\"\"\n    {NewNs.H.T()}\n    \"\"\";", 1)]
+    [InlineData("var a = $\"{F($\"{OldNs.H.T()}\")}\";", "var a = $\"{F($\"{NewNs.H.T()}\")}\";", 1)]
+    [InlineData("var a = $\"{x,OldNs.C.W:N2} {OldNs.H.T():X}\";", "var a = $\"{x,NewNs.C.W:N2} {NewNs.H.T():X}\";", 2)]
+    [InlineData("var a = $\"{OldNs.A.B(OldNs.C.D)}\";", "var a = $\"{NewNs.A.B(NewNs.C.D)}\";", 2)]
+    [InlineData("var a = $\"OldNs.H {\"OldNs\"} {X.OldNs.Y}\";", "var a = $\"OldNs.H {\"OldNs\"} {X.OldNs.Y}\";", 0)]
+    public void ReplaceNamespaceReferences_RewritesInsideInterpolationHoles(string text, string expected, int expectedEdits)
+    {
+        var rewritten = RenameNamespaceOperation.ReplaceNamespaceReferences(
+            text, "OldNs", "NewNs", Array.Empty<string>(), out var editCount);
+
+        Assert.Equal(expected, rewritten);
+        Assert.Equal(expectedEdits, editCount);
+    }
+
+    [Fact]
+    public void ReplaceNamespaceReferences_RelativeFormInsideInterpolationHole()
+    {
+        var text = "var a = $\"{B.Helper.Tag()} {B}\";\n";
+
+        var rewritten = RenameNamespaceOperation.ReplaceNamespaceReferences(text, "A.B", "A.C", new[] { "A" });
+
+        Assert.Equal("var a = $\"{C.Helper.Tag()} {B}\";\n", rewritten);
+    }
+
     private static int CountOccurrences(string text, string value)
     {
         var count = 0;
