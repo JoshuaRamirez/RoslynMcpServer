@@ -542,14 +542,29 @@ public static class SyntaxGenerationHelper
     /// Builds <c>this.<paramref name="memberName"/></c> as a simple member
     /// access with a <c>this</c> receiver. Used by generate_tostring,
     /// generate_equals_hashcode, and generate_constructor so a member reference
-    /// is not shadowed by a parameter or local of the same name. The name is
-    /// used as given (no <c>@</c> escaping).
+    /// is not shadowed by a parameter or local of the same name. Reserved
+    /// keyword names (e.g. a field declared as <c>@event</c>, whose symbol
+    /// name is <c>event</c>) keep the verbatim <c>@</c> prefix so the output
+    /// parses (#3475); contextual keywords stay bare.
     /// </summary>
     internal static MemberAccessExpressionSyntax ThisMemberAccess(string memberName) =>
         SyntaxFactory.MemberAccessExpression(
             SyntaxKind.SimpleMemberAccessExpression,
             SyntaxFactory.ThisExpression(),
-            SyntaxFactory.IdentifierName(memberName));
+            SyntaxFactory.IdentifierName(EscapedIdentifier(memberName)));
+
+    /// <summary>
+    /// Identifier token for <paramref name="name"/>, emitted as a verbatim
+    /// <c>@name</c> token when the bare name is a reserved C# keyword.
+    /// </summary>
+    private static SyntaxToken EscapedIdentifier(string name)
+    {
+        var bare = name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
+        return SyntaxFacts.IsReservedKeyword(SyntaxFacts.GetKeywordKind(bare))
+            ? SyntaxFactory.VerbatimIdentifier(
+                SyntaxFactory.TriviaList(), bare, bare, SyntaxFactory.TriviaList())
+            : SyntaxFactory.Identifier(name);
+    }
 
     /// <summary>
     /// Same-assembly: keep <see cref="ISymbol.DeclaredAccessibility"/>.

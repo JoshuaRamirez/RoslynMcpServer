@@ -6368,6 +6368,36 @@ public class GenerateConstructorOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateConstructor_StructLangVersion10_KeywordNamedLeftover_EscapesThisMemberAccess()
+    {
+        const string source = """
+            public struct Box
+            {
+                public Box() { Value = 1; @event = 0; }
+                public int Value;
+                private int @event;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLanguageVersionAsync("10", source, "Foo.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["Value"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Box(int value)", updated, StringComparison.Ordinal);
+        Assert.Contains("this.@event = default;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("this.event", updated, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
+    }
+
+    [SkippableFact]
     public async Task GenerateConstructor_StructLangVersion10_UserParameterlessCtor_PreservesInitializedLeftovers()
     {
         const string source = """
