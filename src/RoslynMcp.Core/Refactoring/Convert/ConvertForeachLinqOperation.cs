@@ -512,7 +512,8 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     /// Innermost node that bounds the scope of the local declared by
     /// <paramref name="declaring"/>: its block, the whole switch block for
     /// a local declared in a case section's statements (a case-label pattern
-    /// designation stays section-scoped), owning for / foreach / using /
+    /// designation stays section-scoped), a switch-expression arm or query
+    /// clause for a designation inside it, owning for / foreach / using /
     /// fixed / while / catch, or an embedded statement. This may
     /// under-estimate a scope (e.g. a pattern variable in a while
     /// condition); the caller then scans from the body start, so a wrong
@@ -527,6 +528,9 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             {
                 case SwitchSectionSyntax section:
                     return previous is SwitchLabelSyntax || section.Parent == null ? section : section.Parent;
+                case SwitchExpressionArmSyntax or QueryClauseSyntax or SelectOrGroupClauseSyntax or QueryContinuationSyntax:
+                    // Pattern variables here are scoped to the arm or clause.
+                    return current;
                 case BlockSyntax or CatchClauseSyntax or
                     ForStatementSyntax or CommonForEachStatementSyntax or UsingStatementSyntax or
                     FixedStatementSyntax or WhileStatementSyntax:
