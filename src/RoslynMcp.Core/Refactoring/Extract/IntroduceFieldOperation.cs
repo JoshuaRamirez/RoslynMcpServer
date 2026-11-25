@@ -96,7 +96,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "endColumn must be >= 1.");
 
         if (@params.EndLine.Value < @params.StartLine.Value ||
-            (@params.EndLine.Value == @params.StartLine.Value && @params.EndColumn.Value < @params.StartColumn.Value))
+            (@params.EndLine.Value == @params.StartLine.Value && @params.EndColumn.Value <= @params.StartColumn.Value))
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
 
         if (!IsValidIdentifier(@params.FieldName!))
@@ -463,13 +463,18 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         return newDocument.Project.Solution;
     }
 
-    private static TextSpan GetSelectionSpan(SourceText sourceText, IntroduceFieldParams @params) =>
-        SyntaxLineHelpers.GetSelectionSpan(
+    private static TextSpan GetSelectionSpan(SourceText sourceText, IntroduceFieldParams @params)
+    {
+        var span = SyntaxLineHelpers.GetSelectionSpan(
             sourceText,
             @params.StartLine!.Value,
             @params.StartColumn!.Value,
             @params.EndLine!.Value,
             @params.EndColumn!.Value);
+        if (span.IsEmpty)
+            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
+        return span;
+    }
 
 
     private static FieldPlan BuildPlan(
