@@ -317,7 +317,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 @params.AddNullChecks && typeSymbol.IsReferenceType,
                 visibility,
                 addClassBaseCopy)
-            : GenerateConstructor(members, bodyMembers, typeDeclaration, @params.AddNullChecks, visibility, callBase.Initializer);
+            : GenerateConstructor(members, bodyMembers, typeDeclaration, typeSymbol, @params.AddNullChecks, visibility, callBase.Initializer);
         var replacing = exactMatch != null;
 
         // If preview mode, return without applying (but include generated constructor code)
@@ -680,7 +680,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 @params.AddNullChecks && typeSymbol.IsReferenceType,
                 visibility,
                 addClassBaseCopy)
-            : GenerateConstructor(members, bodyMembers, typeDeclaration, @params.AddNullChecks, visibility, callBase.Initializer);
+            : GenerateConstructor(members, bodyMembers, typeDeclaration, typeSymbol, @params.AddNullChecks, visibility, callBase.Initializer);
 
         try
         {
@@ -1070,6 +1070,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         List<ISymbol> parameterMembers,
         List<ISymbol> bodyMembers,
         TypeDeclarationSyntax typeDeclaration,
+        INamedTypeSymbol typeSymbol,
         bool addNullChecks,
         string visibility,
         ConstructorInitializerSyntax? initializer)
@@ -1082,7 +1083,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             var type = GetMemberType(member);
             var paramName = ToCamelCase(member.Name);
 
-            var parameter = SyntaxFactory.Parameter(SyntaxFactory.Identifier(paramName))
+            var parameter = SyntaxFactory.Parameter(SyntaxGenerationHelper.EscapedIdentifier(paramName))
                 .WithType(SyntaxFactory.ParseTypeName(type.ToDisplayString()).WithTrailingTrivia(SyntaxFactory.Space));
 
             parameters.Add(parameter);
@@ -1122,17 +1123,19 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             }
             else
             {
-                left = SyntaxFactory.IdentifierName(member.Name);
+                left = SyntaxGenerationHelper.CreateEscapedIdentifierName(member.Name);
             }
 
             var assignment = SyntaxFactory.ExpressionStatement(
                 SyntaxFactory.AssignmentExpression(
                     SyntaxKind.SimpleAssignmentExpression,
                     left,
-                    SyntaxFactory.IdentifierName(paramName)));
+                    SyntaxGenerationHelper.CreateEscapedIdentifierName(paramName)));
 
             statements.Add(assignment);
         }
+
+        initializer = ApplyStructDefiniteAssignment(typeSymbol, typeDeclaration, bodyMembers, statements, initializer);
 
         // Build constructor
         var constructor = SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
@@ -1168,7 +1171,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         bool addClassBaseCopy)
     {
         var selfTypeName = TypeDeclarationHelpers.GetSelfTypeName(typeDeclaration);
-        var parameter = SyntaxFactory.Parameter(SyntaxFactory.Identifier(parameterName))
+        var parameter = SyntaxFactory.Parameter(SyntaxGenerationHelper.EscapedIdentifier(parameterName))
             .WithType(SyntaxFactory.ParseTypeName(selfTypeName).WithTrailingTrivia(SyntaxFactory.Space));
 
         var statements = new List<StatementSyntax>();
@@ -1181,8 +1184,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             var left = SyntaxGenerationHelper.ThisMemberAccess(member.Name);
             var right = SyntaxFactory.MemberAccessExpression(
                 SyntaxKind.SimpleMemberAccessExpression,
-                SyntaxFactory.IdentifierName(parameterName),
-                SyntaxFactory.IdentifierName(member.Name));
+                SyntaxGenerationHelper.CreateEscapedIdentifierName(parameterName),
+                SyntaxGenerationHelper.CreateEscapedIdentifierName(member.Name));
 
             statements.Add(SyntaxFactory.ExpressionStatement(
                 SyntaxFactory.AssignmentExpression(
@@ -1191,27 +1194,213 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                     right)));
         }
 
+        ConstructorInitializerSyntax? initializer = null;
+        if (RequiresRecordBaseCopyInitializer(typeSymbol) || addClassBaseCopy)
+        {
+            initializer = SyntaxFactory.ConstructorInitializer(
+                SyntaxKind.BaseConstructorInitializer,
+                SyntaxFactory.ArgumentList(
+                    SyntaxFactory.SingletonSeparatedList(
+                        SyntaxFactory.Argument(
+                            CreateBaseCopyInitializerArgument(
+                                typeSymbol, parameterName, addClassBaseCopy)))));
+        }
+
+        initializer = ApplyStructDefiniteAssignment(typeSymbol, typeDeclaration, members, statements, initializer);
+
         var constructor = SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
             .WithModifiers(SyntaxFactory.TokenList(VisibilityTokenHelpers.ParseVisibilityTokens(visibility)))
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SingletonSeparatedList(parameter)))
             .WithBody(SyntaxFactory.Block(statements));
 
-        // Record language rule (CS8868) keeps : base(other). Class base-copy
-        // casts to the immediate base type so Base(Base) wins over Base(IFoo)
-        // / a more-specific inaccessible Base(Derived).
-        if (RequiresRecordBaseCopyInitializer(typeSymbol) || addClassBaseCopy)
-        {
-            constructor = constructor.WithInitializer(
-                SyntaxFactory.ConstructorInitializer(
-                    SyntaxKind.BaseConstructorInitializer,
-                    SyntaxFactory.ArgumentList(
-                        SyntaxFactory.SingletonSeparatedList(
-                            SyntaxFactory.Argument(
-                                CreateBaseCopyInitializerArgument(
-                                    typeSymbol, parameterName, addClassBaseCopy))))));
-        }
+        if (initializer != null)
+            constructor = constructor.WithInitializer(initializer);
 
         return constructor.NormalizeWhitespace();
+    }
+
+    /// <summary>
+    /// On a struct compiled with LangVersion &lt; 11, a constructor must
+    /// definitely assign every instance field and auto-property (CS0171 /
+    /// CS0843). Prefer <c>: this()</c> when the struct has no user-declared
+    /// parameterless constructor; otherwise assign leftover members to
+    /// <c>default</c>. C# 11+ auto-default structs are left unchanged (#3271).
+    /// </summary>
+    private static ConstructorInitializerSyntax? ApplyStructDefiniteAssignment(
+        INamedTypeSymbol typeSymbol,
+        TypeDeclarationSyntax typeDeclaration,
+        IReadOnlyList<ISymbol> assignedMembers,
+        List<StatementSyntax> statements,
+        ConstructorInitializerSyntax? initializer)
+    {
+        if (!RequiresStructDefiniteAssignment(typeSymbol, typeDeclaration.SyntaxTree))
+            return initializer;
+
+        var leftovers = GetUnassignedStructMembers(typeSymbol, assignedMembers);
+        if (leftovers.Count == 0)
+            return initializer;
+
+        // : this() on a struct without a user-declared parameterless ctor calls the
+        // implicit zero-initializer, which skips declaration initializers, so fall
+        // back to explicit default assignments whenever any initializer must run.
+        if (initializer == null
+            && !HasUserDeclaredParameterlessInstanceConstructor(typeSymbol)
+            && !HasInstanceMemberInitializers(typeSymbol))
+        {
+            return SyntaxFactory.ConstructorInitializer(
+                SyntaxKind.ThisConstructorInitializer,
+                SyntaxFactory.ArgumentList());
+        }
+
+        foreach (var leftover in leftovers)
+            statements.Add(CreateDefaultAssignment(leftover));
+
+        return initializer;
+    }
+
+    private static bool HasInstanceMemberInitializers(INamedTypeSymbol typeSymbol)
+    {
+        foreach (var field in typeSymbol.GetMembers().OfType<IFieldSymbol>())
+        {
+            if (field.IsStatic || field.IsConst)
+                continue;
+
+            ISymbol member = field.IsImplicitlyDeclared && field.AssociatedSymbol is IPropertySymbol property
+                ? property
+                : field;
+            if (HasDeclarationInitializer(member))
+                return true;
+        }
+
+        foreach (var eventSymbol in typeSymbol.GetMembers().OfType<IEventSymbol>())
+        {
+            if (!eventSymbol.IsStatic && HasDeclarationInitializer(eventSymbol))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool RequiresStructDefiniteAssignment(INamedTypeSymbol typeSymbol, SyntaxTree tree)
+    {
+        if (typeSymbol.TypeKind != TypeKind.Struct)
+            return false;
+        if (tree.Options is not CSharpParseOptions parseOptions)
+            return false;
+
+        return parseOptions.LanguageVersion.MapSpecifiedToEffectiveVersion() < LanguageVersion.CSharp11;
+    }
+
+    private static bool HasUserDeclaredParameterlessInstanceConstructor(INamedTypeSymbol typeSymbol)
+    {
+        foreach (var constructor in typeSymbol.InstanceConstructors)
+        {
+            if (!constructor.IsImplicitlyDeclared && constructor.Parameters.Length == 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static List<ISymbol> GetUnassignedStructMembers(
+        INamedTypeSymbol typeSymbol,
+        IReadOnlyList<ISymbol> assignedMembers)
+    {
+        var assigned = new HashSet<ISymbol>(assignedMembers, SymbolEqualityComparer.Default);
+        var leftovers = new List<ISymbol>();
+
+        foreach (var field in typeSymbol.GetMembers().OfType<IFieldSymbol>())
+        {
+            if (field.IsStatic || field.IsConst)
+                continue;
+
+            if (field.IsImplicitlyDeclared)
+            {
+                if (field.AssociatedSymbol is IPropertySymbol property
+                    && !property.IsIndexer
+                    && !assigned.Contains(property)
+                    && !HasDeclarationInitializer(property))
+                {
+                    leftovers.Add(property);
+                }
+
+                continue;
+            }
+
+            if (!assigned.Contains(field) && !HasDeclarationInitializer(field))
+                leftovers.Add(field);
+        }
+
+        // A field-like event (`public event Action E;`) has a compiler-generated
+        // backing field that must also be definitely assigned (CS0171). Its
+        // backing field is not surfaced as an ordinary field above, so look at
+        // the events themselves; `this.E = default;` assigns that field.
+        foreach (var eventSymbol in typeSymbol.GetMembers().OfType<IEventSymbol>())
+        {
+            if (eventSymbol.IsStatic
+                || !IsFieldLikeEvent(eventSymbol)
+                || assigned.Contains(eventSymbol)
+                || HasDeclarationInitializer(eventSymbol))
+            {
+                continue;
+            }
+
+            leftovers.Add(eventSymbol);
+        }
+
+        return leftovers;
+    }
+
+    /// <summary>
+    /// True for a field-like event (<c>event Action E;</c>), which owns an
+    /// implicit backing field; false for events with explicit
+    /// <c>add</c>/<c>remove</c> accessors, which store nothing in the struct.
+    /// </summary>
+    private static bool IsFieldLikeEvent(IEventSymbol eventSymbol)
+    {
+        if (eventSymbol.IsAbstract || eventSymbol.IsExtern)
+            return false;
+
+        foreach (var reference in eventSymbol.DeclaringSyntaxReferences)
+        {
+            if (reference.GetSyntax() is VariableDeclaratorSyntax
+                { Parent: VariableDeclarationSyntax { Parent: EventFieldDeclarationSyntax } })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when the member's declaration carries an initializer
+    /// (<c>int _x = 42;</c> / <c>int P { get; } = 42;</c>); the initializer
+    /// already definitely assigns it, so it must not be overwritten with
+    /// <c>default</c>.
+    /// </summary>
+    private static bool HasDeclarationInitializer(ISymbol member)
+    {
+        foreach (var reference in member.DeclaringSyntaxReferences)
+        {
+            var syntax = reference.GetSyntax();
+            if (syntax is VariableDeclaratorSyntax { Initializer: not null }
+                or PropertyDeclarationSyntax { Initializer: not null })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static StatementSyntax CreateDefaultAssignment(ISymbol member)
+    {
+        return SyntaxFactory.ExpressionStatement(
+            SyntaxFactory.AssignmentExpression(
+                SyntaxKind.SimpleAssignmentExpression,
+                SyntaxGenerationHelper.ThisMemberAccess(member.Name),
+                SyntaxFactory.LiteralExpression(SyntaxKind.DefaultLiteralExpression)));
     }
 
     /// <summary>
@@ -1242,7 +1431,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         string parameterName,
         bool addClassBaseCopy)
     {
-        var parameter = SyntaxFactory.IdentifierName(parameterName);
+        var parameter = SyntaxGenerationHelper.CreateEscapedIdentifierName(parameterName);
         if (!addClassBaseCopy || typeSymbol.BaseType == null)
             return parameter;
 
@@ -1408,7 +1597,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         var selected = SelectCallBaseCandidate(candidates, generatedNames, baseType);
         var count = selected.Parameters.Length;
         var arguments = generatedNames.Take(count)
-            .Select(name => SyntaxFactory.Argument(SyntaxFactory.IdentifierName(name)));
+            .Select(name => SyntaxFactory.Argument(SyntaxGenerationHelper.CreateEscapedIdentifierName(name)));
         var initializer = SyntaxFactory.ConstructorInitializer(
             SyntaxKind.BaseConstructorInitializer,
             SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(arguments)));
@@ -1511,7 +1700,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         return SyntaxFactory.IfStatement(
             SyntaxFactory.BinaryExpression(
                 SyntaxKind.EqualsExpression,
-                SyntaxFactory.IdentifierName(paramName),
+                SyntaxGenerationHelper.CreateEscapedIdentifierName(paramName),
                 SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression)),
             SyntaxFactory.ThrowStatement(
                 SyntaxFactory.ObjectCreationExpression(
@@ -1524,7 +1713,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                             .WithArgumentList(SyntaxFactory.ArgumentList(
                                 SyntaxFactory.SingletonSeparatedList(
                                     SyntaxFactory.Argument(
-                                        SyntaxFactory.IdentifierName(paramName)))))))))));
+                                        SyntaxGenerationHelper.CreateEscapedIdentifierName(paramName)))))))))));
     }
 
     private static TypeDeclarationSyntax InsertConstructor(

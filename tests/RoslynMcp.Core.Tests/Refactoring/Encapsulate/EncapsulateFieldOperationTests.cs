@@ -300,6 +300,418 @@ public class EncapsulateFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task EncapsulateField_VerbatimKeywordFieldName_Encapsulates()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public int @class;
+
+                public int Display() => @class;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "@class",
+            PropertyName = "Kind"
+        });
+
+        Assert.True(result.Success);
+        var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("public int @class", person);
+        Assert.Matches(@"private\s*int\s+@class", person);
+        Assert.Contains("public int Kind", person);
+        Assert.Contains("=> @class", person);
+        Assert.Contains("return @class;", person);
+        Assert.Contains("@class = value;", person);
+        Assert.DoesNotContain("return class;", person);
+        AssertNoSyntaxErrors(person);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_VerbatimKeywordFieldName_OmittedPropertyName_DerivesValidNames()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public int @class;
+
+                public int Display() => @class;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "@class"
+        });
+
+        Assert.True(result.Success);
+        var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int Class", person);
+        Assert.Matches(@"private\s*int\s+_class;", person);
+        Assert.Contains("return _class;", person);
+        Assert.DoesNotContain("_@class", person);
+        Assert.DoesNotContain("@Class", person);
+        AssertNoSyntaxErrors(person);
+    }
+
+    [SkippableTheory]
+    [InlineData("@foo")]
+    [InlineData("foo")]
+    public async Task EncapsulateField_RenamedBackingField_RewritesSameTypeUses(string fieldName)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Person
+            {
+                public int {{fieldName}};
+
+                public int Display() => foo;
+
+                public int Twice() => this.foo * 2;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = fieldName,
+            PropertyName = "Foo"
+        });
+
+        Assert.True(result.Success);
+        var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Matches(@"private\s*int\s+_foo;", person);
+        Assert.Contains("Display() => _foo", person);
+        Assert.Contains("this._foo * 2", person);
+        Assert.Contains("return _foo;", person);
+        await AssertCompilesAsync(workspace);
+    }
+
+    private const string ShadowingLocalSource = """
+        namespace TestApp;
+
+        public class Counter
+        {
+            public int foo = 2;
+
+            public int M()
+            {
+                int _foo = 100;
+                return _foo + foo;
+            }
+        }
+        """;
+
+    private const string ShadowingLambdaParameterSource = """
+        using System;
+
+        namespace TestApp;
+
+        public class Counter
+        {
+            public int foo = 2;
+
+            public Func<int, int> Add() => _foo => _foo + foo;
+        }
+        """;
+
+    private const string ShadowingMethodParameterSource = """
+        namespace TestApp;
+
+        public class Counter
+        {
+            public static int foo = 2;
+
+            public static int M(int _foo) => _foo * foo;
+        }
+        """;
+
+    private const string ShadowingQueryRangeVariableSource = """
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Counter
+        {
+            public int foo = 2;
+
+            public int M(int[] xs) => (from _foo in xs select _foo + foo).Sum();
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(ShadowingLocalSource, false)]
+    [InlineData(ShadowingLocalSource, true)]
+    [InlineData(ShadowingLambdaParameterSource, false)]
+    [InlineData(ShadowingMethodParameterSource, false)]
+    [InlineData(ShadowingQueryRangeVariableSource, false)]
+    public async Task EncapsulateField_RenamedBackingField_ShadowedByLocalOrParameter_ThrowsNameCollision(string source, bool preview)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(("Counter.cs", source));
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                FieldName = "foo",
+                PropertyName = "Foo",
+                Preview = preview
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Contains("_foo", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData(ShadowingLocalSource)]
+    [InlineData(ShadowingLambdaParameterSource)]
+    public async Task EncapsulateField_AllFilesTrue_RenamedBackingFieldShadowed_SkipsField(string source)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(("Counter.cs", source));
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_RenamedBackingField_QualifiedUseNextToShadowingLocal_Rewrites()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Counter
+            {
+                public int foo = 2;
+
+                public int M()
+                {
+                    int _foo = 100;
+                    return _foo + this.foo;
+                }
+
+                public int N() => foo + 1;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Counter.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "foo",
+            PropertyName = "Foo"
+        });
+
+        Assert.True(result.Success);
+        var counter = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return _foo + this._foo;", counter);
+        Assert.Contains("N() => _foo + 1", counter);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableTheory]
+    [InlineData("@foo")]
+    [InlineData("foo")]
+    public async Task EncapsulateField_VerbatimPropertyName_CollidesWithExistingProperty(string propertyName)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public int _bar;
+
+                public int foo { get; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                FieldName = "_bar",
+                PropertyName = propertyName
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal(NormalizeNewlines(source), NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
+    [SkippableTheory]
+    [InlineData("public int foo;")]
+    [InlineData("public int foo() => 0;")]
+    public async Task EncapsulateField_VerbatimPropertyName_CollidesWithExistingNonPropertyMember(string member)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Person
+            {
+                public int _bar;
+
+                {{member}}
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                FieldName = "_bar",
+                PropertyName = "@foo"
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal(NormalizeNewlines(source), NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_DerivedBackingNameCollision_ThrowsNameCollision()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public int @foo;
+
+                private int _foo;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                FieldName = "@foo",
+                PropertyName = "Foo"
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal(NormalizeNewlines(source), NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_RenamedBackingField_RewritesUsesInsideSameDeclaration()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public static int @foo = 1, copy = foo;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "@foo",
+            PropertyName = "Foo"
+        });
+
+        Assert.True(result.Success);
+        var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Matches(@"_foo\s*=\s*1,\s*copy\s*=\s*_foo;", person);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableTheory]
+    [InlineData("@_")]
+    [InlineData("__")]
+    public async Task EncapsulateField_UnderscoreOnlyFieldName_OmittedPropertyName_Rejected(string fieldName)
+    {
+        var source = $$"""
+            namespace TestApp;
+
+            public class Person
+            {
+                public int {{fieldName}};
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                FieldName = fieldName
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+        Assert.Equal(NormalizeNewlines(source), NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
+    [Theory]
+    [InlineData("@class", "Class")]
+    [InlineData("_name", "Name")]
+    [InlineData("name", "Name")]
+    public void DerivePropertyName_StripsVerbatimPrefixAndUnderscore(string fieldName, string expected)
+    {
+        Assert.Equal(expected, EncapsulateFieldOperation.DerivePropertyName(fieldName));
+    }
+
+    [Theory]
+    [InlineData("@class", "_class")]
+    [InlineData("Name", "_name")]
+    public void DeriveBackingFieldName_StripsVerbatimPrefix(string fieldName, string expected)
+    {
+        Assert.Equal(expected, EncapsulateFieldOperation.DeriveBackingFieldName(fieldName));
+    }
+
+    private static void AssertNoSyntaxErrors(string source)
+    {
+        var errors = CSharpSyntaxTree.ParseText(source)
+            .GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.True(errors.Count == 0, string.Join("\n", errors));
+    }
+
+    [SkippableFact]
     public async Task EncapsulateField_SameClassReferences_StayOnField()
     {
         await using var workspace = await TempWorkspace.CreateAsync(
@@ -811,6 +1223,115 @@ public class EncapsulateFieldOperationTests
             }));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("123x")]
+    [InlineData("1name")]
+    [InlineData("has space")]
+    [InlineData("field-name")]
+    [InlineData("foo.bar")]
+    [InlineData("@123x")]
+    [InlineData("class")]
+    [InlineData("@")]
+    public void Validate_InvalidFieldName_ThrowsInvalidSymbolName(string fieldName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                FieldName = fieldName
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+        Assert.Equal("1003", ex.ErrorCode);
+        Assert.Contains("field name", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(fieldName, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("name")]
+    [InlineData("_name")]
+    [InlineData("@class")]
+    [InlineData("var")]
+    [InlineData("async")]
+    [InlineData("café")]
+    public void Validate_ValidFieldName_DoesNotThrowInvalidSymbolName(string fieldName)
+    {
+        // SyntaxIdentifierValidation accepts ordinary names, verbatim
+        // "@class", contextual keywords (var, async), and Unicode letters.
+        // Bare reserved keywords such as "class" are rejected above.
+        // A missing file must surface as SourceFileNotFound, not
+        // InvalidSymbolName.
+        var missing = Path.Combine(
+            Path.GetTempPath(),
+            "RoslynMcpEncapsulateField_ValidId_" + Guid.NewGuid().ToString("N") + ".cs");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                SourceFile = missing,
+                FieldName = fieldName
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        Assert.NotEqual(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("class")]
+    [InlineData("123x")]
+    [InlineData("@")]
+    public void Validate_InvalidPropertyName_ThrowsInvalidSymbolName(string propertyName)
+    {
+        // propertyName is checked after File.Exists, so the source file must exist.
+        var file = Path.Combine(
+            Path.GetTempPath(),
+            "RoslynMcpEncapsulateField_InvalidProp_" + Guid.NewGuid().ToString("N") + ".cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+                {
+                    SourceFile = file,
+                    FieldName = "name",
+                    PropertyName = propertyName
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+            Assert.Equal("1003", ex.ErrorCode);
+            Assert.Contains("property name", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Theory]
+    [InlineData("Name")]
+    [InlineData("@class")]
+    [InlineData("var")]
+    public void Validate_ValidPropertyName_DoesNotThrowInvalidSymbolName(string propertyName)
+    {
+        var file = Path.Combine(
+            Path.GetTempPath(),
+            "RoslynMcpEncapsulateField_ValidProp_" + Guid.NewGuid().ToString("N") + ".cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                SourceFile = file,
+                FieldName = "name",
+                PropertyName = propertyName
+            });
+        }
+        finally
+        {
+            File.Delete(file);
+        }
     }
 
     [Fact]

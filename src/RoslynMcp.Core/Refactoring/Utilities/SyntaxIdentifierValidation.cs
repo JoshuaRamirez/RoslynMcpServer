@@ -4,8 +4,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
 /// Shared SyntaxFacts-based identifier validation and <c>@</c>-prefix
-/// normalization used by inline_constant, generate_method_stub /
-/// generate_property, add_parameter / remove_parameter, and
+/// normalization used by inline_constant, encapsulate_field,
+/// generate_method_stub / generate_property, add_parameter /
+/// remove_parameter / introduce_parameter, and
 /// convert_anonymous_to_class / convert_tuple_to_struct name checks.
 /// Applies verbatim <c>@</c>-keyword and reserved-keyword rules via
 /// <see cref="SyntaxFacts"/>. Distinct from char-based
@@ -28,6 +29,11 @@ internal static class SyntaxIdentifierValidation
         if (name.StartsWith('@') && name.Length > 1)
         {
             var bare = name[1..];
+            // Only one verbatim prefix is allowed: SyntaxFacts accepts
+            // "@Foo", so "@@Foo" would otherwise pass.
+            if (bare.StartsWith('@'))
+                return false;
+
             return SyntaxFacts.IsValidIdentifier(bare) ||
                    SyntaxFacts.GetKeywordKind(bare) != SyntaxKind.None;
         }

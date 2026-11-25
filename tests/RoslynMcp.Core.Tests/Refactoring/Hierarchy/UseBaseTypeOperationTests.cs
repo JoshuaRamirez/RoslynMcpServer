@@ -1766,6 +1766,602 @@ public class UseBaseTypeOperationTests
         Assert.Equal(ErrorCodes.NoEligibleReferences, ex.ErrorCode);
     }
 
+
+    #region Inactive #if / #else derived-only uses (#2944)
+
+    [SkippableFact]
+    public async Task UseBaseType_InactiveNotDebugDerivedMember_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InactiveNotDebugBreedSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                TargetBaseType = "Animal"
+            }));
+
+        Assert.Equal(ErrorCodes.BaseCannotSatisfyUsedMembers, ex.ErrorCode);
+        Assert.Equal("3114", ex.ErrorCode);
+        Assert.Contains("cannot satisfy members used through 'Dog'", ex.Message);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_InactiveElseDerivedMember_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InactiveElseBreedSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                TargetBaseType = "Animal"
+            }));
+
+        Assert.Equal(ErrorCodes.BaseCannotSatisfyUsedMembers, ex.ErrorCode);
+        Assert.Equal("3114", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_ActiveDebugDerivedMember_StillThrows()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ActiveDebugBreedSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                TargetBaseType = "Animal"
+            }));
+
+        Assert.Equal(ErrorCodes.BaseCannotSatisfyUsedMembers, ex.ErrorCode);
+        Assert.Equal("3114", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_InactiveElseBaseMemberOnly_StillRewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InactiveElseNameOnlySource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            TargetBaseType = "Animal"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Describe(Animal d)", updated);
+        Assert.DoesNotContain("Describe(Dog d)", updated);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_InactiveNotDebugDerivedMember_Preview_ThrowsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InactiveNotDebugBreedSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                TargetBaseType = "Animal",
+                Preview = true
+            }));
+
+        Assert.Equal(ErrorCodes.BaseCannotSatisfyUsedMembers, ex.ErrorCode);
+        Assert.Equal("3114", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    private const string InactiveNotDebugBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+
+        class Program
+        {
+            static void Describe(Dog d)
+            {
+                Console.WriteLine(d.Name);
+        #if !DEBUG
+                Console.WriteLine(d.Breed);
+        #endif
+            }
+
+            static void Main()
+            {
+                Describe(new Dog("Rex", "lab"));
+            }
+        }
+        """;
+
+    private const string InactiveElseBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+
+        class Program
+        {
+            static void Describe(Dog d)
+            {
+                Console.WriteLine(d.Name);
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                Console.WriteLine(d.Breed);
+        #endif
+            }
+
+            static void Main()
+            {
+                Describe(new Dog("Rex", "lab"));
+            }
+        }
+        """;
+
+    private const string ActiveDebugBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+
+        class Program
+        {
+            static void Describe(Dog d)
+            {
+                Console.WriteLine(d.Name);
+        #if DEBUG
+                Console.WriteLine(d.Breed);
+        #endif
+            }
+
+            static void Main()
+            {
+                Describe(new Dog("Rex", "lab"));
+            }
+        }
+        """;
+
+    private const string InactiveElseNameOnlySource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+
+        class Program
+        {
+            static void Describe(Dog d)
+            {
+                Console.WriteLine(d.Name);
+        #if DEBUG
+                Console.WriteLine("debug-only");
+        #else
+                Console.WriteLine(d.Name);
+        #endif
+            }
+
+            static void Main()
+            {
+                Describe(new Dog("Rex", "lab"));
+            }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(nameof(InactiveFieldBreedSource))]
+    [InlineData(nameof(InactivePublicPropertyBreedSource))]
+    [InlineData(nameof(InactiveMethodReturnBreedSource))]
+    [InlineData(nameof(InactiveHiddenOverloadSource))]
+    [InlineData(nameof(InactiveNestedMethodReturnSource))]
+    [InlineData(nameof(InactiveIndexerBreedSource))]
+    public async Task UseBaseType_InactiveDerivedOnlyUse_CodexFollowUps_Throws(string sourceName)
+    {
+        var source = sourceName switch
+        {
+            nameof(InactiveFieldBreedSource) => InactiveFieldBreedSource,
+            nameof(InactivePublicPropertyBreedSource) => InactivePublicPropertyBreedSource,
+            nameof(InactiveMethodReturnBreedSource) => InactiveMethodReturnBreedSource,
+            nameof(InactiveNestedMethodReturnSource) => InactiveNestedMethodReturnSource,
+            nameof(InactiveIndexerBreedSource) => InactiveIndexerBreedSource,
+            _ => InactiveHiddenOverloadSource
+        };
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                TargetBaseType = "Animal"
+            }));
+
+        Assert.Equal(ErrorCodes.BaseCannotSatisfyUsedMembers, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_InactiveCommentAndLiteralMentions_StillRewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InactiveCommentLiteralSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            TargetBaseType = "Animal"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Describe(Animal d)", updated);
+        Assert.DoesNotContain("Describe(Dog d)", updated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Console.WriteLine($\"{d.Breed}\");")]
+    [InlineData("Console.WriteLine($\"\"\"{d.Breed}\"\"\");")]
+    [InlineData("Console.WriteLine($@\"{d.Breed}\");")]
+    [InlineData("Console.WriteLine($\"x={d.Name} y={d.Breed,10:G}\");")]
+    [InlineData("Console.WriteLine($\"{$\"{d.Breed}\"}\");")]
+    [InlineData("Console.WriteLine($\"{d.Name,d.Breed.Length}\");")]
+    public async Task UseBaseType_InactiveInterpolatedHoleDerivedMember_Throws(string inactiveLine)
+    {
+        var source = InactiveNotDebugBreedSource.Replace("Console.WriteLine(d.Breed);", inactiveLine);
+        Assert.Contains(inactiveLine, source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        // ParseTokens lexes an interpolated string as one token; its holes
+        // must still be scanned (#2944).
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                TargetBaseType = "Animal"
+            }));
+
+        Assert.Equal("3114", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData("Console.WriteLine($\"{d.Name}\");")]
+    [InlineData("Console.WriteLine($\"\"\"{d.Name}\"\"\");")]
+    [InlineData("Console.WriteLine($\"d.Breed\");")]
+    public async Task UseBaseType_InactiveInterpolatedHoleBaseMemberOnly_StillRewrites(string inactiveLine)
+    {
+        var source = InactiveNotDebugBreedSource.Replace("Console.WriteLine(d.Breed);", inactiveLine);
+        Assert.Contains(inactiveLine, source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            TargetBaseType = "Animal"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Describe(Animal d)", updated);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_InactiveInterpolatedIndexerHoleDerivedMember_Throws()
+    {
+        var source = InactiveIndexerBreedSource.Replace(
+            "Console.WriteLine(holder[0].Breed);",
+            "Console.WriteLine($\"{holder[0].Breed}\");");
+        Assert.Contains("$\"{holder[0].Breed}\"", source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                TargetBaseType = "Animal"
+            }));
+
+        Assert.Equal("3114", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    private const string InactiveIndexerBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+
+        class Holder
+        {
+            public Dog this[int i] => new Dog("Rex", "lab");
+        }
+
+        class Program
+        {
+            static void Main()
+            {
+                var holder = new Holder();
+                Console.WriteLine(holder[0].Name);
+        #if !DEBUG
+                Console.WriteLine(holder[0].Breed);
+        #endif
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task UseBaseType_InactiveIndexerBaseMemberOnly_StillRewrites()
+    {
+        var source = InactiveIndexerBreedSource.Replace("holder[0].Breed", "holder[0].Name");
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            TargetBaseType = "Animal"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public Animal this[int i]", updated);
+    }
+
+    private const string InactiveFieldBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+        class Program
+        {
+            private Dog _dog = new Dog("Rex", "lab");
+
+            void Show() => Console.WriteLine(_dog.Name);
+
+            void Other()
+            {
+        #if !DEBUG
+                Console.WriteLine(_dog.Breed);
+        #endif
+            }
+        }
+        """;
+
+    private const string InactivePublicPropertyBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+        class Holder
+        {
+            public Dog Pet { get; } = new Dog("Rex", "lab");
+        }
+
+        class Program
+        {
+            static void Show(Holder h)
+            {
+                Console.WriteLine(h.Pet.Name);
+        #if !DEBUG
+                Console.WriteLine(h.Pet.Breed);
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveMethodReturnBreedSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+        class Program
+        {
+            static Dog Get() => new Dog("Rex", "lab");
+
+            static void Show()
+            {
+                Console.WriteLine(Get().Name);
+        #if !DEBUG
+                Console.WriteLine(Get().Breed);
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveNestedMethodReturnSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+        class Program
+        {
+            static Dog Get(Dog fallback) => fallback;
+
+            static void Show()
+            {
+                Console.WriteLine(Get(new Dog("Rex", "lab")).Name);
+        #if !DEBUG
+                Console.WriteLine(Get(Get(null!)).Name);
+        #endif
+            }
+        }
+        """;
+
+    private const string InactiveHiddenOverloadSource = """
+        using System;
+
+        class Animal
+        {
+            public void M(int value) => Console.WriteLine(value);
+        }
+
+        class Dog : Animal
+        {
+            public void M(string value) => Console.WriteLine(value);
+        }
+
+        class Program
+        {
+            static void Describe(Dog d)
+            {
+                d.M(1);
+        #if !DEBUG
+                d.M("x");
+        #endif
+            }
+
+            static void Main()
+            {
+                Describe(new Dog());
+            }
+        }
+        """;
+
+    private const string InactiveCommentLiteralSource = """
+        using System;
+
+        class Animal
+        {
+            public string Name { get; }
+            public Animal(string name) => Name = name;
+        }
+
+        class Dog : Animal
+        {
+            public string Breed { get; }
+            public Dog(string name, string breed) : base(name) => Breed = breed;
+        }
+        class Program
+        {
+            static void Describe(Dog d)
+            {
+                Console.WriteLine(d.Name);
+        #if !DEBUG
+                // d is unused here
+                Console.WriteLine("d");
+        #endif
+            }
+
+            static void Main()
+            {
+                Describe(new Dog("Rex", "lab"));
+            }
+        }
+        """;
+
+    #endregion
+
     [SkippableFact]
     public async Task UseBaseType_BaseCannotSatisfyUsedMembers_Throws()
     {

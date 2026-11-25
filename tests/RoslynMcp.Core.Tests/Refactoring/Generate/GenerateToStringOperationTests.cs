@@ -1316,6 +1316,38 @@ public class GenerateToStringOperationTests
         Assert.DoesNotContain("Species", toString);
     }
 
+    [SkippableFact]
+    public async Task GenerateToString_DefaultInterpolated_KeywordNamedMembers_EscapesHoles()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                private int @class;
+                private string @event;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Person.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("class = {@class}", toString, StringComparison.Ordinal);
+        Assert.Contains("event = {@event}", toString, StringComparison.Ordinal);
+        Assert.DoesNotContain("{class}", toString, StringComparison.Ordinal);
+        Assert.DoesNotContain("{event}", toString, StringComparison.Ordinal);
+        AssertCompiles(updated);
+    }
+
     #endregion
 
     #region StringBuilder

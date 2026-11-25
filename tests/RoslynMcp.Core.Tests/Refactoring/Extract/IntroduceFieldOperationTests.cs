@@ -104,6 +104,23 @@ public class IntroduceFieldOperationTests
     }
 
     [Fact]
+    public void Validate_SameLineExclusiveEndEqualStart_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            IntroduceFieldOperation.Validate(new IntroduceFieldParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                StartLine = 5,
+                StartColumn = 10,
+                EndLine = 5,
+                EndColumn = 10,
+                FieldName = "_value"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+    }
+
+    [Fact]
     public void Validate_InvalidFieldName_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>

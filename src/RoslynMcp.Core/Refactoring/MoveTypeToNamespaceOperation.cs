@@ -5,6 +5,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Editing;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -602,8 +603,19 @@ public sealed class MoveTypeToNamespaceOperation
             newNamespace,
             cancellationToken);
 
-        // Update using directives in all referencing documents
-        foreach (var (docId, _) in references.ReferencesByDocument)
+        // Update using directives in all referencing documents, including
+        // consumers that only mention the type in inactive #if/#else text
+        // (FindReferencesAsync sees the active configuration only, #2939).
+        var documentsToUpdate = new HashSet<DocumentId>(references.ReferencesByDocument.Keys);
+        await AddDocumentsWithInactiveIdentifierAsync(
+            solution,
+            resolution.Symbol.Name,
+            newNamespace,
+            resolution.Document.Id,
+            documentsToUpdate,
+            cancellationToken);
+
+        foreach (var docId in documentsToUpdate)
         {
             var doc = solution.GetDocument(docId);
             if (doc == null) continue;
@@ -686,6 +698,168 @@ public sealed class MoveTypeToNamespaceOperation
         }
 
         return solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+    }
+
+
+    /// <summary>
+    /// Adds documents (in the declaring project or projects referencing it)
+    /// whose disabled preprocessor text contains <paramref name="identifier"/>
+    /// as an identifier token, so a Release-only
+    /// <c>#else</c> / <c>#if !DEBUG</c> use still gets <c>using NewNs</c>.
+    /// </summary>
+    private static async Task AddDocumentsWithInactiveIdentifierAsync(
+        Solution solution,
+        string identifier,
+        string newNamespace,
+        DocumentId declaringDocumentId,
+        HashSet<DocumentId> documentsToUpdate,
+        CancellationToken cancellationToken)
+    {
+        // Only the declaring project and projects that (transitively) reference
+        // it can see the moved type; unrelated projects must not get the using.
+        var declaringProjectId = declaringDocumentId.ProjectId;
+        var candidateProjectIds = new HashSet<ProjectId>(
+            solution.GetProjectDependencyGraph()
+                .GetProjectsThatTransitivelyDependOnThisProject(declaringProjectId))
+        {
+            declaringProjectId
+        };
+
+        foreach (var projectId in candidateProjectIds)
+        {
+            var project = solution.GetProject(projectId);
+            if (project == null)
+                continue;
+
+            foreach (var document in project.Documents)
+            {
+                if (documentsToUpdate.Contains(document.Id) ||
+                    !document.SupportsSyntaxTree)
+                {
+                    continue;
+                }
+
+                var root = await document.GetSyntaxRootAsync(cancellationToken);
+                if (root == null)
+                    continue;
+
+                // In the declaring document, inactive text inside the moved
+                // type's (already renamed) namespace still resolves without a
+                // using; only other namespaces in that file need one.
+                var excludedSpans = document.Id == declaringDocumentId
+                    ? GetMovedNamespaceSpans(root, newNamespace, identifier)
+                    : [];
+
+                if (DisabledTriviaContainsIdentifier(root, identifier, excludedSpans))
+                    documentsToUpdate.Add(document.Id);
+            }
+        }
+    }
+
+    private static List<TextSpan> GetMovedNamespaceSpans(
+        SyntaxNode root,
+        string newNamespace,
+        string identifier)
+    {
+        return root.DescendantNodes()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Where(ns => ns.Name.ToString() == newNamespace &&
+                         ns.Members.OfType<BaseTypeDeclarationSyntax>()
+                             .Any(t => t.Identifier.ValueText == identifier))
+            .Select(ns => ns.FullSpan)
+            .ToList();
+    }
+
+    private static bool DisabledTriviaContainsIdentifier(
+        SyntaxNode root,
+        string identifier,
+        List<TextSpan> excludedSpans)
+    {
+        foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
+        {
+            if (!trivia.IsKind(SyntaxKind.DisabledTextTrivia))
+                continue;
+
+            if (excludedSpans.Any(span => span.Contains(trivia.Span)))
+                continue;
+
+            if (ContainsIdentifierToken(trivia.ToFullString(), identifier))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Lexes inactive text so only identifier tokens match; occurrences inside
+    /// comments or string/char literals are ignored.
+    /// </summary>
+    private static bool ContainsIdentifierToken(string text, string identifier)
+    {
+        if (text.IndexOf(identifier, StringComparison.Ordinal) < 0)
+            return false;
+
+        var previous = default(SyntaxToken);
+        foreach (var token in SyntaxFactory.ParseTokens(text))
+        {
+            // A name after '.', '->' or '::' is a member access or an already
+            // qualified name (e.g. obj.Helper()), which a using cannot affect.
+            if (token.IsKind(SyntaxKind.IdentifierToken) &&
+                string.Equals(token.ValueText, identifier, StringComparison.Ordinal) &&
+                !previous.IsKind(SyntaxKind.DotToken) &&
+                !previous.IsKind(SyntaxKind.MinusGreaterThanToken) &&
+                !previous.IsKind(SyntaxKind.ColonColonToken))
+            {
+                return true;
+            }
+
+            if (token.IsKind(SyntaxKind.InterpolatedStringToken) &&
+                InterpolationHolesContainIdentifier(token.Text, identifier))
+            {
+                return true;
+            }
+
+            previous = token;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// <c>ParseTokens</c> lexes a whole interpolated string (<c>$"…"</c>,
+    /// <c>$@"…"</c>, <c>@$"…"</c>, raw <c>$"""…"""</c> / <c>$$"""…"""</c>) as
+    /// one token, so a use inside a hole was invisible to the scan (#2939).
+    /// Re-parses the token and scans each hole expression and alignment with
+    /// <see cref="ContainsIdentifierToken"/>, which recurses into nested
+    /// interpolated strings. A token that does not re-parse cleanly but whose
+    /// text mentions the identifier counts as a use (an extra using is
+    /// harmless; a missing one breaks the inactive build).
+    /// </summary>
+    private static bool InterpolationHolesContainIdentifier(string tokenText, string identifier)
+    {
+        if (tokenText.IndexOf(identifier, StringComparison.Ordinal) < 0)
+            return false;
+
+        if (SyntaxFactory.ParseExpression(tokenText) is not InterpolatedStringExpressionSyntax interpolated ||
+            interpolated.FullSpan.Length != tokenText.Length ||
+            interpolated.ContainsDiagnostics)
+        {
+            return true;
+        }
+
+        foreach (var hole in interpolated.Contents.OfType<InterpolationSyntax>())
+        {
+            if (ContainsIdentifierToken(hole.Expression.ToString(), identifier))
+                return true;
+
+            if (hole.AlignmentClause != null &&
+                ContainsIdentifierToken(hole.AlignmentClause.Value.ToString(), identifier))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task<(Document, int added, int removed)> UpdateUsingDirectivesAsync(
