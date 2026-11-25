@@ -38,7 +38,25 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
     /// Validates make-non-static parameters. Internal so tests can exercise
     /// input rules without loading a workspace.
     /// </summary>
-    internal static void Validate(MakeNonStaticParams @params) =>
+    internal static void Validate(MakeNonStaticParams @params)
+    {
+        // Exclusive-end empty selections must be InvalidSelectionRange even
+        // when the source file is missing, matching inverted-range order
+        // (range is checked before File.Exists). Leave missing params,
+        // invalid paths, and < 1 coordinates to the shared helper.
+        if (!@params.AllFiles &&
+            !string.IsNullOrWhiteSpace(@params.SourceFile) &&
+            @params.StartLine is >= 1 &&
+            @params.StartColumn is >= 1 &&
+            @params.EndLine is >= 1 &&
+            @params.EndColumn is >= 1 &&
+            @params.EndLine.Value == @params.StartLine.Value &&
+            @params.EndColumn.Value <= @params.StartColumn.Value)
+        {
+            SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
+            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
+        }
+
         StaticMethodHelpers.ValidateParams(
             @params.AllFiles,
             @params.SourceFile,
@@ -47,6 +65,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
             @params.EndLine,
             @params.EndColumn,
             @params.SymbolName);
+    }
 
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
@@ -349,13 +368,20 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
             claimedSpans);
 
 
-    internal static TextSpan GetSelectionSpan(SourceText sourceText, MakeNonStaticParams @params) =>
-        SyntaxLineHelpers.GetSelectionSpan(
+    internal static TextSpan GetSelectionSpan(SourceText sourceText, MakeNonStaticParams @params)
+    {
+        var span = SyntaxLineHelpers.GetSelectionSpan(
             sourceText,
             @params.StartLine!.Value,
             @params.StartColumn!.Value,
             @params.EndLine!.Value,
             @params.EndColumn!.Value);
+
+        if (span.IsEmpty)
+            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
+
+        return span;
+    }
 
 
     private static ISymbol ResolveSelectedSymbol(
