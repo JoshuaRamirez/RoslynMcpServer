@@ -948,13 +948,19 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         LocalDeclarationStatementSyntax variableDeclaration)
     {
         var variableRef = SyntaxFactory.IdentifierName(variableName);
+        var declaration = variableDeclaration.NormalizeWhitespace()
+            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
+        // Keep the expression's trivia so a following keyword (is / as /
+        // switch / with) stays separated from the new local (#3295).
+        var updatedStatement = containingStatement.ReplaceNode(
+            expression, variableRef.WithTriviaFrom(expression));
+        (declaration, updatedStatement) = PlaceDeclarationRelativeToDirectiveTrivia(
+            declaration, updatedStatement);
+
         var newStatements = new List<StatementSyntax>
         {
-            variableDeclaration.NormalizeWhitespace()
-                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed),
-            // Keep the expression's trivia so a following keyword (is / as /
-            // switch / with) stays separated from the new local (#3295).
-            containingStatement.ReplaceNode(expression, variableRef.WithTriviaFrom(expression))
+            declaration,
+            updatedStatement
         };
 
         if (containingBlock != null)
@@ -1033,9 +1039,76 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
 
         var declaration = variableDeclaration.NormalizeWhitespace()
             .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
-        var newBlock = updatedBlock.WithStatements(updatedBlock.Statements.Insert(insertIndex, declaration));
+        var currentInsertBefore = updatedBlock.Statements[insertIndex];
+        (declaration, var newInsertBefore) = PlaceDeclarationRelativeToDirectiveTrivia(
+            declaration, currentInsertBefore);
+        var newBlock = updatedBlock.WithStatements(
+            updatedBlock.Statements.Replace(currentInsertBefore, newInsertBefore).Insert(insertIndex, declaration));
         return replaced.ReplaceNode(updatedBlock, newBlock);
     }
+
+    /// <summary>
+    /// Moves preprocessor / region directive leading trivia from
+    /// <paramref name="statement"/> onto <paramref name="declaration"/> so the
+    /// new local stays in the same conditional region as the statement: after
+    /// a preceding <c>#endif</c> / <c>#endregion</c>, or inside an opening
+    /// <c>#if</c> / <c>#else</c>. Later state-changing directives
+    /// (<c>#pragma</c>, <c>#nullable</c>, …) move with them so the extracted
+    /// expression keeps their scope. Only the statement's indentation whitespace
+    /// is copied to the declaration; trivia after the last directive stays only
+    /// on the statement. Statements with no such trivia are unchanged.
+    /// </summary>
+    private static (LocalDeclarationStatementSyntax Declaration, StatementSyntax Statement)
+        PlaceDeclarationRelativeToDirectiveTrivia(
+            LocalDeclarationStatementSyntax declaration,
+            StatementSyntax statement)
+    {
+        var leading = statement.GetLeadingTrivia();
+        var lastDirective = -1;
+        var hasPlacementDirective = false;
+        for (var i = 0; i < leading.Count; i++)
+        {
+            if (IsDirectivePlacementTrivia(leading[i]))
+                hasPlacementDirective = true;
+
+            // State-changing directives (#pragma, #nullable, …) after the
+            // placement directive must also precede the declaration, or the
+            // moved expression leaves their scope.
+            if (leading[i].IsDirective || leading[i].IsKind(SyntaxKind.DisabledTextTrivia))
+                lastDirective = i;
+        }
+
+        if (!hasPlacementDirective)
+            return (declaration, statement);
+
+        var split = lastDirective + 1;
+        while (split < leading.Count && leading[split].IsKind(SyntaxKind.EndOfLineTrivia))
+            split++;
+
+        var moved = SyntaxFactory.TriviaList(leading.Take(split));
+        var rest = SyntaxFactory.TriviaList(leading.Skip(split));
+
+        // Only the statement's own indentation (trailing whitespace) is copied
+        // to the declaration; comments after the last directive stay solely
+        // on the statement.
+        var indentStart = rest.Count;
+        while (indentStart > 0 && rest[indentStart - 1].IsKind(SyntaxKind.WhitespaceTrivia))
+            indentStart--;
+        var indent = SyntaxFactory.TriviaList(rest.Skip(indentStart));
+
+        return (
+            declaration.WithLeadingTrivia(moved.AddRange(indent)),
+            statement.WithLeadingTrivia(rest));
+    }
+
+    private static bool IsDirectivePlacementTrivia(SyntaxTrivia trivia) =>
+        trivia.IsKind(SyntaxKind.IfDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.ElifDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.ElseDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.EndIfDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.DisabledTextTrivia)
+        || trivia.IsKind(SyntaxKind.RegionDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.EndRegionDirectiveTrivia);
 
     private static List<ExpressionSyntax> FindEquivalentExpressions(
         ExpressionSyntax original,
