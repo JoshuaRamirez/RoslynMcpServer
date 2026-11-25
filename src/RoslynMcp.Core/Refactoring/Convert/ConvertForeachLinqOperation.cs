@@ -318,24 +318,23 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     }
 
     /// <summary>
-    /// True when the accumulator is a local declared before the loop and the
-    /// text between the end of that declaration and the <c>foreach</c>
-    /// keyword contains disabled text (an inactive <c>#if</c> branch) or a
-    /// conditional directive other than an <c>#if</c> that opens in the
-    /// foreach's own leading trivia (a loop wrapped as a whole in
-    /// <c>#if</c> still converts). Such code can write to the accumulator in
-    /// some build configuration, and the LINQ assignment would silently
-    /// discard those writes (#3476).
+    /// True when the accumulator is a local and the text between the end of
+    /// its declaration and the <c>foreach</c> keyword contains disabled text
+    /// (an inactive <c>#if</c> branch) or a conditional directive other than
+    /// an <c>#if</c> that opens in the foreach's own leading trivia (a loop
+    /// wrapped as a whole in <c>#if</c> still converts). Such code can write
+    /// to the accumulator in some build configuration, and the LINQ
+    /// assignment would silently discard those writes (#3476).
     /// </summary>
     internal static bool AccumulatorHasDirectiveGuardedCodeBeforeLoop(
         ForEachStatementSyntax foreachStmt,
         ExpressionSyntax accumulator)
     {
-        var declaration = FindAccumulatorDeclaration(foreachStmt, accumulator);
-        if (declaration == null)
+        var scanStart = FindAccumulatorScanStart(foreachStmt, accumulator);
+        if (scanStart == null)
             return false;
 
-        var start = declaration.Span.End;
+        var start = scanStart.Value;
         var end = foreachStmt.SpanStart;
         if (end <= start)
             return false;
@@ -365,11 +364,22 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     }
 
     /// <summary>
-    /// Nearest local declaration statement before <paramref name="foreachStmt"/>
-    /// (in the same or an enclosing block of the same body) that declares the
-    /// simple-name accumulator, or null (fields, parameters, member access).
+    /// Position from which to scan for directive-guarded code when the
+    /// simple-name accumulator is a local, or null when it is not a local
+    /// (field, parameter, member access). The local is resolved to its
+    /// declaring syntax in the nearest enclosing body (method, accessor,
+    /// local function, lambda or top-level statements): a local declaration
+    /// statement, <c>using</c> / <c>for</c> / <c>fixed</c> declarator,
+    /// <c>out var</c> or pattern / deconstruction designation, enclosing
+    /// <c>foreach</c> variable or <c>catch</c> variable. The scan starts at
+    /// the end of the statement containing that declaration, or at the end
+    /// of the declaration itself when that statement also contains the loop
+    /// (<c>if (Make(out var r)) { … foreach … }</c>). A local declared in an
+    /// outer body and captured by the loop's lambda / local function has no
+    /// anchor statement there, so the scan starts at the start of the
+    /// loop's enclosing body.
     /// </summary>
-    private static LocalDeclarationStatementSyntax? FindAccumulatorDeclaration(
+    private static int? FindAccumulatorScanStart(
         ForEachStatementSyntax foreachStmt,
         ExpressionSyntax accumulator)
     {
@@ -377,35 +387,133 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             return null;
 
         var name = identifier.Identifier.ValueText;
-        SyntaxNode current = foreachStmt;
-        while (current.Parent is { } parent)
+        var nearestBody = EnclosingBody(foreachStmt);
+        if (nearestBody == null)
+            return null;
+
+        for (var body = nearestBody; body != null; body = EnclosingBody(body))
         {
-            if (parent is (MemberDeclarationSyntax and not GlobalStatementSyntax) or LocalFunctionStatementSyntax or
-                AnonymousFunctionExpressionSyntax or AccessorDeclarationSyntax)
-            {
+            if (DeclaresParameter(body, name))
                 return null;
+
+            var declaration = FindLocalDeclaringSyntax(body, name, foreachStmt.SpanStart);
+            if (declaration == null)
+            {
+                if (body is MemberDeclarationSyntax or AccessorDeclarationSyntax or CompilationUnitSyntax)
+                    return null;
+                continue;
             }
 
-            var siblings = parent is GlobalStatementSyntax global
-                ? global.Parent!.ChildNodes().OfType<GlobalStatementSyntax>().Select(g => g.Statement)
-                : parent.ChildNodes().OfType<StatementSyntax>();
-            var anchor = parent is GlobalStatementSyntax ? parent : current;
+            if (body != nearestBody)
+                return BodyStart(nearestBody);
 
-            var match = siblings
-                .OfType<LocalDeclarationStatementSyntax>()
-                .Where(statement => statement.Span.End <= anchor.SpanStart &&
-                                    statement.Declaration.Variables.Any(v => v.Identifier.ValueText == name))
-                .LastOrDefault();
-            if (match != null)
-                return match;
-
-            current = parent is GlobalStatementSyntax ? parent.Parent! : parent;
-            if (current is CompilationUnitSyntax)
-                return null;
+            var statement = declaration.FirstAncestorOrSelf<StatementSyntax>();
+            return statement != null && !statement.Span.Contains(foreachStmt.Span)
+                ? statement.Span.End
+                : declaration.Span.End;
         }
 
         return null;
     }
+
+    private static bool IsBodyBoundary(SyntaxNode node) =>
+        node is (MemberDeclarationSyntax and not GlobalStatementSyntax) or LocalFunctionStatementSyntax or
+            AnonymousFunctionExpressionSyntax or AccessorDeclarationSyntax or CompilationUnitSyntax;
+
+    private static SyntaxNode? EnclosingBody(SyntaxNode node)
+    {
+        for (var current = node.Parent; current != null; current = current.Parent)
+        {
+            if (IsBodyBoundary(current))
+                return current is BaseTypeDeclarationSyntax or BaseNamespaceDeclarationSyntax ? null : current;
+        }
+
+        return null;
+    }
+
+    private static bool DeclaresParameter(SyntaxNode body, string name)
+    {
+        var parameters = body switch
+        {
+            BaseMethodDeclarationSyntax method => method.ParameterList.Parameters,
+            LocalFunctionStatementSyntax localFunction => localFunction.ParameterList.Parameters,
+            ParenthesizedLambdaExpressionSyntax lambda => lambda.ParameterList.Parameters,
+            SimpleLambdaExpressionSyntax lambda => SyntaxFactory.SingletonSeparatedList(lambda.Parameter),
+            AnonymousMethodExpressionSyntax { ParameterList: { } list } => list.Parameters,
+            IndexerDeclarationSyntax indexer => indexer.ParameterList.Parameters,
+            _ => default
+        };
+
+        if (parameters.Any(parameter => parameter.Identifier.ValueText == name))
+            return true;
+
+        // Accessors see the indexer's parameters and set / init / add /
+        // remove accessors see the implicit 'value' parameter.
+        if (body is AccessorDeclarationSyntax accessor)
+        {
+            if (name == "value" && !accessor.IsKind(SyntaxKind.GetAccessorDeclaration))
+                return true;
+            if (accessor.Parent?.Parent is IndexerDeclarationSyntax indexer)
+                return indexer.ParameterList.Parameters.Any(parameter => parameter.Identifier.ValueText == name);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Nearest local-declaring syntax named <paramref name="name"/> that
+    /// ends before <paramref name="before"/> in <paramref name="body"/>,
+    /// not descending into nested bodies.
+    /// </summary>
+    private static SyntaxNode? FindLocalDeclaringSyntax(SyntaxNode body, string name, int before)
+    {
+        SyntaxNode? match = null;
+        foreach (var node in body.DescendantNodes(child => child == body || !IsBodyBoundary(child)))
+        {
+            if (node == body || node.SpanStart >= before)
+                continue;
+
+            var declared = node switch
+            {
+                VariableDeclaratorSyntax declarator => declarator.Identifier,
+                SingleVariableDesignationSyntax designation => designation.Identifier,
+                ForEachStatementSyntax loop => loop.Identifier,
+                CatchDeclarationSyntax catchDeclaration => catchDeclaration.Identifier,
+                _ => default
+            };
+
+            if (declared.ValueText != name || declared.Span.End > before)
+                continue;
+
+            if (match == null || declared.SpanStart > DeclaredTokenStart(match))
+                match = node;
+        }
+
+        return match;
+    }
+
+    private static int DeclaredTokenStart(SyntaxNode node) => node switch
+    {
+        VariableDeclaratorSyntax declarator => declarator.Identifier.SpanStart,
+        SingleVariableDesignationSyntax designation => designation.Identifier.SpanStart,
+        ForEachStatementSyntax loop => loop.Identifier.SpanStart,
+        CatchDeclarationSyntax catchDeclaration => catchDeclaration.Identifier.SpanStart,
+        _ => node.SpanStart
+    };
+
+    private static int BodyStart(SyntaxNode body) => body switch
+    {
+        BaseMethodDeclarationSyntax { Body: { } block } => block.SpanStart,
+        BaseMethodDeclarationSyntax { ExpressionBody: { } arrow } => arrow.SpanStart,
+        LocalFunctionStatementSyntax { Body: { } block } => block.SpanStart,
+        LocalFunctionStatementSyntax { ExpressionBody: { } arrow } => arrow.SpanStart,
+        AccessorDeclarationSyntax { Body: { } block } => block.SpanStart,
+        AccessorDeclarationSyntax { ExpressionBody: { } arrow } => arrow.SpanStart,
+        AnonymousFunctionExpressionSyntax lambda => lambda.Body.SpanStart,
+        CompilationUnitSyntax unit when unit.Members.OfType<GlobalStatementSyntax>().FirstOrDefault() is { } first =>
+            first.SpanStart,
+        _ => body.SpanStart
+    };
 
     /// <summary>
     /// Finds the foreach on <paramref name="line"/>. When

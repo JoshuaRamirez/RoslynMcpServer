@@ -1969,6 +1969,121 @@ public class ConvertForeachLinqOperationTests
         }
         """;
 
+    private const string ReleaseOnlyWriteBeforeLoopOutVar = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            private static bool Make(out List<int> list)
+            {
+                list = new List<int>();
+                return true;
+            }
+
+            public List<int> Scale(List<int> values)
+            {
+                if (Make(out var result))
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                    return result;
+                }
+                return new List<int>();
+            }
+        }
+        """;
+
+    private const string ReleaseOnlyWriteBeforeLoopPatternVariable = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(object o, List<int> values)
+            {
+                if (o is List<int> result)
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                    return result;
+                }
+                return new List<int>();
+            }
+        }
+        """;
+
+    private const string ReleaseOnlyWriteBeforeLoopCapturedLocal = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+                Action fill = () =>
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                };
+                fill();
+                return result;
+            }
+        }
+        """;
+
+    private const string OutVarNoDirectivesBeforeLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            private static bool Make(out List<int> list)
+            {
+                list = new List<int>();
+                return true;
+            }
+
+            public List<int> Scale(List<int> values)
+            {
+                if (Make(out var result))
+                {
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                    return result;
+                }
+                return new List<int>();
+            }
+        }
+        """;
+
     private const string NoDirectivesBeforeLoop = """
         using System.Collections.Generic;
         using System.Linq;
@@ -1993,6 +2108,9 @@ public class ConvertForeachLinqOperationTests
     [InlineData(ReleaseOnlyWriteBeforeLoop)]
     [InlineData(DebugOnlyWriteBeforeLoop)]
     [InlineData(IfElseWriteBeforeLoop)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopOutVar)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopCapturedLocal)]
     public void TryConvert_DirectiveGuardedWriteBeforeLoop_ReturnsFalse(string source)
     {
         var foreachStmt = ParseSingleForeach(source);
@@ -2004,6 +2122,7 @@ public class ConvertForeachLinqOperationTests
     [Theory]
     [InlineData(NoDirectivesBeforeLoop)]
     [InlineData(ForeachWrappedInIfDebug)]
+    [InlineData(OutVarNoDirectivesBeforeLoop)]
     public void TryConvert_NoDirectiveGuardedWriteBeforeLoop_StillConverts(string source)
     {
         var foreachStmt = ParseSingleForeach(source);
@@ -2015,6 +2134,10 @@ public class ConvertForeachLinqOperationTests
     [InlineData(ReleaseOnlyWriteBeforeLoop, true)]
     [InlineData(DebugOnlyWriteBeforeLoop, false)]
     [InlineData(IfElseWriteBeforeLoop, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopOutVar, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopOutVar, true)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable, true)]
     public async Task ConvertForeachLinq_DirectiveGuardedWriteBeforeLoop_ThrowsCannotConvert(string source, bool preview)
     {
         await using var workspace = await TempWorkspace.CreateAsync(source);
@@ -2030,7 +2153,11 @@ public class ConvertForeachLinqOperationTests
             }));
 
         Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
-        Assert.Contains("accumulator", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            "Preprocessor directives (#if / #elif / #else / #endif) guard code between the accumulator's " +
+            "declaration and the foreach; the LINQ assignment would discard writes made there in some " +
+            "build configuration, so the loop cannot be safely converted.",
+            ex.Message);
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -2053,10 +2180,13 @@ public class ConvertForeachLinqOperationTests
         await AssertCompilesAsync(workspace);
     }
 
-    [SkippableFact]
-    public async Task ConvertForeachLinq_AllFiles_SkipsDirectiveGuardedWriteBeforeLoop()
+    [SkippableTheory]
+    [InlineData(ReleaseOnlyWriteBeforeLoop)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopOutVar)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable)]
+    public async Task ConvertForeachLinq_AllFiles_SkipsDirectiveGuardedWriteBeforeLoop(string source)
     {
-        await using var workspace = await TempWorkspace.CreateAsync(ReleaseOnlyWriteBeforeLoop);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
         var original = await File.ReadAllTextAsync(workspace.SourcePath);
         var operation = new ConvertForeachLinqOperation(workspace.Context);
 
@@ -2066,6 +2196,7 @@ public class ConvertForeachLinqOperationTests
         });
 
         Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
