@@ -1511,6 +1511,88 @@ public class RenameSymbolOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    private const string LocalFunctionQueryRangeVariableSource = """
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Report
+        {
+            public int Run(int[] xs, int[] ys)
+            {
+                var q = from Log in xs
+                        let b = Log * 2
+                        join c in ys on Log equals c
+                        join d in ys on Log equals d into e
+                        select b into f
+                        select f;
+                int Note() => 1;
+                return q.Count() + Note();
+            }
+        }
+        """;
+
+    [Theory]
+    [InlineData("Log")]
+    [InlineData("b")]
+    [InlineData("c")]
+    [InlineData("d")]
+    [InlineData("e")]
+    [InlineData("f")]
+    public void HasSimpleNameConflict_LocalFunction_DetectsQueryRangeVariables(string newName)
+    {
+        var note = GetLocalFunctionSymbol(LocalFunctionQueryRangeVariableSource, "Note");
+        Assert.True(RenameSymbolOperation.HasSimpleNameConflict(note, newName));
+        Assert.False(RenameSymbolOperation.HasSimpleNameConflict(note, "Fresh"));
+    }
+
+    [SkippableTheory]
+    [InlineData("Log")]
+    [InlineData("b")]
+    [InlineData("e")]
+    [InlineData("f")]
+    public async Task RenameSymbol_SingleSite_LocalFunctionOntoQueryRangeVariable_ThrowsNameConflictScope(string newName)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LocalFunctionQueryRangeVariableSource, "Program.cs");
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameSymbolParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Note",
+                NewName = newName,
+                RenameFile = false
+            }));
+
+        Assert.Equal(ErrorCodes.NameConflictScope, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData("Log")]
+    [InlineData("c")]
+    [InlineData("d")]
+    public async Task RenameSymbol_AllFilesTrue_LocalFunctionOntoQueryRangeVariable_Skips(string newName)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LocalFunctionQueryRangeVariableSource, "Program.cs");
+        var operation = new RenameSymbolOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            AllFiles = true,
+            SymbolName = "Note",
+            NewName = newName,
+            RenameFile = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("int Note() => 1;", text);
+        Assert.Contains("+ Note();", text);
+    }
+
     private const string LocalFunctionLambdaParameterSource = """
         using System;
 

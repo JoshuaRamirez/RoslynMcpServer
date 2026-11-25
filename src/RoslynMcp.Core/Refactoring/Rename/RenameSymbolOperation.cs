@@ -852,6 +852,8 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
             // Simple foreach / catch identifiers are not VariableDeclaratorSyntax;
             // parameters of nested lambdas, anonymous methods, and local
             // functions are not on IMethodSymbol.Parameters of the outer method.
+            // Query range variables (from / let / join / join … into / into)
+            // also claim the name in the enclosing scope (CS1931).
             foreach (var node in body.DescendantNodes())
             {
                 var identifier = node switch
@@ -859,6 +861,11 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
                     ForEachStatementSyntax forEach => forEach.Identifier,
                     CatchDeclarationSyntax catchDeclaration => catchDeclaration.Identifier,
                     ParameterSyntax parameterSyntax => parameterSyntax.Identifier,
+                    FromClauseSyntax fromClause => fromClause.Identifier,
+                    LetClauseSyntax letClause => letClause.Identifier,
+                    JoinClauseSyntax joinClause => joinClause.Identifier,
+                    JoinIntoClauseSyntax joinInto => joinInto.Identifier,
+                    QueryContinuationSyntax continuation => continuation.Identifier,
                     _ => default
                 };
                 if (identifier.ValueText != newName || identifier.IsKind(SyntaxKind.None))
