@@ -405,6 +405,139 @@ public class EncapsulateFieldOperationTests
         await AssertCompilesAsync(workspace);
     }
 
+    private const string ShadowingLocalSource = """
+        namespace TestApp;
+
+        public class Counter
+        {
+            public int foo = 2;
+
+            public int M()
+            {
+                int _foo = 100;
+                return _foo + foo;
+            }
+        }
+        """;
+
+    private const string ShadowingLambdaParameterSource = """
+        using System;
+
+        namespace TestApp;
+
+        public class Counter
+        {
+            public int foo = 2;
+
+            public Func<int, int> Add() => _foo => _foo + foo;
+        }
+        """;
+
+    private const string ShadowingMethodParameterSource = """
+        namespace TestApp;
+
+        public class Counter
+        {
+            public static int foo = 2;
+
+            public static int M(int _foo) => _foo * foo;
+        }
+        """;
+
+    private const string ShadowingQueryRangeVariableSource = """
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Counter
+        {
+            public int foo = 2;
+
+            public int M(int[] xs) => (from _foo in xs select _foo + foo).Sum();
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(ShadowingLocalSource, false)]
+    [InlineData(ShadowingLocalSource, true)]
+    [InlineData(ShadowingLambdaParameterSource, false)]
+    [InlineData(ShadowingMethodParameterSource, false)]
+    [InlineData(ShadowingQueryRangeVariableSource, false)]
+    public async Task EncapsulateField_RenamedBackingField_ShadowedByLocalOrParameter_ThrowsNameCollision(string source, bool preview)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(("Counter.cs", source));
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                FieldName = "foo",
+                PropertyName = "Foo",
+                Preview = preview
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Contains("_foo", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData(ShadowingLocalSource)]
+    [InlineData(ShadowingLambdaParameterSource)]
+    public async Task EncapsulateField_AllFilesTrue_RenamedBackingFieldShadowed_SkipsField(string source)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(("Counter.cs", source));
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_RenamedBackingField_QualifiedUseNextToShadowingLocal_Rewrites()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Counter
+            {
+                public int foo = 2;
+
+                public int M()
+                {
+                    int _foo = 100;
+                    return _foo + this.foo;
+                }
+
+                public int N() => foo + 1;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Counter.cs", source));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "foo",
+            PropertyName = "Foo"
+        });
+
+        Assert.True(result.Success);
+        var counter = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return _foo + this._foo;", counter);
+        Assert.Contains("N() => _foo + 1", counter);
+        await AssertCompilesAsync(workspace);
+    }
+
     [SkippableTheory]
     [InlineData("@foo")]
     [InlineData("foo")]

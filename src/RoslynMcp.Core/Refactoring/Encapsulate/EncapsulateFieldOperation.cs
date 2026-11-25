@@ -223,6 +223,18 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             }
         }
 
+        // A rewritten use must not be captured by a local or parameter that
+        // already has the new name (silent rebinding).
+        var shadowed = await FindShadowedRewriteAsync(
+            PlannedReferenceRewrites(externalReferences, internalReferences, propertyName, newFieldName, fieldRenamed, @params.UpdateReferences),
+            cancellationToken);
+        if (shadowed is { } hit)
+        {
+            throw new RefactoringException(
+                ErrorCodes.NameCollision,
+                $"Cannot rewrite references to '{hit.Name}': a local, parameter or lambda parameter named '{hit.Name}' is already in scope at {Path.GetFileName(hit.FilePath)}:{hit.Line}, so the use would bind to it instead.");
+        }
+
         // If preview mode, return without applying
         if (@params.Preview)
         {
@@ -543,6 +555,12 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             .Where(loc => IsInsideContainingType(loc, fieldSymbol.ContainingType))
             .ToList();
 
+        var shadowed = await FindShadowedRewriteAsync(
+            PlannedReferenceRewrites(externalReferences, internalReferences, propertyName, newFieldName, fieldRenamed, updateReferences),
+            cancellationToken);
+        if (shadowed != null)
+            return null;
+
         return await ApplyEncapsulateToSolutionAsync(
             document,
             root,
@@ -558,6 +576,89 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             fieldRenamed,
             updateReferences,
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns the first rewritten reference whose new simple name would bind
+    /// to a local, parameter, lambda parameter, range variable or local
+    /// function already in scope there, instead of the field or property
+    /// (<c>int _foo = 100; return _foo + foo;</c> would silently become
+    /// <c>_foo + _foo</c>). Qualified uses (<c>this.foo</c>, <c>obj.foo</c>,
+    /// <c>?.foo</c>) cannot be captured and are skipped. Returns null when
+    /// every rewrite is safe.
+    /// </summary>
+    internal static async Task<(string Name, string FilePath, int Line)?> FindShadowedRewriteAsync(
+        IEnumerable<(ReferenceLocation Reference, string Replacement)> rewrites,
+        CancellationToken cancellationToken)
+    {
+        var semanticModels = new Dictionary<DocumentId, SemanticModel?>();
+        foreach (var (reference, replacement) in rewrites)
+        {
+            var document = reference.Document;
+            if (!semanticModels.TryGetValue(document.Id, out var semanticModel))
+            {
+                semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+                semanticModels[document.Id] = semanticModel;
+            }
+
+            if (semanticModel == null)
+                continue;
+
+            var root = await semanticModel.SyntaxTree.GetRootAsync(cancellationToken);
+            if (root.FindNode(reference.Location.SourceSpan, getInnermostNodeForTie: true)
+                is not IdentifierNameSyntax identifier)
+            {
+                continue;
+            }
+
+            if (identifier.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == identifier ||
+                identifier.Parent is MemberBindingExpressionSyntax ||
+                identifier.Parent is QualifiedNameSyntax qualified && qualified.Right == identifier)
+            {
+                continue;
+            }
+
+            var name = SyntaxIdentifierValidation.NormalizeIdentifier(replacement);
+            var shadowing = semanticModel.LookupSymbols(identifier.SpanStart, name: name)
+                .Any(symbol => symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol ||
+                               symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction });
+            if (shadowing)
+            {
+                var line = reference.Location.GetLineSpan().StartLinePosition.Line + 1;
+                return (name, document.FilePath ?? document.Name, line);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The (reference, new name) pairs <see cref="ApplyEncapsulateToSolutionAsync"/>
+    /// will write: external uses follow the property (or the renamed field when
+    /// references are not redirected), same-type uses follow a renamed field.
+    /// </summary>
+    private static IEnumerable<(ReferenceLocation Reference, string Replacement)> PlannedReferenceRewrites(
+        IReadOnlyList<ReferenceLocation> externalReferences,
+        IReadOnlyList<ReferenceLocation> internalReferences,
+        string propertyName,
+        string newFieldName,
+        bool fieldRenamed,
+        bool updateReferences)
+    {
+        var externalReplacement = updateReferences
+            ? propertyName
+            : fieldRenamed ? newFieldName : null;
+        if (externalReplacement != null)
+        {
+            foreach (var reference in externalReferences)
+                yield return (reference, externalReplacement);
+        }
+
+        if (fieldRenamed)
+        {
+            foreach (var reference in internalReferences)
+                yield return (reference, newFieldName);
+        }
     }
 
     private static async Task<Solution> ApplyEncapsulateToSolutionAsync(
