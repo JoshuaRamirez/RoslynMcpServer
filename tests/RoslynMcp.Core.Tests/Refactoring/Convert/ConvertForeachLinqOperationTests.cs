@@ -2055,6 +2055,35 @@ public class ConvertForeachLinqOperationTests
         }
         """;
 
+    private const string ReleaseOnlyWriteBeforeLoopSiblingScopeShadow = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+                Action fill = () =>
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    { var result = 0; _ = result; }
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                };
+                fill();
+                return result;
+            }
+        }
+        """;
+
     private const string OutVarNoDirectivesBeforeLoop = """
         using System.Collections.Generic;
         using System.Linq;
@@ -2111,6 +2140,7 @@ public class ConvertForeachLinqOperationTests
     [InlineData(ReleaseOnlyWriteBeforeLoopOutVar)]
     [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable)]
     [InlineData(ReleaseOnlyWriteBeforeLoopCapturedLocal)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSiblingScopeShadow)]
     public void TryConvert_DirectiveGuardedWriteBeforeLoop_ReturnsFalse(string source)
     {
         var foreachStmt = ParseSingleForeach(source);
@@ -2138,6 +2168,8 @@ public class ConvertForeachLinqOperationTests
     [InlineData(ReleaseOnlyWriteBeforeLoopOutVar, true)]
     [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable, false)]
     [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable, true)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSiblingScopeShadow, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSiblingScopeShadow, true)]
     public async Task ConvertForeachLinq_DirectiveGuardedWriteBeforeLoop_ThrowsCannotConvert(string source, bool preview)
     {
         await using var workspace = await TempWorkspace.CreateAsync(source);
@@ -2184,6 +2216,7 @@ public class ConvertForeachLinqOperationTests
     [InlineData(ReleaseOnlyWriteBeforeLoop)]
     [InlineData(ReleaseOnlyWriteBeforeLoopOutVar)]
     [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSiblingScopeShadow)]
     public async Task ConvertForeachLinq_AllFiles_SkipsDirectiveGuardedWriteBeforeLoop(string source)
     {
         await using var workspace = await TempWorkspace.CreateAsync(source);

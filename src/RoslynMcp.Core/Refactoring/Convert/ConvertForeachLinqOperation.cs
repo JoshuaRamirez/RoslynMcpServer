@@ -396,7 +396,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             if (DeclaresParameter(body, name))
                 return null;
 
-            var declaration = FindLocalDeclaringSyntax(body, name, foreachStmt.SpanStart);
+            var declaration = FindLocalDeclaringSyntax(body, name, foreachStmt);
             if (declaration == null)
             {
                 if (body is MemberDeclarationSyntax or AccessorDeclarationSyntax or CompilationUnitSyntax)
@@ -462,11 +462,15 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
 
     /// <summary>
     /// Nearest local-declaring syntax named <paramref name="name"/> that
-    /// ends before <paramref name="before"/> in <paramref name="body"/>,
-    /// not descending into nested bodies.
+    /// ends before <paramref name="target"/> in <paramref name="body"/> and
+    /// whose scope contains <paramref name="target"/>, not descending into
+    /// nested bodies. Sibling-scope locals with the same name are ignored,
+    /// so a shadowing local in an earlier block can't move the scan start
+    /// past a guarded write to the outer accumulator.
     /// </summary>
-    private static SyntaxNode? FindLocalDeclaringSyntax(SyntaxNode body, string name, int before)
+    private static SyntaxNode? FindLocalDeclaringSyntax(SyntaxNode body, string name, SyntaxNode target)
     {
+        var before = target.SpanStart;
         SyntaxNode? match = null;
         foreach (var node in body.DescendantNodes(child => child == body || !IsBodyBoundary(child)))
         {
@@ -485,11 +489,40 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             if (declared.ValueText != name || declared.Span.End > before)
                 continue;
 
+            if (!DeclarationScope(node, body).Span.Contains(target.Span))
+                continue;
+
             if (match == null || declared.SpanStart > DeclaredTokenStart(match))
                 match = node;
         }
 
         return match;
+    }
+
+    /// <summary>
+    /// Innermost node that bounds the scope of the local declared by
+    /// <paramref name="declaring"/>: its block, switch section, owning
+    /// for / foreach / using / fixed / while / catch, or an embedded
+    /// statement. This may under-estimate a scope (e.g. a pattern variable
+    /// in a while condition), which only makes the check fall back to an
+    /// earlier scan start and over-refuse, never under-refuse.
+    /// </summary>
+    private static SyntaxNode DeclarationScope(SyntaxNode declaring, SyntaxNode body)
+    {
+        for (var current = declaring; current != null && current != body; current = current.Parent)
+        {
+            switch (current)
+            {
+                case BlockSyntax or SwitchSectionSyntax or CatchClauseSyntax or
+                    ForStatementSyntax or CommonForEachStatementSyntax or UsingStatementSyntax or
+                    FixedStatementSyntax or WhileStatementSyntax:
+                    return current;
+                case StatementSyntax statement when statement.Parent is not (BlockSyntax or SwitchSectionSyntax or GlobalStatementSyntax):
+                    return current;
+            }
+        }
+
+        return body;
     }
 
     private static int DeclaredTokenStart(SyntaxNode node) => node switch
