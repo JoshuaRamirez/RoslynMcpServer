@@ -2175,6 +2175,35 @@ public class ConvertForeachLinqOperationTests
         }
         """;
 
+    private const string ReleaseOnlyWriteBeforeLoopDoWhilePattern = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values, object o, List<object> objs)
+            {
+                var result = new List<int>();
+                Action fill = () =>
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    do { } while (o is List<int> result && result.Count < 0);
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                };
+                fill();
+                return result;
+            }
+        }
+        """;
+
     private const string OutVarNoDirectivesBeforeLoop = """
         using System.Collections.Generic;
         using System.Linq;
@@ -2235,6 +2264,7 @@ public class ConvertForeachLinqOperationTests
     [InlineData(ReleaseOnlyWriteBeforeLoopSwitchSectionLocal)]
     [InlineData(ReleaseOnlyWriteBeforeLoopSwitchArmPattern)]
     [InlineData(ReleaseOnlyWriteBeforeLoopQueryClausePattern)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopDoWhilePattern)]
     public void TryConvert_DirectiveGuardedWriteBeforeLoop_ReturnsFalse(string source)
     {
         var foreachStmt = ParseSingleForeach(source);
@@ -2266,10 +2296,12 @@ public class ConvertForeachLinqOperationTests
     [InlineData(ReleaseOnlyWriteBeforeLoopSwitchSectionLocal, false)]
     [InlineData(ReleaseOnlyWriteBeforeLoopSwitchArmPattern, false)]
     [InlineData(ReleaseOnlyWriteBeforeLoopQueryClausePattern, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopDoWhilePattern, false)]
     [InlineData(ReleaseOnlyWriteBeforeLoopSiblingScopeShadow, true)]
     [InlineData(ReleaseOnlyWriteBeforeLoopSwitchSectionLocal, true)]
     [InlineData(ReleaseOnlyWriteBeforeLoopSwitchArmPattern, true)]
     [InlineData(ReleaseOnlyWriteBeforeLoopQueryClausePattern, true)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopDoWhilePattern, true)]
     public async Task ConvertForeachLinq_DirectiveGuardedWriteBeforeLoop_ThrowsCannotConvert(string source, bool preview)
     {
         await using var workspace = await TempWorkspace.CreateAsync(source);
@@ -2320,6 +2352,7 @@ public class ConvertForeachLinqOperationTests
     [InlineData(ReleaseOnlyWriteBeforeLoopSwitchSectionLocal)]
     [InlineData(ReleaseOnlyWriteBeforeLoopSwitchArmPattern)]
     [InlineData(ReleaseOnlyWriteBeforeLoopQueryClausePattern)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopDoWhilePattern)]
     public async Task ConvertForeachLinq_AllFiles_SkipsDirectiveGuardedWriteBeforeLoop(string source)
     {
         await using var workspace = await TempWorkspace.CreateAsync(source);

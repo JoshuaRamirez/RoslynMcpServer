@@ -514,7 +514,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     /// a local declared in a case section's statements (a case-label pattern
     /// designation stays section-scoped), a switch-expression arm or query
     /// clause for a designation inside it, owning for / foreach / using /
-    /// fixed / while / catch, or an embedded statement. This may
+    /// fixed / while / do / catch, or an embedded statement. This may
     /// under-estimate a scope (e.g. a pattern variable in a while
     /// condition); the caller then scans from the body start, so a wrong
     /// estimate can only over-refuse, never under-refuse.
@@ -533,7 +533,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
                     return current;
                 case BlockSyntax or CatchClauseSyntax or
                     ForStatementSyntax or CommonForEachStatementSyntax or UsingStatementSyntax or
-                    FixedStatementSyntax or WhileStatementSyntax:
+                    FixedStatementSyntax or WhileStatementSyntax or DoStatementSyntax:
                     return current;
                 case StatementSyntax statement when statement.Parent is not (BlockSyntax or SwitchSectionSyntax or GlobalStatementSyntax):
                     return current;
