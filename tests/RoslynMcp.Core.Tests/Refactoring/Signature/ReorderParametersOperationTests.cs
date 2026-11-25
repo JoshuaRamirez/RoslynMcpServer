@@ -793,6 +793,255 @@ public class ReorderParametersOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+
+    [SkippableFact]
+    public async Task ReorderParameters_DelegateCastInvocation_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System;
+
+            static class Program
+            {
+                static int Combine(int a, string b) => a + b.Length;
+
+                static void Main()
+                {
+                    Console.WriteLine(Combine(10, "hi"));
+                    Console.WriteLine(((Func<int, string, int>)Combine)(10, "hi"));
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Combine",
+                NewOrder = new[] { 1, 0 }
+            }));
+
+        Assert.Equal(ErrorCodes.UnsupportedCallSite, ex.ErrorCode);
+        Assert.Equal("3130", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_NullForgivingDelegateCastInvocation_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            #nullable enable
+            using System;
+
+            static class Program
+            {
+                static int Combine(int a, string b) => a + b.Length;
+
+                static void Main()
+                {
+                    Console.WriteLine(Combine(10, "hi"));
+                    Console.WriteLine((((Func<int, string, int>)Combine)!)(10, "hi"));
+                    Console.WriteLine(((Func<int, string, int>)Combine)!(10, "hi"));
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Combine",
+                NewOrder = new[] { 1, 0 }
+            }));
+
+        Assert.Equal(ErrorCodes.UnsupportedCallSite, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_DelegateCastNestedInConditionalCallee_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System;
+
+            static class Program
+            {
+                static int Combine(int a, string b) => a + b.Length;
+
+                static void Main()
+                {
+                    bool flag = Environment.TickCount > 0;
+                    Func<int, string, int> fallback = (a, b) => a;
+                    Console.WriteLine(Combine(10, "hi"));
+                    Console.WriteLine((flag ? (Func<int, string, int>)Combine : fallback)(10, "hi"));
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Combine",
+                NewOrder = new[] { 1, 0 }
+            }));
+
+        Assert.Equal(ErrorCodes.UnsupportedCallSite, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_NewFuncInvocation_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System;
+
+            static class Program
+            {
+                static int Combine(int a, string b) => a + b.Length;
+
+                static void Main()
+                {
+                    Console.WriteLine(new Func<int, string, int>(Combine)(10, "hi"));
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Combine",
+                NewOrder = new[] { 1, 0 }
+            }));
+
+        Assert.Equal(ErrorCodes.UnsupportedCallSite, ex.ErrorCode);
+        Assert.Equal("3130", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_DelegateCastInvocation_Preview_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System;
+
+            static class Program
+            {
+                static int Combine(int a, string b) => a + b.Length;
+
+                static void Main()
+                {
+                    Console.WriteLine(((Func<int, string, int>)Combine)(10, "hi"));
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Combine",
+                NewOrder = new[] { 1, 0 },
+                Preview = true
+            }));
+
+        Assert.Equal(ErrorCodes.UnsupportedCallSite, ex.ErrorCode);
+        Assert.Equal("3130", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_DelegateCastInvocation_AllFiles_SkipsAndWritesNothing()
+    {
+        const string source = """
+            using System;
+
+            static class Program
+            {
+                static int Combine(int a, string b) => a + b.Length;
+
+                static void Main()
+                {
+                    Console.WriteLine(((Func<int, string, int>)Combine)(10, "hi"));
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        // allFiles swallows per-method RefactoringException (same as other
+        // ineligible targets) rather than failing the walk.
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            AllFiles = true,
+            NewOrder = new[] { 1, 0 }
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(0, result.ReferencesUpdated);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_ParenthesizedDirectCall_StillReorders()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process(int count, string name)
+                {
+                    System.Console.WriteLine(count + name);
+                }
+
+                public void Run()
+                {
+                    (this.Process)(3, "a");
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewOrder = new[] { 1, 0 }
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public void Process(string name, int count)", text);
+        Assert.Contains("(this.Process)(\"a\", 3)", text);
+        Assert.DoesNotContain("(this.Process)(3, \"a\")", text);
+    }
+
     [SkippableFact]
     public async Task ReorderParameters_RelatedInterfaceOptional_ThrowsAndWritesNothing()
     {

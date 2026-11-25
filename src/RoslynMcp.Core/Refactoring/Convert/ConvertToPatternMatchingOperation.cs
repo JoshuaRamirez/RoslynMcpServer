@@ -337,6 +337,8 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     /// </summary>
     private static SwitchExpressionSyntax BuildSwitchExpression(SwitchStatementSyntax switchStmt)
     {
+        EnsureNoInteriorConditionalCompilation(switchStmt);
+
         var arms = new List<SwitchExpressionArmSyntax>();
 
         foreach (var section in switchStmt.Sections)
@@ -391,6 +393,8 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     /// </summary>
     private static SwitchExpressionSyntax BuildIfChainSwitch(IfStatementSyntax ifStmt)
     {
+        EnsureNoInteriorConditionalCompilation(ifStmt);
+
         var arms = new List<SwitchExpressionArmSyntax>();
         var current = ifStmt;
 
@@ -467,6 +471,58 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
         SyntaxFactory.ReturnStatement(switchExpr)
             .WithLeadingTrivia(original.GetLeadingTrivia())
             .WithTrailingTrivia(original.GetTrailingTrivia());
+
+
+    /// <summary>
+    /// Refuses conversion when an if/else-if body or switch section contains
+    /// <c>#if</c> / <c>#elif</c> / <c>#else</c> / <c>#endif</c> (or disabled
+    /// text). Extracting the active <c>Statements</c> would drop the inactive
+    /// arm and report success. Directives that only wrap the whole statement
+    /// (leading / trailing trivia) are allowed so a Debug chain under
+    /// <c>#if</c> with a separate Release chain under <c>#else</c> still
+    /// converts.
+    /// </summary>
+    private static void EnsureNoInteriorConditionalCompilation(SyntaxNode statement)
+    {
+        // An else-if is its own IfStatementSyntax. If we only inspected that
+        // node, allFiles / a line on the else-if would rewrite the tail and
+        // leave the earlier #if arm in place.
+        if (statement is IfStatementSyntax ifStmt)
+            statement = GetIfChainRoot(ifStmt);
+
+        if (HasInteriorConditionalCompilation(statement))
+        {
+            throw new RefactoringException(ErrorCodes.CannotConvert,
+                "If or switch body contains preprocessor directives and cannot be safely converted to a switch expression.");
+        }
+    }
+
+    private static IfStatementSyntax GetIfChainRoot(IfStatementSyntax ifStmt)
+    {
+        while (ifStmt.Parent is ElseClauseSyntax elseClause
+               && elseClause.Parent is IfStatementSyntax parentIf)
+        {
+            ifStmt = parentIf;
+        }
+
+        return ifStmt;
+    }
+
+    private static bool HasInteriorConditionalCompilation(SyntaxNode node)
+    {
+        var span = node.Span;
+        return node.DescendantTrivia(descendIntoTrivia: true).Any(trivia =>
+            IsConditionalCompilationTrivia(trivia)
+            && trivia.Span.Start >= span.Start
+            && trivia.Span.Start < span.End);
+    }
+
+    private static bool IsConditionalCompilationTrivia(SyntaxTrivia trivia) =>
+        trivia.IsKind(SyntaxKind.IfDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.ElifDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.ElseDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.EndIfDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.DisabledTextTrivia);
 
     private static ExpressionSyntax? ExtractSectionExpression(SwitchSectionSyntax section)
     {
