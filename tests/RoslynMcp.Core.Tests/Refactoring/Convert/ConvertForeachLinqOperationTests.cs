@@ -1603,7 +1603,7 @@ public class ConvertForeachLinqOperationTests
     public void TryConvert_BodyContainsPreprocessorDirectives_ReturnsFalse(string source)
     {
         var foreachStmt = ParseSingleForeach(source);
-        Assert.True(ConvertForeachLinqOperation.BodyContainsPreprocessorDirectives(foreachStmt));
+        Assert.True(ConvertForeachLinqOperation.StatementContainsPreprocessorDirectives(foreachStmt));
         Assert.False(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: false, out _, out _));
         Assert.False(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: true, out _, out _));
     }
@@ -1612,7 +1612,7 @@ public class ConvertForeachLinqOperationTests
     public void TryConvert_ForeachWrappedInIfDebug_StillConverts()
     {
         var foreachStmt = ParseSingleForeach(ForeachWrappedInIfDebug);
-        Assert.False(ConvertForeachLinqOperation.BodyContainsPreprocessorDirectives(foreachStmt));
+        Assert.False(ConvertForeachLinqOperation.StatementContainsPreprocessorDirectives(foreachStmt));
         Assert.True(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: false, out _, out _));
     }
 
@@ -1698,6 +1698,133 @@ public class ConvertForeachLinqOperationTests
         Assert.Contains("#if DEBUG", updated, StringComparison.Ordinal);
         Assert.Contains("#endif", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
+    }
+
+    private const string ScaleWithIfElseCollection = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+                foreach (var v in
+        #if DEBUG
+                            values
+        #else
+                            values.Skip(1)
+        #endif
+                            )
+                    result.Add(v * 10);
+                return result;
+            }
+        }
+        """;
+
+    private const string ScaleWithIfElseIterationType = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<long> Scale(List<int> values)
+            {
+                var result = new List<long>();
+                foreach (
+        #if DEBUG
+                    long
+        #else
+                    int
+        #endif
+                    v in values)
+                {
+                    result.Add(v * 10);
+                }
+                return result;
+            }
+        }
+        """;
+
+    private const string ScaleWithDebugOnlyCollectionSuffix = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+                foreach (var v in values
+        #if DEBUG
+                    .Where(x => x > 0)
+        #endif
+                    )
+                {
+                    result.Add(v * 10);
+                }
+                return result;
+            }
+        }
+        """;
+
+    [Theory]
+    [InlineData(ScaleWithIfElseCollection)]
+    [InlineData(ScaleWithIfElseIterationType)]
+    [InlineData(ScaleWithDebugOnlyCollectionSuffix)]
+    public void TryConvert_HeaderContainsPreprocessorDirectives_ReturnsFalse(string source)
+    {
+        var foreachStmt = ParseSingleForeach(source);
+        Assert.True(ConvertForeachLinqOperation.StatementContainsPreprocessorDirectives(foreachStmt));
+        Assert.False(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: false, out _, out _));
+        Assert.False(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: true, out _, out _));
+    }
+
+    [SkippableTheory]
+    [InlineData(ScaleWithIfElseCollection, false)]
+    [InlineData(ScaleWithIfElseCollection, true)]
+    [InlineData(ScaleWithIfElseIterationType, false)]
+    [InlineData(ScaleWithDebugOnlyCollectionSuffix, false)]
+    public async Task ConvertForeachLinq_HeaderContainsPreprocessorDirectives_ThrowsCannotConvert(string source, bool preferQuerySyntax)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertForeachLinqParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(source, "foreach ("),
+                PreferQuerySyntax = preferQuerySyntax
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("preprocessor directives", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_SkipsForeachWithHeaderDirectives()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ScaleWithIfElseCollection);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            SourceFile = workspace.SourcePath,
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
     [SkippableFact]
