@@ -712,6 +712,295 @@ public class InlineMethodOperationTests
         Assert.DoesNotContain("await _left + _right", text);
     }
 
+    private const string RateWholeMethodElseAlternative = """
+        namespace TestApp;
+
+        public static class Program
+        {
+            public static int Run()
+            {
+                return Rate(2);
+            }
+
+        #if DEBUG
+            private static int Rate(int x) => x * 10;
+        #else
+            private static int Rate(int x) => x * 50;
+        #endif
+        }
+        """;
+
+    private const string RateWholeMethodElifAlternative = """
+        namespace TestApp;
+
+        public static class Program
+        {
+            public static int Run()
+            {
+                return Rate(2);
+            }
+
+        #if TRACE_RATE
+            private static int Rate(int x) => x * 1;
+        #elif DEBUG
+            private static int Rate(int x) => x * 10;
+        #endif
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task InlineMethod_WholeMethodConditionalAlternative_Throws(bool useElse, bool removeMethod)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            useElse ? RateWholeMethodElseAlternative : RateWholeMethodElifAlternative);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Rate",
+                RemoveMethod = removeMethod
+            }));
+
+        Assert.Equal(ErrorCodes.CannotInlineDirectives, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    private const string RateSeparatelyGuardedAlternative = """
+        namespace TestApp;
+
+        public static class Program
+        {
+            public static int Run()
+            {
+                return Rate(2);
+            }
+
+        #if DEBUG
+            private static int Rate(int x) => x * 10;
+        #endif
+        #if !DEBUG
+            private static int Rate(int x) => x * 50;
+        #endif
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task InlineMethod_SeparatelyGuardedAlternative_Throws(bool removeMethod)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(RateSeparatelyGuardedAlternative);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Rate",
+                RemoveMethod = removeMethod
+            }));
+
+        Assert.Equal(ErrorCodes.CannotInlineDirectives, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    private const string RateWithDirectiveBody = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+            private static int Rate(int x)
+            {
+        #if DEBUG
+                return x * 10;
+        #else
+                return x * 50;
+        #endif
+            }
+
+            public static int Run()
+            {
+                int r = Rate(2);
+                return r;
+            }
+        }
+        """;
+
+    private const string BumpWithDirectiveBody = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+            private static int _count;
+
+            private static void Bump(int n)
+            {
+                Console.WriteLine("bump " + n);
+        #if DEBUG
+                _count += n * 10;
+        #else
+                _count += n;
+        #endif
+                Console.WriteLine("count " + _count);
+            }
+
+            public static void Run()
+            {
+                Bump(3);
+            }
+        }
+        """;
+
+    private const string RateWrappedInDirective = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+            public static int Run()
+            {
+                return Rate(2);
+            }
+
+        #if DEBUG
+            private static int Rate(int x)
+            {
+                return x * 10;
+            }
+        #endif
+        }
+        """;
+
+    [SkippableFact]
+    public async Task InlineMethod_ReturnBodyContainsPreprocessorDirectives_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(RateWithDirectiveBody);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Rate"
+            }));
+
+        Assert.Equal(ErrorCodes.CannotInlineDirectives, ex.ErrorCode);
+        Assert.Equal("3098", ex.ErrorCode);
+        Assert.Contains("preprocessor directives", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_StatementBodyContainsPreprocessorDirectives_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(BumpWithDirectiveBody);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Bump"
+            }));
+
+        Assert.Equal(ErrorCodes.CannotInlineDirectives, ex.ErrorCode);
+        Assert.Contains("preprocessor directives", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_Preview_BodyContainsPreprocessorDirectives_ThrowsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(RateWithDirectiveBody);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Rate",
+                Preview = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotInlineDirectives, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_RemoveMethodFalse_BodyContainsPreprocessorDirectives_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(RateWithDirectiveBody);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Rate",
+                RemoveMethod = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotInlineDirectives, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_MethodWrappedInDirective_StillInlines()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(RateWrappedInDirective);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineMethodParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Rate"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("2 * 10", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private static int Rate", updated, StringComparison.Ordinal);
+        Assert.Contains("#if DEBUG", updated, StringComparison.Ordinal);
+        Assert.Contains("#endif", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_AllFilesTrue_SkipsMethodsWithDirectiveBodies()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("Rate.cs", RateWithDirectiveBody));
+        var operation = new InlineMethodOperation(workspace.Context);
+        var beforeRate = await File.ReadAllTextAsync(workspace.SourcePaths["Rate.cs"]);
+
+        var result = await operation.ExecuteAsync(new InlineMethodParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeRate, await File.ReadAllTextAsync(workspace.SourcePaths["Rate.cs"]));
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("System.Console.WriteLine(\"log\");", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("private void Log()", updatedA, StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region Covering-span column
