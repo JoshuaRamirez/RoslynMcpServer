@@ -616,6 +616,65 @@ public class ExtractBaseClassOperationTests
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
+    [Theory]
+    [InlineData("123Bad")]
+    [InlineData("has-dash")]
+    [InlineData("@123Bad")]
+    [InlineData("Foo Bar")]
+    [InlineData("a.b")]
+    [InlineData("@")]
+    [InlineData("@@class")]
+    [InlineData("class")]
+    [InlineData(" Person")]
+    public void Validate_InvalidTypeName_ThrowsInvalidSymbolName(string typeName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = typeName,
+                BaseClassName = "PersonBase",
+                Members = new[] { "Name" },
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+        Assert.Equal("1003", ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("Person")]
+    [InlineData("@class")]
+    [InlineData("@Person")]
+    [InlineData("A\u0301")]
+    [InlineData("@A\u0301")]
+    [InlineData("\\u0041")]
+    [InlineData("B\\u0043")]
+    [InlineData("@\\u0041")]
+    public void Validate_ValidTypeName_DoesNotThrowInvalidSymbolName(string typeName)
+    {
+        // Verbatim "@class" must pass Validate: Identifier.Text keeps the
+        // @ prefix, so that is the name that selects class @class.
+        // A Unicode-escape spelling such as \u0041 is what Identifier.Text
+        // holds for class \u0041, so it must pass too.
+        // A missing file must surface as SourceFileNotFound, not
+        // InvalidSymbolName.
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = typeName,
+                BaseClassName = "PersonBase",
+                Members = new[] { "Name" },
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        Assert.NotEqual(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+    }
+
     [SkippableFact]
     public async Task ExtractBaseClass_OmittedColumn_KeepsTypeNameFirstOrDefaultPick()
     {
