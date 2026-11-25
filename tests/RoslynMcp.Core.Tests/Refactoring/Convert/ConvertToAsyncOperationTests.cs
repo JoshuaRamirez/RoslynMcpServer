@@ -528,6 +528,43 @@ public class ConvertToAsyncOperationTests
         Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("123x")]
+    [InlineData("class")]
+    [InlineData("int")]
+    [InlineData("not a name")]
+    [InlineData("foo-bar")]
+    [InlineData("@@Foo")]
+    [InlineData("@@class")]
+    public void Validate_InvalidMethodName_ThrowsInvalidSymbolName(string methodName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MethodName = methodName
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+        Assert.Equal("1003", ex.ErrorCode);
+        Assert.Contains(methodName, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithInvalidMethodName_ThrowsMissingRequiredParam()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                AllFiles = true,
+                MethodName = "123x"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles cannot be combined with methodName, line, or column.", ex.Message);
+        Assert.NotEqual(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+    }
+
     [Fact]
     public void Validate_AllFilesTrue_WithoutSourceFileOrMethodName_DoesNotThrow()
     {

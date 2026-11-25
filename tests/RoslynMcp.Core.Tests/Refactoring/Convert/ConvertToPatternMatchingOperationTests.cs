@@ -115,6 +115,95 @@ public class ConvertToPatternMatchingOperationTests
         }
         """;
 
+    private const string IfChainWithDirectiveBodySource = """
+        namespace TestApp;
+
+        public class Scorer
+        {
+            public static int Score(int x)
+            {
+                if (x == 1)
+                {
+        #if DEBUG
+                    return 10;
+        #else
+                    return 50;
+        #endif
+                }
+                else if (x == 2)
+                {
+                    return 20;
+                }
+                else
+                {
+                    return 0;
+                }
+            }
+        }
+        """;
+
+    private const string SwitchWithDirectiveSectionSource = """
+        namespace TestApp;
+
+        public class Ranker
+        {
+            public static int Rank(int x)
+            {
+                switch (x)
+                {
+                    case 1:
+        #if DEBUG
+                        return 100;
+        #else
+                        return 500;
+        #endif
+                    case 2:
+                        return 200;
+                    default:
+                        return 0;
+                }
+            }
+        }
+        """;
+
+    private const string IfChainWrappedInDirectiveSource = """
+        namespace TestApp;
+
+        public class Scorer
+        {
+            public static int Score(int x)
+            {
+        #if DEBUG
+                if (x == 1)
+                {
+                    return 10;
+                }
+                else if (x == 2)
+                {
+                    return 20;
+                }
+                else
+                {
+                    return 0;
+                }
+        #else
+                if (x == 1)
+                {
+                    return 50;
+                }
+                else if (x == 2)
+                {
+                    return 20;
+                }
+                else
+                {
+                    return 0;
+                }
+        #endif
+            }
+        }
+        """;
+
     #region Input Validation
 
     [Fact]
@@ -338,6 +427,93 @@ public class ConvertToPatternMatchingOperationTests
             }));
 
         Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task Convert_IfChainWithDirectiveBody_ThrowsCannotConvert()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(IfChainWithDirectiveBodySource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToPatternMatchingParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(IfChainWithDirectiveBodySource, "if (x == 1)")
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("preprocessor directives", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task Convert_PreviewIfChainWithDirectiveBody_ThrowsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(IfChainWithDirectiveBodySource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToPatternMatchingParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(IfChainWithDirectiveBodySource, "if (x == 1)"),
+                Preview = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("preprocessor directives", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task Convert_SwitchWithDirectiveSection_ThrowsCannotConvert()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SwitchWithDirectiveSectionSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToPatternMatchingParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(SwitchWithDirectiveSectionSource, "switch (x)")
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("preprocessor directives", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task Convert_IfChainWrappedInDirective_ConvertsActiveChainOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(IfChainWrappedInDirectiveSource);
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath);
+        Assert.NotNull(document);
+        var root = await document.GetSyntaxRootAsync();
+        var ifStmt = root!.DescendantNodes().OfType<IfStatementSyntax>().First();
+        var line = ifStmt.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("#if DEBUG", updated, StringComparison.Ordinal);
+        Assert.Contains("#else", updated, StringComparison.Ordinal);
+        Assert.Contains("#endif", updated, StringComparison.Ordinal);
+        Assert.Contains("=>", updated, StringComparison.Ordinal);
+        // The inactive chain under #else / #if stays as an if-chain; only the
+        // active chain becomes a switch expression.
+        Assert.Contains("if (x == 1)", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
     }
 
     #endregion
@@ -891,6 +1067,28 @@ public class ConvertToPatternMatchingOperationTests
         await AssertCompilesAsync(workspace);
     }
 
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_SkipsDirectiveBodiesAndConvertsEligibleNeighbors()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Directive.cs", IfChainWithDirectiveBodySource),
+            ("FileA.cs", SwitchFileA));
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+        var beforeDirective = await File.ReadAllTextAsync(workspace.SourcePaths["Directive.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeDirective, await File.ReadAllTextAsync(workspace.SourcePaths["Directive.cs"]));
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain("switch (value)", updatedA, StringComparison.Ordinal);
+        Assert.Contains("=>", updatedA, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
 
     #region AllFiles optional sourceFile
 
@@ -1153,6 +1351,43 @@ public class ConvertToPatternMatchingOperationTests
         Assert.Equal(2, collected.Count);
         Assert.Contains(collected, statement => statement is IfStatementSyntax);
         Assert.Contains(collected, statement => statement is SwitchStatementSyntax);
+    }
+
+    [Fact]
+    public void CollectConvertibleStatements_IfChainWithDirectiveBody_ReturnsNone()
+    {
+        var root = CSharpSyntaxTree.ParseText(IfChainWithDirectiveBodySource).GetRoot();
+        var collected = ConvertToPatternMatchingOperation.CollectConvertibleStatements(root);
+
+        Assert.Empty(collected);
+        var ifStmt = root.DescendantNodes().OfType<IfStatementSyntax>().First();
+        Assert.False(ConvertToPatternMatchingOperation.TryConvert(ifStmt, out _));
+    }
+
+    [Fact]
+    public void CollectConvertibleStatements_SwitchWithDirectiveSection_ReturnsNone()
+    {
+        var root = CSharpSyntaxTree.ParseText(SwitchWithDirectiveSectionSource).GetRoot();
+        var collected = ConvertToPatternMatchingOperation.CollectConvertibleStatements(root);
+
+        Assert.Empty(collected);
+        var switchStmt = root.DescendantNodes().OfType<SwitchStatementSyntax>().First();
+        Assert.False(ConvertToPatternMatchingOperation.TryConvert(switchStmt, out _));
+    }
+
+    [Fact]
+    public void CollectConvertibleStatements_IfChainWrappedInDirective_ReturnsActiveChain()
+    {
+        var root = CSharpSyntaxTree.ParseText(IfChainWrappedInDirectiveSource).GetRoot();
+        var collected = ConvertToPatternMatchingOperation.CollectConvertibleStatements(root);
+
+        Assert.Single(collected);
+        Assert.IsType<IfStatementSyntax>(collected[0]);
+        Assert.True(ConvertToPatternMatchingOperation.TryConvert(collected[0], out var replacement));
+        Assert.Contains("=>", replacement.ToString(), StringComparison.Ordinal);
+        // Wrapping #if / #else stay on the statement's leading / trailing trivia.
+        Assert.DoesNotContain("#if", replacement.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("#else", replacement.ToString(), StringComparison.Ordinal);
     }
 
     #endregion
