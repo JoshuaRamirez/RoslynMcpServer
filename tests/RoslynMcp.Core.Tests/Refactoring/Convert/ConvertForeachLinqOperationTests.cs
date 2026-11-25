@@ -2566,6 +2566,117 @@ public class ConvertForeachLinqOperationTests
         }
         """;
 
+    private const string LambdaInsideLoopCapturedAccumulatorOutsideLoop = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<string> Flatten(string[][] groups)
+            {
+                var all = new List<string>();
+                foreach (var g in groups)
+                {
+                    Action a = () =>
+                    {
+                        foreach (var w in g)
+                            all.Add(w.ToUpper());
+                    };
+                    a();
+                }
+                return all;
+            }
+        }
+        """;
+
+    private const string AnonymousMethodInsideLoopCapturedAccumulatorOutsideLoop = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<string> Flatten(string[][] groups)
+            {
+                var all = new List<string>();
+                foreach (var g in groups)
+                {
+                    Action a = delegate
+                    {
+                        foreach (var w in g)
+                            all.Add(w.ToUpper());
+                    };
+                    a();
+                }
+                return all;
+            }
+        }
+        """;
+
+    private const string LocalFunctionInsideLoopCapturedAccumulatorOutsideLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<string> Flatten(string[][] groups)
+            {
+                var all = new List<string>();
+                foreach (var g in groups)
+                {
+                    void Fill()
+                    {
+                        foreach (var w in g)
+                            all.Add(w.ToUpper());
+                    }
+
+                    Fill();
+                }
+                return all;
+            }
+        }
+        """;
+
+    private const string LoopsAndAccumulatorInsideOneLambda = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public int Count(string[][][] batches)
+            {
+                var total = 0;
+                for (int i = 0; i < batches.Length; i++)
+                {
+                    Func<string[][], int> count = groups =>
+                    {
+                        var sum = 0;
+                        foreach (var g in groups)
+                        {
+                            var all = new List<string>();
+                            foreach (var w in g)
+                                all.Add(w.ToUpper());
+                            sum += all.Count;
+                        }
+                        return sum;
+                    };
+                    total += count(batches[i]);
+                }
+                return total;
+            }
+        }
+        """;
+
     private const string EnclosingLoopAccumulatorMessage =
         "The foreach is nested inside an enclosing loop (for / foreach / while / do) and the accumulator is " +
         "declared outside that loop; the LINQ assignment would discard elements added by earlier iterations " +
@@ -2588,7 +2699,10 @@ public class ConvertForeachLinqOperationTests
         { ForeachInsideWhileAccumulatorOutsideOuterLoop, "foreach (var n in batch)" },
         { ForeachInsideDoAccumulatorOutsideOuterLoop, "foreach (var n in batch)" },
         { ForeachInsideLoopFieldAccumulator, "foreach (var n in new[] { r, r + 10 })" },
-        { ForeachInsideForDeclaredInForInitializer, "foreach (var n in new[] { total, total + 10 })" }
+        { ForeachInsideForDeclaredInForInitializer, "foreach (var n in new[] { total, total + 10 })" },
+        { LambdaInsideLoopCapturedAccumulatorOutsideLoop, "foreach (var w in g)" },
+        { AnonymousMethodInsideLoopCapturedAccumulatorOutsideLoop, "foreach (var w in g)" },
+        { LocalFunctionInsideLoopCapturedAccumulatorOutsideLoop, "foreach (var w in g)" }
     };
 
     public static TheoryData<string, string, bool, bool> AccumulatorOutsideEnclosingLoopOperationCases
@@ -2622,6 +2736,7 @@ public class ConvertForeachLinqOperationTests
     [Theory]
     [InlineData(AccumulatorDeclaredInsideOuterLoop, "foreach (var w in g)")]
     [InlineData(LoopInsideLambdaAccumulatorDeclaredInLambda, "foreach (var w in g)")]
+    [InlineData(LoopsAndAccumulatorInsideOneLambda, "foreach (var w in g)")]
     [InlineData(NoDirectivesBeforeLoop, "foreach (var v in values)")]
     public void TryConvert_AccumulatorNotCarriedAcrossEnclosingLoop_StillConverts(string source, string snippet)
     {
@@ -2704,6 +2819,49 @@ public class ConvertForeachLinqOperationTests
     public async Task ConvertForeachLinq_AllFiles_AccumulatorDeclaredInsideOuterLoop_StillConverts()
     {
         await using var workspace = await TempWorkspace.CreateAsync(AccumulatorDeclaredInsideOuterLoop);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Single(result.Changes!.FilesModified);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("foreach (var w in g)", updated, StringComparison.Ordinal);
+        Assert.Contains(".ToList()", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableTheory]
+    [InlineData(LoopInsideLambdaAccumulatorDeclaredInLambda)]
+    [InlineData(LoopsAndAccumulatorInsideOneLambda)]
+    public async Task ConvertForeachLinq_AccumulatorDeclaredInsideLambda_StillConverts(string source)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "foreach (var w in g)")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("foreach (var w in g)", updated, StringComparison.Ordinal);
+        Assert.Contains(".Select(", updated, StringComparison.Ordinal);
+        Assert.Contains(".ToList()", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableTheory]
+    [InlineData(LoopInsideLambdaAccumulatorDeclaredInLambda)]
+    [InlineData(LoopsAndAccumulatorInsideOneLambda)]
+    public async Task ConvertForeachLinq_AllFiles_AccumulatorDeclaredInsideLambda_StillConverts(string source)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(source);
         var operation = new ConvertForeachLinqOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new ConvertForeachLinqParams

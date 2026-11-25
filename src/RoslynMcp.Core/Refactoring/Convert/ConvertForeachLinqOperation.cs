@@ -329,14 +329,16 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     /// <c>while</c> / <c>do</c> loop sits between the foreach and the
     /// accumulator's declaration (#3402). The original loop appends on
     /// every outer iteration; the LINQ assignment would replace the list
-    /// each time, keeping only the last iteration's elements. Only loops in
-    /// the foreach's own function body count (the walk stops at lambda,
-    /// anonymous method, local function and member boundaries). A loop
+    /// each time, keeping only the last iteration's elements. Loops are
+    /// collected from the foreach outward up to the function body that
+    /// declares the accumulator, so a captured local declared outside a loop
+    /// that encloses the lambda, anonymous method or local function holding
+    /// the foreach counts too; the walk never leaves the member. A loop
     /// whose body contains the accumulator's declaration re-creates it on
     /// every iteration and is fine; a local declared in a <c>for</c>
     /// initializer is created once and still counts as outside. A field,
-    /// parameter, captured outer local or member-access accumulator is
-    /// declared outside every such loop. A parenthesized receiver is
+    /// parameter or member-access accumulator is declared outside every
+    /// such loop. A parenthesized receiver is
     /// unwrapped first. Returns false for foreach that do not match a
     /// convertible pattern.
     /// </summary>
@@ -352,39 +354,71 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         ForEachStatementSyntax foreachStmt,
         ExpressionSyntax accumulator)
     {
-        var enclosingLoopBodies = new List<StatementSyntax>();
-        for (var current = foreachStmt.Parent; current != null && !IsBodyBoundary(current); current = current.Parent)
-        {
-            var loopBody = current switch
-            {
-                ForStatementSyntax loop => loop.Statement,
-                CommonForEachStatementSyntax loop => loop.Statement,
-                WhileStatementSyntax loop => loop.Statement,
-                DoStatementSyntax loop => loop.Statement,
-                _ => null
-            };
-
-            if (loopBody != null)
-                enclosingLoopBodies.Add(loopBody);
-        }
-
-        if (enclosingLoopBodies.Count == 0)
-            return false;
-
         // TryMatchAdd accepts any receiver, so a parenthesized local such as
         // (all).Add(x) must resolve to the same declaration as all.Add(x).
         while (accumulator is ParenthesizedExpressionSyntax parenthesized)
             accumulator = parenthesized.Expression;
 
+        var name = accumulator is IdentifierNameSyntax identifier ? identifier.Identifier.ValueText : null;
+        var resolving = name != null;
         SyntaxNode? declaration = null;
-        if (accumulator is IdentifierNameSyntax identifier && EnclosingBody(foreachStmt) is { } body &&
-            !DeclaresParameter(body, identifier.Identifier.ValueText))
+        var enclosingLoopBodies = new List<StatementSyntax>();
+
+        // Walk out one function body at a time. A captured local is declared
+        // in an outer body, so loops between the lambda / anonymous method /
+        // local function and that declaration also run the foreach more than
+        // once. Stop at the body that declares the accumulator, or at the
+        // member body for a field / member-access accumulator.
+        SyntaxNode node = foreachStmt;
+        while (true)
         {
-            declaration = FindLocalDeclaringSyntax(body, identifier.Identifier.ValueText, foreachStmt, out _);
+            SyntaxNode? current = node.Parent;
+            for (; current != null && !IsBodyBoundary(current); current = current.Parent)
+            {
+                var loopBody = current switch
+                {
+                    ForStatementSyntax loop => loop.Statement,
+                    CommonForEachStatementSyntax loop => loop.Statement,
+                    WhileStatementSyntax loop => loop.Statement,
+                    DoStatementSyntax loop => loop.Statement,
+                    _ => null
+                };
+
+                if (loopBody != null)
+                    enclosingLoopBodies.Add(loopBody);
+            }
+
+            if (current == null || current is BaseTypeDeclarationSyntax or BaseNamespaceDeclarationSyntax)
+                break;
+
+            if (resolving)
+            {
+                // A parameter is declared outside every loop collected so far.
+                if (DeclaresParameter(current, name!))
+                    break;
+
+                declaration = FindLocalDeclaringSyntax(current, name!, foreachStmt, out var skippedOutOfScope);
+                if (declaration != null)
+                    break;
+
+                // A same-named local was set aside as out of scope; keep
+                // collecting loops but treat the accumulator as unresolved,
+                // which can only over-refuse.
+                if (skippedOutOfScope)
+                    resolving = false;
+            }
+
+            if (current is MemberDeclarationSyntax or AccessorDeclarationSyntax or CompilationUnitSyntax)
+                break;
+
+            node = current;
         }
 
-        // Not a local of this body (field, parameter, captured local or
-        // member access): every enclosing loop is between it and the foreach.
+        if (enclosingLoopBodies.Count == 0)
+            return false;
+
+        // Not a local of any enclosing body (field, parameter or member
+        // access): every collected loop is between it and the foreach.
         if (declaration == null)
             return true;
 
