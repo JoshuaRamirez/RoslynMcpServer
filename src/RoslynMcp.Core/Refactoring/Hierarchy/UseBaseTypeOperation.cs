@@ -1243,7 +1243,62 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
             .Where(token => !token.IsKind(SyntaxKind.EndOfFileToken))
             .ToList();
 
+        if (!InterpolationHolesCompatible(
+                tokens,
+                identifier,
+                hole => InactiveTextCompatibleWithBase(hole, identifier, derived, baseType, isMethodReturn)))
+        {
+            return false;
+        }
+
         return InactiveTokensCompatibleWithBase(tokens, 0, tokens.Count, identifier, derived, baseType, isMethodReturn);
+    }
+
+    /// <summary>
+    /// <c>ParseTokens</c> lexes a whole interpolated string (<c>$"…"</c>,
+    /// <c>$@"…"</c>, <c>$"""…"""</c>) as one token, so uses inside its holes
+    /// are invisible to the token scan (#2944). Re-parses each such token and
+    /// runs <paramref name="checkHole"/> on every hole expression and
+    /// alignment (recursing into nested interpolated strings). If the token
+    /// cannot be re-parsed as an interpolated string and its text mentions
+    /// <paramref name="identifier"/> (or, when null, contains a hole at all),
+    /// declines conservatively.
+    /// </summary>
+    private static bool InterpolationHolesCompatible(
+        List<SyntaxToken> tokens,
+        string? identifier,
+        Func<string, bool> checkHole)
+    {
+        foreach (var token in tokens)
+        {
+            if (!token.IsKind(SyntaxKind.InterpolatedStringToken))
+                continue;
+
+            var expression = SyntaxFactory.ParseExpression(token.Text);
+            if (expression is not InterpolatedStringExpressionSyntax interpolated ||
+                expression.FullSpan.Length != token.Text.Length ||
+                expression.ContainsDiagnostics)
+            {
+                var mentionsCandidate = identifier == null
+                    ? token.Text.Contains('{', StringComparison.Ordinal)
+                    : token.Text.Contains(identifier, StringComparison.Ordinal);
+                if (mentionsCandidate)
+                    return false;
+
+                continue;
+            }
+
+            foreach (var hole in interpolated.Contents.OfType<InterpolationSyntax>())
+            {
+                if (!checkHole(hole.Expression.ToFullString()))
+                    return false;
+
+                if (hole.AlignmentClause != null && !checkHole(hole.AlignmentClause.Value.ToFullString()))
+                    return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -1260,6 +1315,14 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         var tokens = SyntaxFactory.ParseTokens(text)
             .Where(token => !token.IsKind(SyntaxKind.EndOfFileToken))
             .ToList();
+
+        if (!InterpolationHolesCompatible(
+                tokens,
+                identifier: null,
+                hole => InactiveIndexerTextCompatibleWithBase(hole, derived, baseType)))
+        {
+            return false;
+        }
 
         for (var index = 0; index < tokens.Count; index++)
         {

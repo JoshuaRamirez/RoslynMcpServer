@@ -2055,6 +2055,81 @@ public class UseBaseTypeOperationTests
         Assert.DoesNotContain("Describe(Dog d)", updated);
     }
 
+    [SkippableTheory]
+    [InlineData("Console.WriteLine($\"{d.Breed}\");")]
+    [InlineData("Console.WriteLine($\"\"\"{d.Breed}\"\"\");")]
+    [InlineData("Console.WriteLine($@\"{d.Breed}\");")]
+    [InlineData("Console.WriteLine($\"x={d.Name} y={d.Breed,10:G}\");")]
+    [InlineData("Console.WriteLine($\"{$\"{d.Breed}\"}\");")]
+    [InlineData("Console.WriteLine($\"{d.Name,d.Breed.Length}\");")]
+    public async Task UseBaseType_InactiveInterpolatedHoleDerivedMember_Throws(string inactiveLine)
+    {
+        var source = InactiveNotDebugBreedSource.Replace("Console.WriteLine(d.Breed);", inactiveLine);
+        Assert.Contains(inactiveLine, source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        // ParseTokens lexes an interpolated string as one token; its holes
+        // must still be scanned (#2944).
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                TargetBaseType = "Animal"
+            }));
+
+        Assert.Equal("3114", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData("Console.WriteLine($\"{d.Name}\");")]
+    [InlineData("Console.WriteLine($\"\"\"{d.Name}\"\"\");")]
+    [InlineData("Console.WriteLine($\"d.Breed\");")]
+    public async Task UseBaseType_InactiveInterpolatedHoleBaseMemberOnly_StillRewrites(string inactiveLine)
+    {
+        var source = InactiveNotDebugBreedSource.Replace("Console.WriteLine(d.Breed);", inactiveLine);
+        Assert.Contains(inactiveLine, source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            TargetBaseType = "Animal"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Describe(Animal d)", updated);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_InactiveInterpolatedIndexerHoleDerivedMember_Throws()
+    {
+        var source = InactiveIndexerBreedSource.Replace(
+            "Console.WriteLine(holder[0].Breed);",
+            "Console.WriteLine($\"{holder[0].Breed}\");");
+        Assert.Contains("$\"{holder[0].Breed}\"", source);
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                TargetBaseType = "Animal"
+            }));
+
+        Assert.Equal("3114", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     private const string InactiveIndexerBreedSource = """
         using System;
 
