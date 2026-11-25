@@ -1306,6 +1306,43 @@ public class ImplementInterfaceOperationTests
     }
 
     [SkippableFact]
+    public async Task ImplementInterface_MembersFilter_MemberNotNull_DropsInterfaceTargets()
+    {
+        const string source = """
+            using System.Diagnostics.CodeAnalysis;
+
+            public interface IStore
+            {
+                string? P { get; }
+
+                [MemberNotNull(nameof(P))]
+                void Init();
+            }
+
+            public class Store : IStore
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Store",
+            InterfaceName = "IStore",
+            Members = new[] { "Init" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.NotNull(FindMethod(updated, "Store", "Init"));
+        var derived = updated[updated.IndexOf("class Store", StringComparison.Ordinal)..];
+        Assert.DoesNotContain("MemberNotNull", derived, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task ImplementInterface_Indexer_Preview_WritesNothing()
     {
         await using var workspace = await TempWorkspace.CreateAsync(IndexerOnlySource);

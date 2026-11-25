@@ -1061,6 +1061,347 @@ public class ExtractVariableOperationTests
             d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
     }
 
+    #region Declaration placement relative to directive trivia (#2925)
+
+    private const string AfterEndifSource = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+            static int Price(int qty) => qty * 7;
+
+            public static int Run()
+            {
+                int qty = 4;
+        #if DEBUG
+                Console.WriteLine("debug build");
+        #endif
+                int total = Price(qty) + 1;
+                return total;
+            }
+        }
+        """;
+
+    private const string InsideIfSource = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+            static int _calls;
+            static int Next() { _calls++; return _calls * 10; }
+
+            public static string Run()
+            {
+                int total = 1;
+        #if DEBUG
+                total += Next() + 5;
+        #else
+                total += 2;
+        #endif
+                return $"total={total} calls={_calls}";
+            }
+        }
+        """;
+
+    private const string DebugOnlyMemberSource = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+        #if DEBUG
+            static string Trace(int n) => "trace#" + n;
+        #endif
+
+            public static void Run()
+            {
+                int count = 3;
+        #if DEBUG
+                Console.WriteLine(Trace(count) + "!");
+        #else
+                Console.WriteLine("release");
+        #endif
+                Console.WriteLine("done " + count);
+            }
+        }
+        """;
+
+    private const string InsideIfWithCommentAndPragmaSource = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+            static int _calls;
+            static int Next() { _calls++; return _calls * 10; }
+
+            public static string Run()
+            {
+                int total = 1;
+        #if DEBUG
+                // add the debug bonus
+        #pragma warning disable CS0168
+                total += Next() + 5;
+        #pragma warning restore CS0168
+        #else
+                total += 2;
+        #endif
+                return $"total={total} calls={_calls}";
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task ExtractVariable_InsideIfWithCommentAndPragma_DoesNotDuplicateTrivia()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InsideIfWithCommentAndPragmaSource);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(InsideIfWithCommentAndPragmaSource, "Next() + 5");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "bonus"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(1, CountOccurrences(updated, "// add the debug bonus"));
+        Assert.Equal(1, CountOccurrences(updated, "#pragma warning disable CS0168"));
+        var ifIndex = updated.IndexOf("#if DEBUG", StringComparison.Ordinal);
+        var declIndex = updated.IndexOf("var bonus = Next() + 5;", StringComparison.Ordinal);
+        var elseIndex = updated.IndexOf("#else", StringComparison.Ordinal);
+        Assert.True(ifIndex >= 0 && declIndex > ifIndex && declIndex < elseIndex, updated);
+        // The moved expression must stay inside the #pragma's scope.
+        var pragmaIndex = updated.IndexOf("#pragma warning disable CS0168", StringComparison.Ordinal);
+        Assert.True(pragmaIndex > ifIndex && pragmaIndex < declIndex, updated);
+        Assert.Contains("total += bonus;", updated, StringComparison.Ordinal);
+        Assert.Contains("\n        var bonus = Next() + 5;\n", updated, StringComparison.Ordinal);
+        AssertCompilesInDebugAndRelease(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_AfterEndif_PlacesDeclarationAfterEndif()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AfterEndifSource);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(AfterEndifSource, "Price(qty)");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "price"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertDeclarationAfterClosingDirective(updated, "#endif", "var price = Price(qty);");
+        Assert.Contains("int total = price", updated, StringComparison.Ordinal);
+        AssertCompilesInDebugAndRelease(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_InsideIf_KeepsDeclarationInsideIf()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InsideIfSource);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(InsideIfSource, "Next() + 5");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "bonus"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertDeclarationInsideOpeningDirective(updated, "#if DEBUG", "var bonus = Next() + 5;", "#else");
+        Assert.Contains("total += bonus;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("total += Next() + 5;", updated, StringComparison.Ordinal);
+        AssertCompilesInDebugAndRelease(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_DebugOnlyMember_KeepsDeclarationInsideIf()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DebugOnlyMemberSource);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(DebugOnlyMemberSource, "Trace(count)");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "line"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertDeclarationInsideOpeningDirective(updated, "#if DEBUG", "var line = Trace(count);", "#else");
+        AssertCompilesInDebugAndRelease(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_ReplaceAll_AfterEndif_PlacesDeclarationAfterEndif()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            public static class Program
+            {
+                public static int Run(int qty)
+                {
+                    #if DEBUG
+                    Console.WriteLine("debug build");
+                    #endif
+                    int area = (qty * 7) * (qty * 7);
+                    return area;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "qty * 7");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "side",
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertDeclarationAfterClosingDirective(updated, "#endif", "var side = qty * 7;");
+        Assert.Contains("(side) * (side)", updated, StringComparison.Ordinal);
+        AssertCompilesInDebugAndRelease(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_AfterRegion_PlacesDeclarationAfterEndRegion()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            public static class Program
+            {
+                static int Price(int qty) => qty * 7;
+
+                public static int Run()
+                {
+                    int qty = 4;
+                    #region Setup
+                    Console.WriteLine("setup");
+                    #endregion
+                    int total = Price(qty) + 1;
+                    return total;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "Price(qty)");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "price"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertDeclarationAfterClosingDirective(updated, "#endregion", "var price = Price(qty);");
+        AssertCompilesInDebugAndRelease(updated);
+    }
+
+    private static void AssertDeclarationAfterClosingDirective(string code, string closing, string declaration)
+    {
+        var closeIndex = code.IndexOf(closing, StringComparison.Ordinal);
+        var declIndex = code.IndexOf(declaration, StringComparison.Ordinal);
+        Assert.True(closeIndex >= 0, $"Missing {closing}");
+        Assert.True(declIndex >= 0, $"Missing {declaration}");
+        Assert.True(declIndex > closeIndex, $"{declaration} should come after {closing}");
+        var between = code[closeIndex..declIndex];
+        Assert.DoesNotContain("#if", between, StringComparison.Ordinal);
+    }
+
+    private static void AssertDeclarationInsideOpeningDirective(
+        string code, string opening, string declaration, string closing)
+    {
+        var openIndex = code.LastIndexOf(opening, StringComparison.Ordinal);
+        // For DebugOnlyMemberSource there is also #if DEBUG on the Trace method.
+        // Use the #if that precedes the extracted WriteLine / total += by taking
+        // the last opening before the declaration is not reliable if we also
+        // require it to be before closing. Prefer the opening immediately
+        // before the declaration.
+        var declIndex = code.IndexOf(declaration, StringComparison.Ordinal);
+        Assert.True(declIndex >= 0, $"Missing {declaration}");
+        openIndex = code.LastIndexOf(opening, declIndex, StringComparison.Ordinal);
+        var closeIndex = code.IndexOf(closing, declIndex, StringComparison.Ordinal);
+        if (closeIndex < 0)
+            closeIndex = code.IndexOf(closing, StringComparison.Ordinal);
+        Assert.True(openIndex >= 0, $"Missing {opening} before {declaration}");
+        Assert.True(closeIndex > declIndex, $"{declaration} should come before {closing}");
+        Assert.True(openIndex < declIndex, $"{declaration} should come after {opening}");
+    }
+
+    private static void AssertCompilesInDebugAndRelease(string code)
+    {
+        foreach (var symbols in new[] { Array.Empty<string>(), new[] { "DEBUG" } })
+        {
+            var options = new Microsoft.CodeAnalysis.CSharp.CSharpParseOptions(
+                preprocessorSymbols: symbols);
+            var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(code, options);
+            var trustedAssemblies = ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? string.Empty)
+                .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+                .Select(path => Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(path));
+            var compilation = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(
+                "DirectivePlacementCheck",
+                new[] { tree },
+                trustedAssemblies,
+                new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(
+                    Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary));
+            Assert.DoesNotContain(
+                compilation.GetDiagnostics(),
+                d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
+        }
+    }
+
+    #endregion
+
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
 
