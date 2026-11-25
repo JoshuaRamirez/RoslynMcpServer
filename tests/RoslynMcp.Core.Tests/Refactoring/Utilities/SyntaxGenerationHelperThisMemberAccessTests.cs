@@ -70,4 +70,18 @@ public class SyntaxGenerationHelperThisMemberAccessTests
 
         Assert.Equal($"this.{memberName}", access.ToString());
     }
+
+    [Theory]
+    [InlineData("class", "@class")]
+    [InlineData("event", "@event")]
+    [InlineData("value", "value")]
+    [InlineData("Class", "Class")]
+    public void CreateEscapedIdentifierName_EscapesOnlyReservedKeywords(string name, string expectedText)
+    {
+        var identifier = SyntaxGenerationHelper.CreateEscapedIdentifierName(name);
+
+        Assert.Equal(expectedText, identifier.Identifier.Text);
+        Assert.Equal(name, identifier.Identifier.ValueText);
+        Assert.Equal(expectedText, SyntaxGenerationHelper.EscapedIdentifierText(name));
+    }
 }

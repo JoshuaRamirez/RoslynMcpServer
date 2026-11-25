@@ -6398,6 +6398,149 @@ public class GenerateConstructorOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateConstructor_KeywordNamedMembers_EscapesParametersAndAssignments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                private int @class;
+                private string @event;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Person.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Person");
+        Assert.Contains("public Person(int @class, string @event)", ctor, StringComparison.Ordinal);
+        Assert.Contains("this.@class = @class;", ctor, StringComparison.Ordinal);
+        Assert.Contains("this.@event = @event;", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_GenericType_KeywordNamedMembers_EscapesParametersAndNullChecks()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Box<T>
+            {
+                private T @class;
+                private string @event;
+                public string Default { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Box.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            AddNullChecks = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Box");
+        Assert.Contains("public Box(T @class, string @event, string @default)", ctor, StringComparison.Ordinal);
+        Assert.Contains("if (@event == null)", ctor, StringComparison.Ordinal);
+        Assert.Contains("nameof(@event)", ctor, StringComparison.Ordinal);
+        Assert.Contains("this.@class = @class;", ctor, StringComparison.Ordinal);
+        Assert.Contains("this.@event = @event;", ctor, StringComparison.Ordinal);
+        Assert.Contains("this.Default = @default;", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructor_KeywordNamedMembers_EscapesOtherMemberAccess()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                private int @class;
+                private string @event;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Person.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CopyConstructor = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Person");
+        Assert.Contains("this.@class = other.@class;", ctor, StringComparison.Ordinal);
+        Assert.Contains("this.@event = other.@event;", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CallBase_KeywordNamedMembers_EscapesBaseArguments()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Animal
+            {
+                public Animal(int @class, string @event)
+                {
+                }
+            }
+
+            public class Dog : Animal
+            {
+                public int @class;
+                public string @event;
+                public bool Active;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CallBase = true,
+            AddNullChecks = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Dog");
+        Assert.Contains("public Dog(int @class, string @event, bool active) : base(@class, @event)", ctor, StringComparison.Ordinal);
+        Assert.Contains("if (@event == null)", ctor, StringComparison.Ordinal);
+        Assert.Contains("this.Active = active", ctor, StringComparison.Ordinal);
+        AssertGeneratedSourceCompiles(updated);
+    }
+
+    [SkippableFact]
     public async Task GenerateConstructor_StructLangVersion10_UserParameterlessCtor_PreservesInitializedLeftovers()
     {
         const string source = """

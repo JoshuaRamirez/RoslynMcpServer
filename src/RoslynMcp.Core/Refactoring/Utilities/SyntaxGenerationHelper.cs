@@ -386,18 +386,16 @@ public static class SyntaxGenerationHelper
     /// emitting a verbatim <c>@</c> prefix when the name is a reserved
     /// keyword (e.g. symbol name <c>class</c> becomes <c>@class</c>).
     /// </summary>
-    internal static IdentifierNameSyntax CreateEscapedIdentifierName(string name)
-    {
-        var keywordKind = SyntaxFacts.GetKeywordKind(name);
-        if (keywordKind != SyntaxKind.None && SyntaxFacts.IsReservedKeyword(keywordKind))
-        {
-            return SyntaxFactory.IdentifierName(
-                SyntaxFactory.Identifier(
-                    SyntaxFactory.TriviaList(), SyntaxKind.IdentifierToken, "@" + name, name, SyntaxFactory.TriviaList()));
-        }
+    internal static IdentifierNameSyntax CreateEscapedIdentifierName(string name) =>
+        SyntaxFactory.IdentifierName(EscapedIdentifier(name));
 
-        return SyntaxFactory.IdentifierName(name);
-    }
+    /// <summary>
+    /// Source text for <paramref name="name"/> as an identifier: <c>@name</c>
+    /// when the name is a reserved keyword, otherwise the name unchanged.
+    /// Used where generated code is built as text (e.g. interpolation holes).
+    /// </summary>
+    internal static string EscapedIdentifierText(string name) =>
+        EscapedIdentifier(name).Text;
 
     /// <summary>
     /// Creates an interface declaration with extracted members.
@@ -551,13 +549,16 @@ public static class SyntaxGenerationHelper
         SyntaxFactory.MemberAccessExpression(
             SyntaxKind.SimpleMemberAccessExpression,
             SyntaxFactory.ThisExpression(),
-            SyntaxFactory.IdentifierName(EscapedIdentifier(memberName)));
+            CreateEscapedIdentifierName(memberName));
 
     /// <summary>
     /// Identifier token for <paramref name="name"/>, emitted as a verbatim
-    /// <c>@name</c> token when the bare name is a reserved C# keyword.
+    /// <c>@name</c> token when the bare name is a reserved C# keyword
+    /// (contextual keywords stay bare). The single escaping point for symbol
+    /// names turned into generated identifiers: member accesses, parameter
+    /// names, <c>other.Member</c> and bare member references (#3475).
     /// </summary>
-    private static SyntaxToken EscapedIdentifier(string name)
+    internal static SyntaxToken EscapedIdentifier(string name)
     {
         var bare = name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
         return SyntaxFacts.IsReservedKeyword(SyntaxFacts.GetKeywordKind(bare))
