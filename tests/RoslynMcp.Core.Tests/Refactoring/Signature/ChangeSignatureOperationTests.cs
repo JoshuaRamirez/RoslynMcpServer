@@ -896,6 +896,115 @@ public class ChangeSignatureOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableFact]
+    public async Task ChangeSignature_SingleSiteAddOnStaticNonVirtualInterfaceMethod_Succeeds()
+    {
+        const string source = """
+            public interface IUtil
+            {
+                static int Helper(int a) => a;
+            }
+
+            public static class Program
+            {
+                public static int Main() => IUtil.Helper(1);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var line = FindLine(source, "static int Helper(int a)");
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Helper",
+            Line = line,
+            Parameters =
+            [
+                new() { OriginalName = "a", Name = "a" },
+                new() { Name = "b", Type = "int", DefaultValue = "0" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.True(HasParameters(updated, "Helper", ("int", "a"), ("int", "b")));
+        Assert.Contains("IUtil.Helper(1)", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_SingleSiteAddOnPrivateInterfaceMethod_Succeeds()
+    {
+        const string source = """
+            public interface IUtil
+            {
+                private int Inner(int a) => a;
+
+                int Run() => Inner(1);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var line = FindLine(source, "private int Inner(int a)");
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Inner",
+            Line = line,
+            Parameters =
+            [
+                new() { OriginalName = "a", Name = "a" },
+                new() { Name = "b", Type = "int", DefaultValue = "0" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.True(HasParameters(updated, "Inner", ("int", "a"), ("int", "b")));
+        Assert.Contains("Inner(1)", updated, StringComparison.Ordinal);
+        Assert.True(HasParameters(updated, "Run"));
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_SingleSiteAddOnSealedInterfaceMethod_Succeeds()
+    {
+        const string source = """
+            public interface ISealed
+            {
+                sealed int S(int a) => a;
+            }
+
+            public static class Program
+            {
+                public static int Use(ISealed x) => x.S(1);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var line = FindLine(source, "sealed int S(int a)");
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "S",
+            Line = line,
+            Parameters =
+            [
+                new() { OriginalName = "a", Name = "a" },
+                new() { Name = "b", Type = "int", DefaultValue = "0" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.True(HasParameters(updated, "S", ("int", "a"), ("int", "b")));
+        Assert.Contains("x.S(1)", updated, StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region allFiles
