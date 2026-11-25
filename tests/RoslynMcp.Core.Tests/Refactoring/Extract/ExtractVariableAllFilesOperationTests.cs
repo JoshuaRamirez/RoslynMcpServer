@@ -310,6 +310,49 @@ public class ExtractVariableAllFilesOperationTests
             d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
     }
 
+    [SkippableFact]
+    public async Task ExtractVariable_AllFilesTrue_AfterEndif_PlacesDeclarationAfterEndif()
+    {
+        const string afterEndif = """
+            using System;
+
+            namespace TestApp;
+
+            public static class AfterEndif
+            {
+                static int Price(int qty) => qty * 7;
+
+                public static int Run()
+                {
+                    int qty = 4;
+            #if DEBUG
+                    Console.WriteLine("debug build");
+            #endif
+                    return Price(qty) + 1;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("AfterEndif.cs", afterEndif));
+        var operation = new ExtractVariableOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("GetAnswer()", updatedA, StringComparison.Ordinal);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["AfterEndif.cs"]));
+        var endifIndex = updated.IndexOf("#endif", StringComparison.Ordinal);
+        var declIndex = updated.IndexOf("var ", StringComparison.Ordinal);
+        Assert.True(endifIndex >= 0);
+        Assert.True(declIndex > endifIndex, "declaration should come after #endif");
+        Assert.Contains("Price(qty)", updated, StringComparison.Ordinal);
+    }
+
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
 
