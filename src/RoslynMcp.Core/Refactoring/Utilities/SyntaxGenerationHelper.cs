@@ -359,7 +359,7 @@ public static class SyntaxGenerationHelper
 
         var getAccessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
             .WithBody(SyntaxFactory.Block(
-                SyntaxFactory.ReturnStatement(SyntaxFactory.IdentifierName(field.Name))));
+                SyntaxFactory.ReturnStatement(CreateEscapedIdentifierName(field.Name))));
 
         var accessors = new List<AccessorDeclarationSyntax> { getAccessor };
 
@@ -370,7 +370,7 @@ public static class SyntaxGenerationHelper
                     SyntaxFactory.ExpressionStatement(
                         SyntaxFactory.AssignmentExpression(
                             SyntaxKind.SimpleAssignmentExpression,
-                            SyntaxFactory.IdentifierName(field.Name),
+                            CreateEscapedIdentifierName(field.Name),
                             SyntaxFactory.IdentifierName("value")))));
             accessors.Add(setAccessor);
         }
@@ -379,6 +379,24 @@ public static class SyntaxGenerationHelper
             .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
             .NormalizeWhitespace();
+    }
+
+    /// <summary>
+    /// Creates an <see cref="IdentifierNameSyntax"/> for a symbol name,
+    /// emitting a verbatim <c>@</c> prefix when the name is a reserved
+    /// keyword (e.g. symbol name <c>class</c> becomes <c>@class</c>).
+    /// </summary>
+    internal static IdentifierNameSyntax CreateEscapedIdentifierName(string name)
+    {
+        var keywordKind = SyntaxFacts.GetKeywordKind(name);
+        if (keywordKind != SyntaxKind.None && SyntaxFacts.IsReservedKeyword(keywordKind))
+        {
+            return SyntaxFactory.IdentifierName(
+                SyntaxFactory.Identifier(
+                    SyntaxFactory.TriviaList(), SyntaxKind.IdentifierToken, "@" + name, name, SyntaxFactory.TriviaList()));
+        }
+
+        return SyntaxFactory.IdentifierName(name);
     }
 
     /// <summary>
