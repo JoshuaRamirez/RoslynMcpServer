@@ -60,8 +60,11 @@ public static class SyntaxGenerationHelper
         {
             body = CreateBaseCallBody(method);
         }
-        else if (throwNotImplemented)
+        else if (throwNotImplemented
+            || NullableFlowAttributeHelpers.HasPostconditionAttributes(method, emittingType))
         {
+            // A default-valued body cannot honor a copied postcondition
+            // ([DoesNotReturn], [return: NotNull], [MemberNotNull], ...).
             body = CreateThrowNotImplementedBody();
         }
         else
@@ -108,6 +111,7 @@ public static class SyntaxGenerationHelper
                 SyntaxFactory.TypeParameterList(SyntaxFactory.SeparatedList(typeParams)));
         }
 
+        methodDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(methodDecl, method, emittingType);
         return methodDecl.NormalizeWhitespace();
     }
 
@@ -176,6 +180,7 @@ public static class SyntaxGenerationHelper
             propDecl = propDecl.WithModifiers(SyntaxFactory.TokenList(modifiers));
         }
 
+        propDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(propDecl, property, emittingType);
         return propDecl.NormalizeWhitespace();
     }
 
@@ -243,6 +248,7 @@ public static class SyntaxGenerationHelper
             indexerDecl = indexerDecl.WithModifiers(SyntaxFactory.TokenList(modifiers));
         }
 
+        indexerDecl = NullableFlowAttributeHelpers.WithNullableFlowAttributes(indexerDecl, indexer, emittingType);
         return indexerDecl.NormalizeWhitespace();
     }
 
@@ -580,6 +586,7 @@ public static class SyntaxGenerationHelper
             var getBody = useBase
                 ? CreateBasePropertyGetBody(property)
                 : ThrowNotImplementedBodyHelpers.RequiresThrowBody(property, throwNotImplemented)
+                    || NullableFlowAttributeHelpers.HasGetterPostconditionAttributes(property, emittingType)
                     ? CreateThrowNotImplementedBody()
                     : CreateDefaultReturnBody(property.Type);
             accessors.Add(WithOverrideAccessorModifiers(
@@ -675,7 +682,9 @@ public static class SyntaxGenerationHelper
         var modifiers = RefKindParameterModifiers(parameter.RefKind);
         if (EmitsScopedModifier(parameter))
             modifiers = modifiers.Insert(0, SyntaxFactory.Token(SyntaxKind.ScopedKeyword));
-        return modifiers.Count == 0 ? syntax : syntax.WithModifiers(modifiers);
+        if (modifiers.Count > 0)
+            syntax = syntax.WithModifiers(modifiers);
+        return NullableFlowAttributeHelpers.WithNullableFlowAttributes(syntax, parameter);
     }
 
     /// <summary>
