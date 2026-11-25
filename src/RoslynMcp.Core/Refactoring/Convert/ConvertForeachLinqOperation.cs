@@ -105,6 +105,9 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
                 "build configuration, so the loop cannot be safely converted.");
         }
 
+        if (AccumulatorDeclaredOutsideEnclosingLoop(foreachStmt))
+            throw new RefactoringException(ErrorCodes.CannotConvert, EnclosingLoopAccumulatorMessage);
+
         if (!TryConvert(foreachStmt, @params.PreferQuerySyntax, out var conversion, out var assignment))
         {
             throw new RefactoringException(ErrorCodes.CannotConvert,
@@ -303,9 +306,84 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         if (AccumulatorHasDirectiveGuardedCodeBeforeLoop(foreachStmt, analyzed!.ListName))
             return false;
 
+        // The rewrite also assigns over the accumulator on every run of the
+        // foreach, so an enclosing loop between the accumulator's
+        // declaration and the foreach would wipe earlier iterations' elements
+        // (#3402).
+        if (AccumulatorDeclaredOutsideEnclosingLoop(foreachStmt, analyzed.ListName))
+            return false;
+
         conversion = analyzed;
         assignment = BuildLinqAssignment(conversion, preferQuerySyntax);
         return true;
+    }
+
+    internal const string EnclosingLoopAccumulatorMessage =
+        "The foreach is nested inside an enclosing loop (for / foreach / while / do) and the accumulator is " +
+        "declared outside that loop; the LINQ assignment would discard elements added by earlier iterations " +
+        "of the enclosing loop, so the loop cannot be safely converted.";
+
+    /// <summary>
+    /// True when the foreach's accumulator keeps its contents across runs
+    /// of the foreach because an enclosing <c>for</c> / <c>foreach</c> /
+    /// <c>while</c> / <c>do</c> loop sits between the foreach and the
+    /// accumulator's declaration (#3402). The original loop appends on
+    /// every outer iteration; the LINQ assignment would replace the list
+    /// each time, keeping only the last iteration's elements. Only loops in
+    /// the foreach's own function body count (the walk stops at lambda,
+    /// anonymous method, local function and member boundaries). A loop
+    /// whose body contains the accumulator's declaration re-creates it on
+    /// every iteration and is fine; a local declared in a <c>for</c>
+    /// initializer is created once and still counts as outside. A field,
+    /// parameter, captured outer local or member-access accumulator is
+    /// declared outside every such loop. Returns false for foreach that do
+    /// not match a convertible pattern.
+    /// </summary>
+    internal static bool AccumulatorDeclaredOutsideEnclosingLoop(ForEachStatementSyntax foreachStmt)
+    {
+        if (!TryAnalyzePattern(foreachStmt, out var analyzed))
+            return false;
+
+        return AccumulatorDeclaredOutsideEnclosingLoop(foreachStmt, analyzed!.ListName);
+    }
+
+    private static bool AccumulatorDeclaredOutsideEnclosingLoop(
+        ForEachStatementSyntax foreachStmt,
+        ExpressionSyntax accumulator)
+    {
+        var enclosingLoopBodies = new List<StatementSyntax>();
+        for (var current = foreachStmt.Parent; current != null && !IsBodyBoundary(current); current = current.Parent)
+        {
+            var loopBody = current switch
+            {
+                ForStatementSyntax loop => loop.Statement,
+                CommonForEachStatementSyntax loop => loop.Statement,
+                WhileStatementSyntax loop => loop.Statement,
+                DoStatementSyntax loop => loop.Statement,
+                _ => null
+            };
+
+            if (loopBody != null)
+                enclosingLoopBodies.Add(loopBody);
+        }
+
+        if (enclosingLoopBodies.Count == 0)
+            return false;
+
+        SyntaxNode? declaration = null;
+        if (accumulator is IdentifierNameSyntax identifier && EnclosingBody(foreachStmt) is { } body &&
+            !DeclaresParameter(body, identifier.Identifier.ValueText))
+        {
+            declaration = FindLocalDeclaringSyntax(body, identifier.Identifier.ValueText, foreachStmt, out _);
+        }
+
+        // Not a local of this body (field, parameter, captured local or
+        // member access): every enclosing loop is between it and the foreach.
+        if (declaration == null)
+            return true;
+
+        var declaredAt = DeclaredTokenStart(declaration);
+        return enclosingLoopBodies.Any(loopBody => !loopBody.FullSpan.Contains(declaredAt));
     }
 
     private static bool TryAnalyzePattern(ForEachStatementSyntax foreachStmt, out ForeachLinqConversion? analyzed)
