@@ -516,6 +516,176 @@ public class ExtractMethodAllFilesOperationTests
         Assert.Single(result.Changes!.FilesModified);
     }
 
+    #region Preprocessor / region trivia in the selection (#2921)
+
+    private const string AfterEndifSource = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                int a = 1;
+        #if DEBUG
+                a += 10;
+        #else
+                a += 20;
+        #endif
+                Console.WriteLine("Final=" + a);
+            }
+        }
+        """;
+
+    private const string AfterIfSource = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                int a = 1;
+        #if DEBUG
+                Console.WriteLine("dbg=" + a);
+        #endif
+                Console.WriteLine("Final=" + a);
+            }
+        }
+        """;
+
+    private const string RegionSource = """
+        using System;
+
+        namespace TestApp;
+
+        public static class Program
+        {
+            public static void Main()
+            {
+                int a = 1;
+                #region Output
+                Console.WriteLine("Final=" + a);
+                #endregion
+                Console.WriteLine("Done");
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task ExtractMethod_StatementAfterEndif_ThrowsInvalidSelection()
+    {
+        await AssertRefusesAndWritesNothing(AfterEndifSource, "Console.WriteLine(\"Final=\" + a);");
+    }
+
+    [SkippableFact]
+    public async Task ExtractMethod_StatementAfterIf_ThrowsInvalidSelection()
+    {
+        await AssertRefusesAndWritesNothing(AfterIfSource, "Console.WriteLine(\"dbg=\" + a);");
+    }
+
+    [SkippableFact]
+    public async Task ExtractMethod_StatementWithRegionTrivia_ThrowsInvalidSelection()
+    {
+        await AssertRefusesAndWritesNothing(RegionSource, "Console.WriteLine(\"Final=\" + a);");
+    }
+
+    [SkippableFact]
+    public async Task ExtractMethod_MultiStatementThroughRegion_ThrowsInvalidSelection()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(RegionSource);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ExtractMethodOperation(workspace.Context);
+        var start = FindSpan(RegionSource, "int a = 1;");
+        var end = FindSpan(RegionSource, "Console.WriteLine(\"Final=\" + a);");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = start.StartLine,
+                StartColumn = start.StartColumn,
+                EndLine = end.EndLine,
+                EndColumn = end.EndColumn,
+                MethodName = "Show"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelection, ex.ErrorCode);
+        Assert.Contains("preprocessor directives", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractMethod_Preview_StatementAfterEndif_ThrowsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AfterEndifSource);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ExtractMethodOperation(workspace.Context);
+        var span = FindSpan(AfterEndifSource, "Console.WriteLine(\"Final=\" + a);");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                MethodName = "Show",
+                Preview = true
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelection, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractMethod_AllFilesTrue_SkipsRunsWithDirectiveTrivia()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("Region.cs", RegionSource));
+        var operation = new ExtractMethodOperation(workspace.Context);
+        var beforeRegion = await File.ReadAllTextAsync(workspace.SourcePaths["Region.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractMethodParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeRegion, await File.ReadAllTextAsync(workspace.SourcePaths["Region.cs"]));
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("private void WriteLine()", updatedA, StringComparison.Ordinal);
+        Assert.Contains("System.Console.WriteLine(\"three\");", updatedA, StringComparison.Ordinal);
+    }
+
+    private static async Task AssertRefusesAndWritesNothing(string source, string snippet)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ExtractMethodOperation(workspace.Context);
+        var span = FindSpan(source, snippet);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                MethodName = "Show"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelection, ex.ErrorCode);
+        Assert.Contains("preprocessor directives", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
