@@ -1898,6 +1898,479 @@ public class ConvertForeachLinqOperationTests
 
     #endregion
 
+    #region Directive-guarded accumulator writes before the loop (#3476)
+
+    private const string ReleaseOnlyWriteBeforeLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+        #if !DEBUG
+                result.Add(-1);
+        #endif
+                foreach (var v in values)
+                {
+                    result.Add(v * 10);
+                }
+                return result;
+            }
+        }
+        """;
+
+    private const string DebugOnlyWriteBeforeLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+        #if DEBUG
+                result.Add(-1);
+        #endif
+                foreach (var v in values)
+                {
+                    result.Add(v * 10);
+                }
+                return result;
+            }
+        }
+        """;
+
+    private const string IfElseWriteBeforeLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+        #if DEBUG
+                result.Add(-1);
+        #else
+                result.Add(-2);
+        #endif
+                foreach (var v in values)
+                    result.Add(v * 10);
+                return result;
+            }
+        }
+        """;
+
+    private const string ReleaseOnlyWriteBeforeLoopOutVar = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            private static bool Make(out List<int> list)
+            {
+                list = new List<int>();
+                return true;
+            }
+
+            public List<int> Scale(List<int> values)
+            {
+                if (Make(out var result))
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                    return result;
+                }
+                return new List<int>();
+            }
+        }
+        """;
+
+    private const string ReleaseOnlyWriteBeforeLoopPatternVariable = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(object o, List<int> values)
+            {
+                if (o is List<int> result)
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                    return result;
+                }
+                return new List<int>();
+            }
+        }
+        """;
+
+    private const string ReleaseOnlyWriteBeforeLoopCapturedLocal = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+                Action fill = () =>
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                };
+                fill();
+                return result;
+            }
+        }
+        """;
+
+    private const string ReleaseOnlyWriteBeforeLoopSiblingScopeShadow = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+                Action fill = () =>
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    { var result = 0; _ = result; }
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                };
+                fill();
+                return result;
+            }
+        }
+        """;
+
+    private const string ReleaseOnlyWriteBeforeLoopSwitchSectionLocal = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values, int k)
+            {
+                switch (k)
+                {
+                    case 1:
+                        var result = new List<int>();
+                        break;
+                    case 2:
+                        result = new List<int>();
+        #if !DEBUG
+                        result.Add(-1);
+        #endif
+                        foreach (var v in values)
+                        {
+                            result.Add(v * 10);
+                        }
+
+                        return result;
+                }
+
+                return new List<int>();
+            }
+        }
+        """;
+
+    private const string ReleaseOnlyWriteBeforeLoopSwitchArmPattern = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values, object o, List<object> objs)
+            {
+                var result = new List<int>();
+                Action fill = () =>
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    var x = o switch { List<int> result => result.Count, _ => 0 };
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                };
+                fill();
+                return result;
+            }
+        }
+        """;
+
+    private const string ReleaseOnlyWriteBeforeLoopQueryClausePattern = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values, object o, List<object> objs)
+            {
+                var result = new List<int>();
+                Action fill = () =>
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    var q = from x in objs where x is List<int> result select x;
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                };
+                fill();
+                return result;
+            }
+        }
+        """;
+
+    private const string ReleaseOnlyWriteBeforeLoopDoWhilePattern = """
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values, object o, List<object> objs)
+            {
+                var result = new List<int>();
+                Action fill = () =>
+                {
+        #if !DEBUG
+                    result.Add(-1);
+        #endif
+                    do { } while (o is List<int> result && result.Count < 0);
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                };
+                fill();
+                return result;
+            }
+        }
+        """;
+
+    private const string OutVarNoDirectivesBeforeLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            private static bool Make(out List<int> list)
+            {
+                list = new List<int>();
+                return true;
+            }
+
+            public List<int> Scale(List<int> values)
+            {
+                if (Make(out var result))
+                {
+                    foreach (var v in values)
+                    {
+                        result.Add(v * 10);
+                    }
+                    return result;
+                }
+                return new List<int>();
+            }
+        }
+        """;
+
+    private const string NoDirectivesBeforeLoop = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Collector
+        {
+            public List<int> Scale(List<int> values)
+            {
+                var result = new List<int>();
+                foreach (var v in values)
+                {
+                    result.Add(v * 10);
+                }
+                return result;
+            }
+        }
+        """;
+
+    [Theory]
+    [InlineData(ReleaseOnlyWriteBeforeLoop)]
+    [InlineData(DebugOnlyWriteBeforeLoop)]
+    [InlineData(IfElseWriteBeforeLoop)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopOutVar)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopCapturedLocal)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSiblingScopeShadow)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSwitchSectionLocal)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSwitchArmPattern)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopQueryClausePattern)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopDoWhilePattern)]
+    public void TryConvert_DirectiveGuardedWriteBeforeLoop_ReturnsFalse(string source)
+    {
+        var foreachStmt = ParseSingleForeach(source);
+        Assert.False(ConvertForeachLinqOperation.StatementContainsPreprocessorDirectives(foreachStmt));
+        Assert.False(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: false, out _, out _));
+        Assert.False(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: true, out _, out _));
+    }
+
+    [Theory]
+    [InlineData(NoDirectivesBeforeLoop)]
+    [InlineData(ForeachWrappedInIfDebug)]
+    [InlineData(OutVarNoDirectivesBeforeLoop)]
+    public void TryConvert_NoDirectiveGuardedWriteBeforeLoop_StillConverts(string source)
+    {
+        var foreachStmt = ParseSingleForeach(source);
+        Assert.True(ConvertForeachLinqOperation.TryConvert(foreachStmt, preferQuerySyntax: false, out _, out _));
+    }
+
+    [SkippableTheory]
+    [InlineData(ReleaseOnlyWriteBeforeLoop, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoop, true)]
+    [InlineData(DebugOnlyWriteBeforeLoop, false)]
+    [InlineData(IfElseWriteBeforeLoop, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopOutVar, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopOutVar, true)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable, true)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSiblingScopeShadow, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSwitchSectionLocal, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSwitchArmPattern, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopQueryClausePattern, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopDoWhilePattern, false)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSiblingScopeShadow, true)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSwitchSectionLocal, true)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSwitchArmPattern, true)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopQueryClausePattern, true)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopDoWhilePattern, true)]
+    public async Task ConvertForeachLinq_DirectiveGuardedWriteBeforeLoop_ThrowsCannotConvert(string source, bool preview)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertForeachLinqParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(source, "foreach (var v in values)"),
+                Preview = preview
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(
+            "Preprocessor directives (#if / #elif / #else / #endif) guard code between the accumulator's " +
+            "declaration and the foreach; the LINQ assignment would discard writes made there in some " +
+            "build configuration, so the loop cannot be safely converted.",
+            ex.Message);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertForeachLinq_NoDirectivesBeforeLoop_StillConverts()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NoDirectivesBeforeLoop);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(NoDirectivesBeforeLoop, "foreach (var v in values)")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("foreach", updated, StringComparison.Ordinal);
+        Assert.Contains(".Select", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableTheory]
+    [InlineData(ReleaseOnlyWriteBeforeLoop)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopOutVar)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopPatternVariable)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSiblingScopeShadow)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSwitchSectionLocal)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopSwitchArmPattern)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopQueryClausePattern)]
+    [InlineData(ReleaseOnlyWriteBeforeLoopDoWhilePattern)]
+    public async Task ConvertForeachLinq_AllFiles_SkipsDirectiveGuardedWriteBeforeLoop(string source)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helpers
 
     private const string SharedItemSource = """
