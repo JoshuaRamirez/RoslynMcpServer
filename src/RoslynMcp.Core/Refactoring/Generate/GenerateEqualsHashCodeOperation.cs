@@ -1018,26 +1018,23 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             var memberType = EqualityMemberCollector.GetMemberType(member);
             ExpressionSyntax eq;
 
-            if (memberType.IsReferenceType)
+            if (memberType.TypeKind == TypeKind.Dynamic)
+            {
+                // EqualityComparer<dynamic> binds dynamically and makes the
+                // && chain dynamic, so later uses of the pattern local other
+                // are unassigned (CS0165) or possibly-null (CS8602) (#3374).
+                eq = BuildEqualityComparerEquals(
+                    SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.ObjectKeyword)),
+                    CastToObject(left),
+                    CastToObject(right));
+            }
+            else if (memberType.IsReferenceType)
             {
                 // EqualityComparer<T>.Default.Equals(field, other.field)
-                eq = SyntaxFactory.InvocationExpression(
-                    SyntaxFactory.MemberAccessExpression(
-                        SyntaxKind.SimpleMemberAccessExpression,
-                        SyntaxFactory.MemberAccessExpression(
-                            SyntaxKind.SimpleMemberAccessExpression,
-                            SyntaxFactory.GenericName("EqualityComparer")
-                                .WithTypeArgumentList(SyntaxFactory.TypeArgumentList(
-                                    SyntaxFactory.SingletonSeparatedList<TypeSyntax>(
-                                        SyntaxFactory.ParseTypeName(memberType.ToDisplayString())))),
-                            SyntaxFactory.IdentifierName("Default")),
-                        SyntaxFactory.IdentifierName("Equals")))
-                    .WithArgumentList(SyntaxFactory.ArgumentList(
-                        SyntaxFactory.SeparatedList(new[]
-                        {
-                            SyntaxFactory.Argument(left),
-                            SyntaxFactory.Argument(right)
-                        })));
+                eq = BuildEqualityComparerEquals(
+                    SyntaxFactory.ParseTypeName(memberType.ToDisplayString()),
+                    left,
+                    right);
             }
             else
             {
@@ -1051,6 +1048,34 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
 
         return comparison;
     }
+
+    private static InvocationExpressionSyntax BuildEqualityComparerEquals(
+        TypeSyntax typeArgument,
+        ExpressionSyntax left,
+        ExpressionSyntax right)
+    {
+        return SyntaxFactory.InvocationExpression(
+            SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    SyntaxFactory.GenericName("EqualityComparer")
+                        .WithTypeArgumentList(SyntaxFactory.TypeArgumentList(
+                            SyntaxFactory.SingletonSeparatedList(typeArgument))),
+                    SyntaxFactory.IdentifierName("Default")),
+                SyntaxFactory.IdentifierName("Equals")))
+            .WithArgumentList(SyntaxFactory.ArgumentList(
+                SyntaxFactory.SeparatedList(new[]
+                {
+                    SyntaxFactory.Argument(left),
+                    SyntaxFactory.Argument(right)
+                })));
+    }
+
+    private static ExpressionSyntax CastToObject(ExpressionSyntax expression) =>
+        SyntaxFactory.CastExpression(
+            SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.ObjectKeyword)),
+            expression);
 
     private static ExpressionSyntax AndAlso(params ExpressionSyntax?[] parts)
     {
