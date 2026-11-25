@@ -81,8 +81,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         var symbol = resolved.Symbol;
 
         // Find all references via Roslyn
-        var referencedSymbols = await SymbolFinder.FindReferencesAsync(
-            symbol, Context.Solution, cancellationToken);
+        var referencedSymbols = (await SymbolFinder.FindReferencesAsync(
+            symbol, Context.Solution, cancellationToken)).ToList();
 
         var locations = new List<ReferenceLocationInfo>();
         var totalCount = 0;
@@ -133,7 +133,9 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         // search_symbols / find_callers / get_diagnostics): keep only locations whose site symbol matches
         // every set filter (exact DeclaredAccessibility; simple Name containing the trimmed value, ordinal
         // case-insensitive; SymbolKindMapper kind — methods / constructors / accessors → Method, field
-        // initializers → Field or Constant, property definitions → Property; IsStatic). For a usage the
+        // initializers → Field or Constant, auto-property / field-like event initializers → Property / Event
+        // (the synthesized backing field is associated to the declared member), property definitions →
+        // Property; IsStatic). For a usage the
         // site is the member / type / namespace enclosing it (the same enclosing-symbol notion
         // namespaceFilter uses, not the target symbol); for a definition location it is the declared
         // symbol itself (see <see cref="DeclaringSiteSymbol"/>). Namespace-level sites (using aliases, a
@@ -143,14 +145,29 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         var siteSymbolFilter = SiteSymbolFilter.Create(
             @params.AccessibilityFilter, @params.NameFilter, @params.KindFilter, @params.StaticFilter);
 
+        // FindReferences returns a property/event and its synthesized backing field as separate
+        // entries. After associating the field to the declared member, both definition locations
+        // share the same source span and would be reported twice. Skip the backing-field
+        // definition when the associated member is already in the result set.
+        var referencedDefinitions = referencedSymbols
+            .Select(s => s.Definition)
+            .ToHashSet(SymbolEqualityComparer.Default);
+
         foreach (var referencedSymbol in referencedSymbols)
         {
             // Every definition location of this entry declares the same symbol, so its accessibility /
             // name site is computed once.
             var definitionSiteSymbol = DeclaringSiteSymbol.Resolve(referencedSymbol.Definition);
 
-            // Add the definition itself (skipped entirely when includeDeclaration is false)
-            var definitionLocations = includeDeclaration
+            // Add the definition itself (skipped entirely when includeDeclaration is false, and
+            // skipped for a synthesized backing field whose associated property or event is already
+            // listed — that member's definition is the same source span).
+            var includeThisDefinition = includeDeclaration
+                && (DeclaringSiteSymbol.AssociateSynthesizedBackingField(referencedSymbol.Definition)
+                        is not { } associatedDefinition
+                    || SymbolEqualityComparer.Default.Equals(associatedDefinition, referencedSymbol.Definition)
+                    || !referencedDefinitions.Contains(associatedDefinition));
+            var definitionLocations = includeThisDefinition
                 ? referencedSymbol.Definition.Locations.Where(l => l.IsInSource)
                 : Enumerable.Empty<Location>();
             foreach (var defLocation in definitionLocations)
