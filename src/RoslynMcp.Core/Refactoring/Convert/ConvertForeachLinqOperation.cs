@@ -396,9 +396,14 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             if (DeclaresParameter(body, name))
                 return null;
 
-            var declaration = FindLocalDeclaringSyntax(body, name, foreachStmt);
+            var declaration = FindLocalDeclaringSyntax(body, name, foreachStmt, out var skippedOutOfScope);
             if (declaration == null)
             {
+                // A same-named local was set aside as out of scope. If that
+                // scope estimate is wrong the real declaration is gone, so
+                // scan from the body start: this can only over-refuse.
+                if (skippedOutOfScope)
+                    return BodyStart(nearestBody);
                 if (body is MemberDeclarationSyntax or AccessorDeclarationSyntax or CompilationUnitSyntax)
                     return null;
                 continue;
@@ -468,8 +473,9 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     /// so a shadowing local in an earlier block can't move the scan start
     /// past a guarded write to the outer accumulator.
     /// </summary>
-    private static SyntaxNode? FindLocalDeclaringSyntax(SyntaxNode body, string name, SyntaxNode target)
+    private static SyntaxNode? FindLocalDeclaringSyntax(SyntaxNode body, string name, SyntaxNode target, out bool skippedOutOfScope)
     {
+        skippedOutOfScope = false;
         var before = target.SpanStart;
         SyntaxNode? match = null;
         foreach (var node in body.DescendantNodes(child => child == body || !IsBodyBoundary(child)))
@@ -490,7 +496,10 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
                 continue;
 
             if (!DeclarationScope(node, body).Span.Contains(target.Span))
+            {
+                skippedOutOfScope = true;
                 continue;
+            }
 
             if (match == null || declared.SpanStart > DeclaredTokenStart(match))
                 match = node;
@@ -501,19 +510,24 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
 
     /// <summary>
     /// Innermost node that bounds the scope of the local declared by
-    /// <paramref name="declaring"/>: its block, switch section, owning
-    /// for / foreach / using / fixed / while / catch, or an embedded
-    /// statement. This may under-estimate a scope (e.g. a pattern variable
-    /// in a while condition), which only makes the check fall back to an
-    /// earlier scan start and over-refuse, never under-refuse.
+    /// <paramref name="declaring"/>: its block, the whole switch block for
+    /// a local declared in a case section's statements (a case-label pattern
+    /// designation stays section-scoped), owning for / foreach / using /
+    /// fixed / while / catch, or an embedded statement. This may
+    /// under-estimate a scope (e.g. a pattern variable in a while
+    /// condition); the caller then scans from the body start, so a wrong
+    /// estimate can only over-refuse, never under-refuse.
     /// </summary>
     private static SyntaxNode DeclarationScope(SyntaxNode declaring, SyntaxNode body)
     {
-        for (var current = declaring; current != null && current != body; current = current.Parent)
+        SyntaxNode? previous = null;
+        for (var current = declaring; current != null && current != body; previous = current, current = current.Parent)
         {
             switch (current)
             {
-                case BlockSyntax or SwitchSectionSyntax or CatchClauseSyntax or
+                case SwitchSectionSyntax section:
+                    return previous is SwitchLabelSyntax || section.Parent == null ? section : section.Parent;
+                case BlockSyntax or CatchClauseSyntax or
                     ForStatementSyntax or CommonForEachStatementSyntax or UsingStatementSyntax or
                     FixedStatementSyntax or WhileStatementSyntax:
                     return current;
