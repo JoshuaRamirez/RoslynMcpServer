@@ -20,11 +20,11 @@ namespace RoslynMcp.Core.Refactoring.Signature;
 /// <c>sourceFile</c>) and applies the same <c>parameters</c> list to every
 /// eligible method, skipping ineligible methods rather than throwing.
 /// Single-site refuses interface member declarations that can be
-/// implemented or overridden (<c>IsAbstract</c> or non-sealed
-/// <c>IsVirtual</c>, including default interface methods and
-/// <c>static abstract</c> / <c>static virtual</c>) because implementers
-/// would be left with a broken contract. Private, static non-virtual,
-/// and sealed interface methods are still rewritten.
+/// implemented or overridden (<c>IsAbstract</c> or <c>IsVirtual</c>,
+/// including default interface methods, <c>static abstract</c> /
+/// <c>static virtual</c>, and reabstractions in derived interfaces)
+/// because implementers would be left with a broken contract. Private,
+/// static non-virtual, and sealed interface methods are still rewritten.
 /// </summary>
 public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSignatureParams>
 {
@@ -174,13 +174,15 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         }
 
         // Refuse only interface members that implementers or derived
-        // interfaces can implement or override: abstract, default-interface
-        // (IsVirtual), and static abstract/virtual. Private, static
-        // non-virtual, and sealed members have no such contract and still
-        // rewrite, as they did on master (#2966).
+        // interfaces can implement or override: IsAbstract or IsVirtual
+        // (abstract, default-interface, static abstract/virtual, and
+        // reabstractions). Private, static non-virtual, and sealed
+        // members already report both flags false and still rewrite, as
+        // they did on master (#2966). Do not also require !IsSealed:
+        // a reabstraction such as `abstract void IBase.M(int a);` is
+        // IsAbstract and IsSealed, and must still be refused.
         if (methodSymbol.ContainingType?.TypeKind == TypeKind.Interface &&
-            (methodSymbol.IsAbstract || methodSymbol.IsVirtual) &&
-            !methodSymbol.IsSealed)
+            (methodSymbol.IsAbstract || methodSymbol.IsVirtual))
         {
             throw new RefactoringException(
                 ErrorCodes.InvalidSymbolKind,
