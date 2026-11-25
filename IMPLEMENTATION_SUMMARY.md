@@ -114,25 +114,26 @@ This document summarizes all work completed to prepare the RoslynMcp solution fo
 ### GitHub Actions Workflows Created
 
 1. **`.github/workflows/build.yml`** ✓
-   - **Multi-platform builds**: Windows, Linux, macOS
-   - Runs on: push to main/develop, pull requests
-   - Steps:
-     - Checkout code
-     - Setup .NET 9.0
-     - Restore dependencies
-     - Build in Release mode
-     - Run all tests
-     - Upload test results as artifacts
-   - Build summary job for status aggregation
+   - **Fast CI on Linux only** for pull requests and pushes to master/develop
+   - `RoslynMcp.Core.Tests` split across 6 parallel shards (`.github/scripts/plan_test_shards.py`)
+   - Server and CLI tests in a separate job that also builds the whole solution
+   - NuGet package cache; restore and build once per job, tests run with `--no-build`
+   - Required checks `build (windows-latest)` and `build (macos-latest)` are quick stubs; `build (ubuntu-latest)` aggregates the Linux test jobs
+   - Test results uploaded as artifacts; build summary job for status aggregation
 
 2. **`.github/workflows/quality.yml`** ✓
-   - **Code quality checks**
+   - **Code quality checks** (runs on Linux)
    - Warnings treated as errors (`/p:TreatWarningsAsErrors=true`)
    - Code analysis enabled
    - Format checking with `dotnet format --verify-no-changes`
-   - Runs on Windows (primary platform)
 
-3. **`.github/workflows/publish.yml`** ✓
+3. **`.github/workflows/nightly.yml`** ✓
+   - **Nightly full matrix** at 09:00 UTC (2:00 AM MST) and on manual dispatch
+   - Full build and all tests on Windows, Linux, and macOS, plus the Windows warnings-as-errors build
+   - Skips scheduled nights when master has not changed since the last successful nightly
+   - Opens or updates one `ci-nightly` issue on failure; closes it on the next green run
+
+4. **`.github/workflows/publish.yml`** ✓
    - **NuGet package publishing**
    - Triggered on: GitHub releases, manual workflow dispatch
    - Steps:
