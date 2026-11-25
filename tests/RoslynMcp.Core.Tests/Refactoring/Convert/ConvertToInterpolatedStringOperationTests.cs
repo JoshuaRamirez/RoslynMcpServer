@@ -1435,6 +1435,85 @@ public class ConvertToInterpolatedStringOperationTests
         await AssertCompilesAsync(workspace);
     }
 
+    [SkippableTheory]
+    [InlineData("where T : IFormattable", "{t?.ToString()}")]
+    [InlineData("where T : struct, IFormattable", "{((object)t).ToString()}")]
+    [InlineData("where T : class, ISpanFormattable", "{t?.ToString()}")]
+    [InlineData("where T : U where U : IFormattable", "{t?.ToString()}")]
+    [InlineData("where T : FormattableBase", "{t?.ToString()}")]
+    public async Task Convert_Concat_TypeParameterConstrainedToFormattable_WrapsToString(
+        string constraints,
+        string expectedHole)
+    {
+        var source = $$"""
+            using System;
+
+            public class FormattableBase : IFormattable
+            {
+                public override string ToString() => "TOSTRING";
+
+                public string ToString(string? format, IFormatProvider? provider) => "IFORMATTABLE";
+            }
+
+            public static class Program
+            {
+                public static string Render<T{{(constraints.Contains("U", StringComparison.Ordinal) ? ", U" : "")}}>(T t) {{constraints}}
+                {
+                    return "x=" + t;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "\"x=\" + t")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        // AppendFormatted<T> calls IFormattable.ToString(null, culture) for a
+        // formattable T; concat calls t.ToString() (#2954).
+        Assert.Contains("$\"x=" + expectedHole + "\"", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("$\"x={t}\"", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableTheory]
+    [InlineData("where T : IComparable")]
+    [InlineData("where T : struct")]
+    public async Task Convert_Concat_TypeParameterNotConstrainedToFormattable_KeepsBareHole(string constraints)
+    {
+        var source = $$"""
+            using System;
+
+            public static class Program
+            {
+                public static string Render<T>(T t) {{constraints}}
+                {
+                    return "x=" + t;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Program.cs");
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "\"x=\" + t")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("$\"x={t}\"", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
     [SkippableFact]
     public async Task Convert_Concat_FormattableOperandWithComment_KeepsComment()
     {

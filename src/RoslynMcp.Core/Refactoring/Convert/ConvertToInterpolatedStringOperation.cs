@@ -648,8 +648,32 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         return toString is { IsReadOnly: false };
     }
 
-    private static bool RequiresExplicitToStringInConcatHole(ITypeSymbol type)
+    private static bool RequiresExplicitToStringInConcatHole(ITypeSymbol type) =>
+        RequiresExplicitToStringInConcatHole(type, new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default));
+
+    private static bool RequiresExplicitToStringInConcatHole(
+        ITypeSymbol type,
+        HashSet<ITypeParameterSymbol> visitedTypeParameters)
     {
+        // A type parameter's AllInterfaces does not include its constraint
+        // types, so `T : IFormattable`, `T : struct, IFormattable`,
+        // `T : U` where `U : IFormattable`, and `T : SomeFormattableClass`
+        // are found by walking ConstraintTypes (interfaces, the effective
+        // base class, and other type parameters) recursively.
+        if (type is ITypeParameterSymbol typeParameter)
+        {
+            if (!visitedTypeParameters.Add(typeParameter))
+                return false;
+
+            foreach (var constraint in typeParameter.ConstraintTypes)
+            {
+                if (RequiresExplicitToStringInConcatHole(constraint, visitedTypeParameters))
+                    return true;
+            }
+
+            return false;
+        }
+
         if (type.SpecialType != SpecialType.None)
             return false;
 
