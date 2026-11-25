@@ -610,7 +610,108 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 ErrorCodes.UnresolvableControlFlow,
                 $"Method '{methodSymbol.Name}' contains nested return, break, continue, goto, or yield and cannot be inlined.");
         }
+
+        // Inlining pastes only the active branch and drops #if / #else / #endif
+        // (and disabled text) in the body, which silently changes other
+        // configurations. Leading / trailing trivia on the method itself is
+        // ignored so a method wrapped as a whole in #if can still be inlined.
+        if (BodyContainsPreprocessorDirectives(methodSyntax))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CannotInlineDirectives,
+                $"Method '{methodSymbol.Name}' body contains preprocessor directives and cannot be safely inlined.");
+        }
+
+        // A whole-method wrapper with an #else / #elif alternative means another
+        // configuration compiles a different implementation; inlining the active
+        // one would silently run the wrong branch there.
+        if (IsInsideConditionalAlternative(methodSyntax, methodSymbol.Name))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CannotInlineDirectives,
+                $"Method '{methodSymbol.Name}' has conditional-compilation alternatives (#else / #elif or a separately guarded alternative) and cannot be safely inlined.");
+        }
     }
+
+    /// <summary>
+    /// True when the method sits inside an <c>#if</c> group (enclosing its whole
+    /// declaration) that also has an <c>#elif</c> or <c>#else</c> branch, or that is
+    /// paired with a separately guarded alternative (e.g. <c>#if !DEBUG</c>) whose
+    /// disabled text mentions the same method name.
+    /// Walks only the directive chain, so files without directives cost nothing.
+    /// </summary>
+    private static bool IsInsideConditionalAlternative(MethodDeclarationSyntax methodSyntax, string methodName)
+    {
+        var root = methodSyntax.SyntaxTree.GetRoot();
+        if (!root.ContainsDirectives)
+            return false;
+
+        var span = methodSyntax.Span;
+        var enclosed = false;
+        for (var directive = root.GetFirstDirective();
+             directive != null && directive.SpanStart < span.Start;
+             directive = directive.GetNextDirective())
+        {
+            if (directive is not IfDirectiveTriviaSyntax ifDirective)
+                continue;
+
+            var related = ifDirective.GetRelatedDirectives();
+            if (!related.Any(d => d is EndIfDirectiveTriviaSyntax && d.SpanStart >= span.End))
+                continue;
+
+            if (related.Any(d => d is ElseDirectiveTriviaSyntax or ElifDirectiveTriviaSyntax))
+                return true;
+
+            enclosed = true;
+        }
+
+        return enclosed && DisabledTextMentionsMethod(root, methodName);
+    }
+
+    /// <summary>
+    /// Conservative check for a separately guarded alternative: any inactive
+    /// (disabled) region in the file that contains <c>Name(</c> or <c>Name&lt;..&gt;(</c>.
+    /// </summary>
+    private static bool DisabledTextMentionsMethod(SyntaxNode root, string methodName)
+    {
+        var pattern = new Regex(
+            $@"(?<![\w@]){Regex.Escape(methodName)}\s*(<[^<>()]*>\s*)?\(",
+            RegexOptions.CultureInvariant);
+        var visited = new HashSet<SyntaxToken>();
+        for (var directive = root.GetFirstDirective(); directive != null; directive = directive.GetNextDirective())
+        {
+            var token = directive.ParentTrivia.Token;
+            if (!visited.Add(token))
+                continue;
+
+            foreach (var trivia in token.LeadingTrivia)
+            {
+                if (trivia.IsKind(SyntaxKind.DisabledTextTrivia) && pattern.IsMatch(trivia.ToString()))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool BodyContainsPreprocessorDirectives(MethodDeclarationSyntax methodSyntax)
+    {
+        if (!methodSyntax.ContainsDirectives)
+            return false;
+
+        var span = methodSyntax.Span;
+        return methodSyntax.DescendantTrivia(descendIntoTrivia: true).Any(trivia =>
+            IsConditionalCompilationTrivia(trivia)
+            && trivia.Span.Start >= span.Start
+            && trivia.Span.Start < span.End);
+    }
+
+    private static bool IsConditionalCompilationTrivia(SyntaxTrivia trivia) =>
+        trivia.IsKind(SyntaxKind.IfDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.ElifDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.ElseDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.EndIfDirectiveTrivia)
+        || trivia.IsKind(SyntaxKind.DisabledTextTrivia);
 
     private static bool HasUnsupportedControlFlow(MethodDeclarationSyntax methodSyntax)
     {
