@@ -28,6 +28,11 @@ internal static class SyntaxIdentifierValidation
         if (name.StartsWith('@') && name.Length > 1)
         {
             var bare = name[1..];
+            // Only one verbatim prefix is allowed: SyntaxFacts accepts
+            // "@Foo", so "@@Foo" would otherwise pass.
+            if (bare.StartsWith('@'))
+                return false;
+
             return SyntaxFacts.IsValidIdentifier(bare) ||
                    SyntaxFacts.GetKeywordKind(bare) != SyntaxKind.None;
         }

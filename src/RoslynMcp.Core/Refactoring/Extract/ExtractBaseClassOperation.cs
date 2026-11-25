@@ -80,6 +80,9 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         if (string.IsNullOrWhiteSpace(@params.TypeName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "typeName is required.");
 
+        if (!IsValidTypeName(@params.TypeName!))
+            throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid type name: {@params.TypeName}");
+
         if (string.IsNullOrWhiteSpace(@params.BaseClassName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "baseClassName is required.");
 
@@ -102,6 +105,28 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
         if (@params.TargetFile != null)
             TargetFilePathHelpers.ValidateTargetFilePath(@params.TargetFile);
+    }
+
+    /// <summary>
+    /// The type name must be one complete C# identifier token, spelled the
+    /// way it appears in source, because lookup compares it to
+    /// <c>Identifier.Text</c>. It is parsed with
+    /// <see cref="SyntaxFactory.ParseToken"/> and must come back as a single
+    /// <see cref="SyntaxKind.IdentifierToken"/> with no diagnostics or
+    /// trivia that covers the whole string. So <c>@class</c>, Unicode escapes
+    /// such as <c>\u0041</c>, and combining marks such as <c>A</c> + U+0301
+    /// are accepted. A bare reserved keyword such as <c>class</c>, <c>@</c>,
+    /// <c>@@class</c>, <c>123Bad</c>, <c>a.b</c> and <c>Foo Bar</c> are
+    /// rejected.
+    /// </summary>
+    private static bool IsValidTypeName(string name)
+    {
+        var token = SyntaxFactory.ParseToken(name);
+        return token.IsKind(SyntaxKind.IdentifierToken)
+            && !token.ContainsDiagnostics
+            && !token.HasLeadingTrivia
+            && !token.HasTrailingTrivia
+            && token.Text == name;
     }
 
 
