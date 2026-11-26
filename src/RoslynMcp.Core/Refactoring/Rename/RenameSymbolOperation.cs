@@ -1110,11 +1110,40 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         return new Contracts.Models.SymbolInfo
         {
             Name = newName,
-            FullyQualifiedName = symbol.ToDisplayString().Replace(symbol.Name, newName),
+            FullyQualifiedName = BuildRenamedDisplayString(symbol, newName),
             Kind = MapSymbolKind(symbol),
             PreviousLocation = prevLocation,
             NewLocation = newLocation
         };
+    }
+
+    /// <summary>
+    /// Builds the renamed symbol's display string by replacing only the display part that names the symbol
+    /// itself. A plain string replace of the old name also rewrote namespaces, containing types and parameter
+    /// types that merely contain it (Widgets.WidgetCore.Widget → Gadgets.GadgetCore.Gadget, #3289).
+    /// </summary>
+    internal static string BuildRenamedDisplayString(ISymbol symbol, string newName)
+    {
+        var builder = new System.Text.StringBuilder();
+        var replaced = false;
+        foreach (var part in symbol.ToDisplayParts())
+        {
+            var text = part.ToString();
+            if (!replaced
+                && part.Symbol != null
+                && SymbolEqualityComparer.Default.Equals(part.Symbol, symbol)
+                && text == symbol.Name)
+            {
+                builder.Append(newName);
+                replaced = true;
+            }
+            else
+            {
+                builder.Append(text);
+            }
+        }
+
+        return replaced ? builder.ToString() : symbol.ToDisplayString();
     }
 
     private static Contracts.Enums.SymbolKind MapSymbolKind(ISymbol symbol)
