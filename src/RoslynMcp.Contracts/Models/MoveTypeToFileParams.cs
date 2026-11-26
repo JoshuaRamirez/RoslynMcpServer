@@ -33,9 +33,10 @@ public sealed class MoveTypeToFileParams
 
     /// <summary>
     /// 1-based line number where symbol is declared (for disambiguation).
-    /// When <see cref="Column"/> is omitted, matching stays today's
-    /// start-line equality among top-level types that share
-    /// <see cref="SymbolName"/>. A single match ignores line. Multiple
+    /// When <see cref="Column"/> is omitted, a top-level type that shares
+    /// <see cref="SymbolName"/> matches when <c>line</c> is its declaration's
+    /// start line (its first attribute list or modifier) or its identifier's
+    /// line; a line that matches more than one is <c>SymbolAmbiguous</c>. A single match ignores line. Multiple
     /// matches with omitted line is <c>SymbolAmbiguous</c>.
     /// Single-site only.
     /// </summary>

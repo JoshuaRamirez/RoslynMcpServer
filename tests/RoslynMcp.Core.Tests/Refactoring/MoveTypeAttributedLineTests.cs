@@ -80,9 +80,9 @@ public class MoveTypeAttributedLineTests
     }
 
     [SkippableFact]
-    public async Task MoveTypeToFile_LineInsideBody_IsStillSymbolNotFound()
+    public async Task MoveTypeToFile_LineThatIsNeitherStartNorIdentifierLine_IsStillSymbolNotFound()
     {
-        // Only the start line and the identifier line select a type; an unrelated line does not.
+        // Only the start line and the identifier line select a type; line 6 (`namespace Shipping`) is neither.
         await using var workspace = await TempWorkspace.CreateAsync(Source, "latest");
         var targetFile = Path.Combine(workspace.DirectoryPath, "W.cs");
 
@@ -98,6 +98,41 @@ public class MoveTypeAttributedLineTests
 
         Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
         Assert.False(File.Exists(targetFile));
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Line_MatchingOneTypesIdentifierAndAnothersStart_IsSymbolAmbiguous(bool toNamespace)
+    {
+        // Line 2 is A.Widget's identifier line and B.Widget's start line; the first match used to win silently.
+        const string source = """
+            namespace A { [System.Serializable]
+            public class Widget { public string Kind => "a"; } } namespace B { public class Widget { public string Kind => "b"; } }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+        var targetFile = Path.Combine(workspace.DirectoryPath, "W.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() => toNamespace
+            ? new MoveTypeToNamespaceOperation(workspace.Context).ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Widget",
+                Line = 2,
+                TargetNamespace = "Other"
+            })
+            : new MoveTypeToFileOperation(workspace.Context).ExecuteAsync(new MoveTypeToFileParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Widget",
+                Line = 2,
+                TargetFile = targetFile,
+                CreateTargetFile = true
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.False(File.Exists(targetFile));
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
     private sealed class TempWorkspace : IAsyncDisposable
