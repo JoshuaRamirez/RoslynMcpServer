@@ -118,7 +118,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             if (string.IsNullOrEmpty(typeName)) continue;
 
             // Search all assemblies for matching types
-            var candidateNamespaces = FindNamespacesForType(compilation, typeName);
+            var candidateNamespaces = FindNamespacesForType(compilation, typeName, semanticModel.SyntaxTree);
             if (candidateNamespaces.Count == 1)
             {
                 namespacesToAdd.Add(candidateNamespaces[0]);
@@ -403,7 +403,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             var typeName = GetTypeName(node);
             if (string.IsNullOrEmpty(typeName)) continue;
 
-            var candidateNamespaces = FindNamespacesForType(compilation, typeName);
+            var candidateNamespaces = FindNamespacesForType(compilation, typeName, semanticModel.SyntaxTree);
             if (candidateNamespaces.Count == 1)
             {
                 namespacesToAdd.Add(candidateNamespaces[0]);
@@ -489,7 +489,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         };
     }
 
-    private static List<string> FindNamespacesForType(Compilation compilation, string typeName)
+    private static List<string> FindNamespacesForType(Compilation compilation, string typeName, SyntaxTree documentTree)
     {
         var namespaces = new List<string>();
 
@@ -514,9 +514,10 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         }
 
         // Search in current compilation. A file-local type (file class Widget) is visible only in
-        // its own file, where it never produces CS0246, so a using for its namespace cannot help (#3094).
+        // its own file, so a using for its namespace helps only the document that declares it:
+        // one declared elsewhere can never resolve the name (#3094), one declared here can.
         var localTypes = GetAllTypes(compilation.GlobalNamespace)
-            .Where(t => t.Name == typeName && !t.IsFileLocal)
+            .Where(t => t.Name == typeName && IsVisibleFrom(t, documentTree))
             .ToList();
 
         foreach (var type in localTypes)
@@ -531,7 +532,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         // The project's own type wins over a same-named referenced type: the System-first tie-break
         // picked static System.IO.Path over App.Geometry.Path, leaving CS0712 behind (#3117).
         var sourceNamespaces = localTypes
-            .Where(t => !t.IsFileLocal && t.Locations.Any(l => l.IsInSource))
+            .Where(t => t.Locations.Any(l => l.IsInSource))
             .Select(t => t.ContainingNamespace)
             .Where(ns => !ns.IsGlobalNamespace)
             .Select(ns => ns.ToDisplayString())
@@ -542,6 +543,9 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
 
         return namespaces.Distinct().ToList();
     }
+
+    private static bool IsVisibleFrom(INamedTypeSymbol type, SyntaxTree documentTree) =>
+        !type.IsFileLocal || type.DeclaringSyntaxReferences.Any(r => r.SyntaxTree == documentTree);
 
     private static IEnumerable<INamedTypeSymbol> GetAllTypes(INamespaceSymbol ns)
     {

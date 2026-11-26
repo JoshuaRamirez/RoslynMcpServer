@@ -84,6 +84,94 @@ public class AddMissingUsingsFileLocalTypeTests
         Assert.Empty(await workspace.GetDiskErrorsAsync());
     }
 
+    private const string SharedFileLocal = """
+        namespace App.Internal
+        {
+            file class Widget
+            {
+                public int Size => 1;
+            }
+        }
+
+        namespace App
+        {
+            public class Consumer
+            {
+                public int Run() => new Widget().Size;
+            }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FileLocalTypeInSameDocument_GetsItsNamespaceUsing(bool allFiles)
+    {
+        // The document declares the file class itself, so a using for its namespace resolves it
+        // (#3094 review): only file-local types from other files are unreachable.
+        await using var workspace = await TempWorkspace.CreateAsync(SharedFileLocal, "latest");
+        Assert.NotEmpty(await workspace.GetDiskErrorsAsync());
+
+        var result = await new AddMissingUsingsOperation(workspace.Context).ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = workspace.SourcePath,
+            AllFiles = allFiles
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        Assert.Equal("using App.Internal;\n" + SharedFileLocal, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    private const string HandleProgram = """
+        namespace App;
+
+        public class Consumer
+        {
+            public string Run() => typeof(SafeFileHandle).Name;
+        }
+        """;
+
+    private const string HandleHelpers = """
+        namespace App.Internal;
+
+        file class SafeFileHandle
+        {
+        }
+
+        file static class Uses { static string M() => typeof(SafeFileHandle).Name; }
+        """;
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReferencedTypeElsewhere_WinsOverShorterFileLocalNamespace(bool allFiles)
+    {
+        // App.Internal is shorter than Microsoft.Win32.SafeHandles, so the length tie-break picked the
+        // other file's file class and left CS0246 behind before #3094.
+        await using var workspace = await TempWorkspace.CreateAsync(HandleProgram, "latest", ("Helpers.cs", HandleHelpers));
+
+        var result = await new AddMissingUsingsOperation(workspace.Context).ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = workspace.SourcePath,
+            AllFiles = allFiles
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        Assert.Equal("""
+            using Microsoft.Win32.SafeHandles;
+            namespace App;
+
+            public class Consumer
+            {
+                public string Run() => typeof(SafeFileHandle).Name;
+            }
+            """, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }
