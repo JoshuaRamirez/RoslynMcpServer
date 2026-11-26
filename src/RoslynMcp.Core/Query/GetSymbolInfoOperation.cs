@@ -227,6 +227,10 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         }
     }
 
+    private static bool IsEquatableOfSelf(INamedTypeSymbol @interface, INamedTypeSymbol type) =>
+        @interface is { Name: "IEquatable", Arity: 1, ContainingNamespace: { Name: "System", ContainingNamespace.IsGlobalNamespace: true } } &&
+        SymbolEqualityComparer.Default.Equals(@interface.TypeArguments[0], type);
+
     private static ISymbol? ResolveInheritDocSource(ISymbol symbol, string? cref, Compilation? compilation)
     {
         if (!string.IsNullOrEmpty(cref))
@@ -262,7 +266,9 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             // System.ValueType / System.Enum, whose summary is not the type's (#3092 review).
             if (type.TypeKind == TypeKind.Class && type.BaseType != null && type.BaseType.SpecialType != SpecialType.System_Object)
                 return type.BaseType;
-            return type.Interfaces.FirstOrDefault();
+            // A record's compiler-synthesized IEquatable<Self> is not a declared contract, and its
+            // BCL summary is not the record's (#3092 review), so skip it.
+            return type.Interfaces.FirstOrDefault(i => !(type.IsRecord && IsEquatableOfSelf(i, type)));
         }
 
         if (symbol.ContainingType is { } containingType)

@@ -126,6 +126,51 @@ public class GetSymbolInfoInheritDocTests
         Assert.Null(result.Data?.DocumentationSummary);
     }
 
+    private const string RecordAndStructInterfaceSource = """
+        namespace Demo;
+
+        /// <summary>Iface A doc.</summary>
+        public interface IA { }
+
+        /// <summary>Iface B doc.</summary>
+        public interface IB { }
+
+        /// <inheritdoc/>
+        public record RecNone(int X);
+
+        /// <inheritdoc/>
+        public record struct RSNone(int X);
+
+        /// <inheritdoc/>
+        public record RecIface(int X) : IA;
+
+        /// <inheritdoc/>
+        public readonly record struct RSIface(int X) : IA;
+
+        /// <inheritdoc/>
+        public struct SIface : IB, IA { public int X; }
+        """;
+
+    [SkippableTheory]
+    [InlineData("RecNone", null)]
+    [InlineData("RSNone", null)]
+    [InlineData("RecIface", "Iface A doc.")]
+    [InlineData("RSIface", "Iface A doc.")]
+    [InlineData("SIface", "Iface B doc.")]
+    public async Task InheritDoc_OnRecordOrStruct_UsesFirstDeclaredInterfaceOnly(string typeName, string? expected)
+    {
+        // A record's synthesized IEquatable<Self> is not inherited from (master returned null), while a
+        // struct or record still falls back to its first declared interface (#3092 review).
+        await using var workspace = await TempWorkspace.CreateAsync(RecordAndStructInterfaceSource, "latest");
+
+        var result = await new GetSymbolInfoOperation(workspace.Context).ExecuteAsync(
+            new GetSymbolInfoParams { SourceFile = workspace.SourcePath, SymbolName = typeName });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(typeName, result.Data?.Name);
+        Assert.Equal(expected, result.Data?.DocumentationSummary);
+    }
+
     private static async Task<string?> GetSummary(TempWorkspace workspace, string member)
     {
         var lines = File.ReadAllLines(workspace.SourcePath);
