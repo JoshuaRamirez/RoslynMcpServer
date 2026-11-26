@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
@@ -112,6 +113,145 @@ public class ConvertForeachLinqTargetTypedAddTests
         Assert.True(result.Success, result.Error?.Message);
         Assert.Contains("Select(", await File.ReadAllTextAsync(workspace.SourcePath), StringComparison.Ordinal);
         Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    private const string SuppressedAndSwitchSource = """
+        #nullable enable
+        using System.Collections.Generic;
+        using System.Linq;
+        public static class Program
+        {
+            public static int Run()
+            {
+                var xs = new[] { 1, -2, 3 };
+                var a = new List<string?>();
+                foreach (var x in xs)
+                    a.Add(null!);
+                var b = new List<string?>();
+                foreach (var x in xs)
+                    b.Add((null)!);
+                var c = new List<string?>();
+                foreach (var x in xs)
+                    c.Add(((null!)));
+                var d = new List<string?>();
+                foreach (var x in xs)
+                    d.Add(x switch { > 0 => null, _ => default });
+                var e = new List<string?>();
+                foreach (var x in xs)
+                    e.Add((x switch { > 0 => null!, < 0 => (default), _ => null })!);
+                var f = new List<object>();
+                foreach (var x in xs)
+                    f.Add(x > 0 ? 1 : "one");
+                var g = new List<object>();
+                foreach (var x in xs)
+                    g.Add(x switch { > 0 => 1, _ => "one" });
+                return a.Count + b.Count + c.Count + d.Count + e.Count + f.Count + g.Count;
+            }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData("a.Add(null!)")]
+    [InlineData("b.Add((null)!)")]
+    [InlineData("c.Add(((null!)))")]
+    [InlineData("d.Add(x switch")]
+    [InlineData("e.Add((x switch")]
+    [InlineData("f.Add(x > 0 ? 1 : \"one\")")]
+    [InlineData("g.Add(x switch")]
+    public async Task SingleSite_SuppressedOrSwitchProjectionWithoutNaturalType_IsRefused(string addCall)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SuppressedAndSwitchSource, "latest");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            new ConvertForeachLinqOperation(workspace.Context).ExecuteAsync(new ConvertForeachLinqParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = ForeachLineBefore(SuppressedAndSwitchSource, addCall)
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(SuppressedAndSwitchSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AllFiles_LeavesSuppressedAndSwitchProjectionsAlone(bool preferQuerySyntax)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SuppressedAndSwitchSource, "latest");
+
+        var result = await new ConvertForeachLinqOperation(workspace.Context).ExecuteAsync(new ConvertForeachLinqParams
+        {
+            AllFiles = true,
+            PreferQuerySyntax = preferQuerySyntax
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(SuppressedAndSwitchSource, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SwitchProjectionWithNaturalType_StillConverts(bool allFiles)
+    {
+        // Control: one arm is a string, so the switch has natural type string and Select infers it.
+        const string source = """
+            #nullable enable
+            using System.Collections.Generic;
+            using System.Linq;
+            public static class Program
+            {
+                public static int Run()
+                {
+                    var xs = new[] { 1, -2, 3 };
+                    var names = new List<string?>();
+                    foreach (var x in xs)
+                        names.Add(x switch { > 0 => "pos", _ => null });
+                    return names.Count;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        var result = await new ConvertForeachLinqOperation(workspace.Context).ExecuteAsync(allFiles
+            ? new ConvertForeachLinqParams { AllFiles = true }
+            : new ConvertForeachLinqParams { SourceFile = workspace.SourcePath, Line = ForeachLineBefore(source, "names.Add(") });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Select(", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach", text, StringComparison.Ordinal);
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [Theory]
+    [InlineData("null!", true)]
+    [InlineData("(null)!", true)]
+    [InlineData("((null!))", true)]
+    [InlineData("(((default))!)", true)]
+    [InlineData("new()!", true)]
+    [InlineData("x switch { > 0 => null, _ => default }", true)]
+    [InlineData("x switch { > 0 => null!, _ => x > 1 ? null : new() }", true)]
+    [InlineData("(x switch { _ => [x] })!", true)]
+    [InlineData("x switch { > 0 => \"pos\", _ => null }", false)]
+    [InlineData("x > 0 ? \"ok\" : null!", false)]
+    [InlineData("x.ToString()!", false)]
+    public void ProjectionHasNoNaturalType_Syntactic_UnwrapsSuppressionAndSwitch(string projection, bool expected)
+    {
+        var expression = SyntaxFactory.ParseExpression(projection);
+
+        Assert.Equal(expected, ConvertForeachLinqOperation.ProjectionHasNoNaturalType(expression));
+    }
+
+    private static int ForeachLineBefore(string source, string addCall)
+    {
+        var lines = source.Split('\n');
+        var addLine = Array.FindIndex(lines, l => l.Contains(addCall, StringComparison.Ordinal));
+        Assert.True(addLine > 0, addCall);
+        var foreachLine = Array.FindLastIndex(lines, addLine, l => l.TrimStart().StartsWith("foreach", StringComparison.Ordinal));
+        return foreachLine + 1;
     }
 
     private sealed class TempWorkspace : IAsyncDisposable

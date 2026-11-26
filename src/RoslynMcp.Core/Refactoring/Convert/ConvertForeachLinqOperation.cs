@@ -77,6 +77,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
 
         var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
+        var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
         if (root == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
@@ -108,10 +109,10 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         if (AccumulatorDeclaredOutsideEnclosingLoop(foreachStmt))
             throw new RefactoringException(ErrorCodes.CannotConvert, EnclosingLoopAccumulatorMessage);
 
-        if (analyzed != null && ProjectionHasNoNaturalType(analyzed.Projection))
+        if (analyzed != null && ProjectionHasNoNaturalType(analyzed.Projection, semanticModel))
             throw new RefactoringException(ErrorCodes.CannotConvert, TargetTypedProjectionMessage);
 
-        if (!TryConvert(foreachStmt, @params.PreferQuerySyntax, out var conversion, out var assignment))
+        if (!TryConvert(foreachStmt, @params.PreferQuerySyntax, out var conversion, out var assignment, semanticModel))
         {
             throw new RefactoringException(ErrorCodes.CannotConvert,
                 "Could not identify a convertible foreach pattern. Supported: foreach+Add, foreach+if+Add.");
@@ -188,7 +189,8 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             if (root == null)
                 continue;
 
-            var replacements = CollectConvertibleReplacements(root, @params.PreferQuerySyntax);
+            var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+            var replacements = CollectConvertibleReplacements(root, @params.PreferQuerySyntax, semanticModel);
 
             if (replacements.Count == 0)
                 continue;
@@ -264,12 +266,13 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     /// </summary>
     internal static IReadOnlyDictionary<ForEachStatementSyntax, SyntaxNode> CollectConvertibleReplacements(
         SyntaxNode root,
-        bool preferQuerySyntax)
+        bool preferQuerySyntax,
+        SemanticModel? semanticModel = null)
     {
         var replacements = new Dictionary<ForEachStatementSyntax, SyntaxNode>();
         foreach (var statement in root.DescendantNodes().OfType<ForEachStatementSyntax>())
         {
-            if (TryConvert(statement, preferQuerySyntax, out _, out var assignment))
+            if (TryConvert(statement, preferQuerySyntax, out _, out var assignment, semanticModel))
                 replacements[statement] = ReplaceForeachWithLinqStatement(statement, assignment);
         }
 
@@ -280,13 +283,15 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
 
     /// <summary>
     /// Attempts a conversion without throwing. Used by allFiles so foreach
-    /// that cannot convert stay no-ops.
+    /// that cannot convert stay no-ops. <paramref name="semanticModel"/>, when
+    /// given, lets the natural-type check ask the compiler (#3038).
     /// </summary>
     internal static bool TryConvert(
         ForEachStatementSyntax foreachStmt,
         bool preferQuerySyntax,
         out ForeachLinqConversion conversion,
-        out ExpressionSyntax assignment)
+        out ExpressionSyntax assignment,
+        SemanticModel? semanticModel = null)
     {
         conversion = null!;
         assignment = null!;
@@ -318,7 +323,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
 
         // The Add argument may only be typed by Add's parameter (null, default, new(), [..]); an
         // untyped Select(x => null) cannot infer TResult and would not compile (#3038).
-        if (ProjectionHasNoNaturalType(analyzed.Projection))
+        if (ProjectionHasNoNaturalType(analyzed.Projection, semanticModel))
             return false;
 
         conversion = analyzed;
@@ -328,27 +333,55 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
 
     internal const string TargetTypedProjectionMessage =
         "The Add argument has no type of its own (null, default, new(), a collection expression, or a conditional " +
-        "of those); it is typed only by Add's parameter, so Select could not infer the element type and the " +
-        "converted code would not compile.";
+        "or switch expression of those, with or without '!'); it is typed only by Add's parameter, so Select could " +
+        "not infer the element type and the converted code would not compile.";
 
     /// <summary>
-    /// True when <paramref name="projection"/> is a target-typed expression with no natural type: the
-    /// <c>null</c> or <c>default</c> literal, a target-typed <c>new()</c>, a collection expression, or a
-    /// conditional whose branches are both such expressions (#3038).
+    /// True when <paramref name="projection"/> has no natural type of its own, so <c>Select(x =&gt; projection)</c>
+    /// cannot infer its result type (#3038). With a <paramref name="semanticModel"/>, the compiler is asked
+    /// first: no type or an error type refuses. The syntactic check always runs too (the compiler reports
+    /// the target type for <c>new()</c>, and callers without a model rely on it).
     /// </summary>
-    internal static bool ProjectionHasNoNaturalType(ExpressionSyntax projection)
+    internal static bool ProjectionHasNoNaturalType(ExpressionSyntax projection, SemanticModel? semanticModel = null)
     {
-        while (projection is ParenthesizedExpressionSyntax parenthesized)
-            projection = parenthesized.Expression;
+        if (semanticModel != null && projection.SyntaxTree == semanticModel.SyntaxTree)
+        {
+            var type = semanticModel.GetTypeInfo(projection).Type;
+            if (type is null or IErrorTypeSymbol)
+                return true;
+        }
 
-        return projection switch
+        return IsSyntacticallyTypeless(projection);
+    }
+
+    /// <summary>
+    /// Syntactic fallback: after unwrapping parentheses and the null-forgiving <c>!</c>, the <c>null</c> or
+    /// <c>default</c> literal, a target-typed <c>new()</c>, a collection expression, a conditional whose
+    /// branches are both typeless, or a switch expression whose arms are all typeless.
+    /// </summary>
+    private static bool IsSyntacticallyTypeless(ExpressionSyntax expression)
+    {
+        while (true)
+        {
+            if (expression is ParenthesizedExpressionSyntax parenthesized)
+                expression = parenthesized.Expression;
+            else if (expression is PostfixUnaryExpressionSyntax postfix &&
+                     postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression))
+                expression = postfix.Operand;
+            else
+                break;
+        }
+
+        return expression switch
         {
             LiteralExpressionSyntax literal => literal.IsKind(SyntaxKind.NullLiteralExpression) ||
                                                literal.IsKind(SyntaxKind.DefaultLiteralExpression),
             ImplicitObjectCreationExpressionSyntax => true,
             CollectionExpressionSyntax => true,
-            ConditionalExpressionSyntax conditional => ProjectionHasNoNaturalType(conditional.WhenTrue) &&
-                                                       ProjectionHasNoNaturalType(conditional.WhenFalse),
+            ConditionalExpressionSyntax conditional => IsSyntacticallyTypeless(conditional.WhenTrue) &&
+                                                       IsSyntacticallyTypeless(conditional.WhenFalse),
+            SwitchExpressionSyntax switchExpression => switchExpression.Arms.Count > 0 &&
+                                                       switchExpression.Arms.All(arm => IsSyntacticallyTypeless(arm.Expression)),
             _ => false
         };
     }
