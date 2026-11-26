@@ -665,16 +665,8 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     {
         foreach (var assignment in containingMethod.DescendantNodes().OfType<AssignmentExpressionSyntax>())
         {
-            // Cover simple, parenthesized, and deconstruction lefts:
-            // (x, y) = ... still writes x.
-            foreach (var id in assignment.Left.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
-            {
-                if (id.Identifier.Text != variableName)
-                    continue;
-                var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
-                if (SymbolEqualityComparer.Default.Equals(symbol, variableSymbol))
-                    return true;
-            }
+            if (WritesLocal(assignment.Left, variableName, variableSymbol, semanticModel, cancellationToken))
+                return true;
         }
 
         foreach (var prefix in containingMethod.DescendantNodes().OfType<PrefixUnaryExpressionSyntax>())
@@ -712,6 +704,61 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True when the assignment target <paramref name="left"/> stores into the local:
+    /// the target itself (parenthesized or not), an element of a deconstruction tuple,
+    /// or the root receiver of a member / element access chain when the local is not a
+    /// reference type (writing a field of a struct copy must stay refused, #2462).
+    /// Identifiers in index or argument lists (<c>values[index] = 10</c>) and
+    /// reference-type receivers (<c>target.Name = x</c>) are reads (#3090).
+    /// </summary>
+    private static bool WritesLocal(
+        ExpressionSyntax left,
+        string variableName,
+        ILocalSymbol variableSymbol,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        while (left is ParenthesizedExpressionSyntax parenthesized)
+            left = parenthesized.Expression;
+
+        switch (left)
+        {
+            case IdentifierNameSyntax id:
+                return id.Identifier.Text == variableName &&
+                    SymbolEqualityComparer.Default.Equals(
+                        semanticModel.GetSymbolInfo(id, cancellationToken).Symbol,
+                        variableSymbol);
+
+            case TupleExpressionSyntax tuple:
+                return tuple.Arguments.Any(a =>
+                    WritesLocal(a.Expression, variableName, variableSymbol, semanticModel, cancellationToken));
+
+            case MemberAccessExpressionSyntax or ElementAccessExpressionSyntax or ConditionalAccessExpressionSyntax:
+                if (variableSymbol.Type.IsReferenceType)
+                    return false;
+                ExpressionSyntax? receiver = left;
+                while (receiver is not null)
+                {
+                    receiver = receiver switch
+                    {
+                        ParenthesizedExpressionSyntax p => p.Expression,
+                        MemberAccessExpressionSyntax m => m.Expression,
+                        ElementAccessExpressionSyntax e => e.Expression,
+                        ConditionalAccessExpressionSyntax c => c.Expression,
+                        _ => null
+                    };
+                    if (receiver is IdentifierNameSyntax)
+                        return WritesLocal(receiver, variableName, variableSymbol, semanticModel, cancellationToken);
+                }
+
+                return false;
+
+            default:
+                return false;
+        }
     }
 
     /// <summary>
