@@ -859,10 +859,12 @@ public class RemoveUnusedUsingsOperationTests
                 }
             }
             """;
+        // ProjectANs resolves in both views but Foo only in A's, so B's view drops the using while A's keeps
+        // it. (An unresolved using is kept in every view, #3330, so it no longer makes the views diverge.)
         const string anchorBSource = """
-            namespace ProjectBNs
+            namespace ProjectANs
             {
-                public class Foo
+                public class Bar
                 {
                 }
             }
