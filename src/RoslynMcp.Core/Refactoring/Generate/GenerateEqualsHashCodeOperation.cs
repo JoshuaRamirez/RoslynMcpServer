@@ -626,10 +626,20 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
 
     private static bool HasExistingEqualityOperators(INamedTypeSymbol typeSymbol)
     {
-        return typeSymbol.GetMembers().OfType<IMethodSymbol>().Any(m =>
-            m.MethodKind == MethodKind.UserDefinedOperator &&
-            (m.Name == "op_Equality" || m.Name == "op_Inequality"));
+        return typeSymbol.GetMembers().OfType<IMethodSymbol>().Any(m => IsSelfEqualityOperator(m, typeSymbol));
     }
+
+    /// <summary>
+    /// True for <c>operator ==</c> / <c>operator !=</c> taking two operands of the type itself (nullable
+    /// allowed): the pair this tool generates. Mixed-operand overloads such as <c>==(Point, int)</c> are
+    /// unrelated and must be neither replaced nor treated as existing equality operators (#3392).
+    /// </summary>
+    private static bool IsSelfEqualityOperator(IMethodSymbol method, INamedTypeSymbol typeSymbol) =>
+        method.MethodKind == MethodKind.UserDefinedOperator &&
+        method.Name is ("op_Equality" or "op_Inequality") &&
+        method.Parameters.Length == 2 &&
+        method.Parameters.All(p =>
+            SymbolEqualityComparer.Default.Equals(NullableTypeHelpers.UnwrapNullable(p.Type), typeSymbol));
 
     private static async Task<Solution> RemoveExistingEqualityMembersAcrossPartialsAsync(
         Solution solution,
@@ -764,9 +774,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
 
         foreach (var method in typeSymbol.GetMembers().OfType<IMethodSymbol>())
         {
-            if (method.MethodKind != MethodKind.UserDefinedOperator)
-                continue;
-            if (method.Name is not ("op_Equality" or "op_Inequality"))
+            if (!IsSelfEqualityOperator(method, typeSymbol))
                 continue;
 
             yield return method;
