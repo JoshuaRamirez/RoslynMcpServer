@@ -26,15 +26,42 @@ public class ConvertPropertyInitializedBackingFieldTests
             public string Name { get => this._name; set => this._name = value; }
 
             public int Plain { get { return _plain; } set { _plain = value; } }
+
+            private int _p = 4;
+
+            public int P { get { return (_p); } set { _p = value; } }
+        }
+
+        public partial class Split
+        {
+            private int _q = 5;
+        }
+
+        public partial class Split
+        {
+            public int Q { get { return _q; } set { _q = value; } }
+
+            public int R { get { return _r; } set { _r = value; } }
+        }
+        """;
+
+    // Another part of Split, in a second file, initializes R's backing field.
+    private const string OtherPart = """
+        public partial class Split
+        {
+            private int _r = 6;
         }
         """;
 
     [SkippableTheory]
     [InlineData("Retries", "_retries")]
     [InlineData("Name", "_name")]
+    [InlineData("P", "_p")]
+    [InlineData("Q", "_q")]
+    [InlineData("R", "_r")]
     public async Task ToAutoProperty_InitializedBackingField_IsRefusedAndWritesNothing(string propertyName, string fieldName)
     {
-        await using var workspace = await TempWorkspace.CreateAsync(Source, "latest");
+        await using var workspace = await TempWorkspace.CreateAsync(Source, "latest", OtherPart);
         var before = await File.ReadAllTextAsync(workspace.SourcePath);
 
         var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
@@ -53,7 +80,7 @@ public class ConvertPropertyInitializedBackingFieldTests
     [SkippableFact]
     public async Task ToAutoProperty_UninitializedBackingField_StillConverts()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(Source, "latest");
+        await using var workspace = await TempWorkspace.CreateAsync(Source, "latest", OtherPart);
 
         var result = await new ConvertPropertyOperation(workspace.Context).ExecuteAsync(new ConvertPropertyParams
         {
@@ -69,7 +96,7 @@ public class ConvertPropertyInitializedBackingFieldTests
     [SkippableFact]
     public async Task ToAutoProperty_AllFiles_SkipsInitializedBackingFields()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(Source, "latest");
+        await using var workspace = await TempWorkspace.CreateAsync(Source, "latest", OtherPart);
 
         await new ConvertPropertyOperation(workspace.Context).ExecuteAsync(new ConvertPropertyParams
         {
@@ -80,6 +107,9 @@ public class ConvertPropertyInitializedBackingFieldTests
         var after = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.Contains("get { return _retries; }", after, StringComparison.Ordinal);
         Assert.Contains("get => this._name;", after, StringComparison.Ordinal);
+        Assert.Contains("get { return (_p); }", after, StringComparison.Ordinal);
+        Assert.Contains("get { return _q; }", after, StringComparison.Ordinal);
+        Assert.Contains("get { return _r; }", after, StringComparison.Ordinal);
         Assert.Contains("public int Plain { get; set; }", after, StringComparison.Ordinal);
         var errors = await workspace.GetErrorsAsync();
         Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors));
@@ -91,7 +121,7 @@ public class ConvertPropertyInitializedBackingFieldTests
         public required string SourcePath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string langVersion)
+        public static async Task<TempWorkspace> CreateAsync(string source, string langVersion, string? otherPart = null)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -110,6 +140,8 @@ public class ConvertPropertyInitializedBackingFieldTests
                 </Project>
                 """);
             await File.WriteAllTextAsync(sourcePath, source);
+            if (otherPart != null)
+                await File.WriteAllTextAsync(Path.Combine(directory, "OtherPart.cs"), otherPart);
 
             try
             {
