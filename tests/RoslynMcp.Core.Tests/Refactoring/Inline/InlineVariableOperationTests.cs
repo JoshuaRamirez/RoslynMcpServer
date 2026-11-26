@@ -1607,6 +1607,75 @@ public class InlineVariableOperationTests
         return index;
     }
 
+    #region #3121 prefix-unary initializer must not merge with the use-site operator
+
+    private const string PrefixUnarySource = """
+        namespace TestApp;
+
+        public static class Calc
+        {
+            public static int Negate(int a)
+            {
+                var neg = -a;
+                return -neg;
+            }
+
+            public static int Plus(int a)
+            {
+                var pos = +a;
+                return +pos;
+            }
+
+            public static int Diff(int a)
+            {
+                var neg = -a;
+                return a-neg;
+            }
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData("neg", 7, "return -(-a);")]
+    [InlineData("pos", 13, "return +(+a);")]
+    [InlineData("neg", 19, "return a-(-a);")]
+    public async Task InlineVariable_PrefixUnaryInitializerAfterOperator_IsParenthesized(string variableName, int line, string expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PrefixUnarySource);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            VariableName = variableName,
+            Line = line
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains(expected, updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("--a", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("++a", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_AllFiles_PrefixUnaryInitializerAfterOperator_IsParenthesized()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PrefixUnarySource);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineVariableParams { AllFiles = true });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return -(-a);", updated, StringComparison.Ordinal);
+        Assert.Contains("return +(+a);", updated, StringComparison.Ordinal);
+        Assert.Contains("return a-(-a);", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("--a", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("++a", updated, StringComparison.Ordinal);
+    }
+
+    #endregion
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }

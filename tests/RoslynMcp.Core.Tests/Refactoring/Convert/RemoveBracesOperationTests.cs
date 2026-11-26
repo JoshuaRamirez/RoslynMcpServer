@@ -2216,6 +2216,92 @@ public class RemoveBracesOperationTests
         Assert.IsNotType<BlockSyntax>(ifStatement.Statement);
     }
 
+    // #3115: unwrapping a { ; } body leaves `if (flag) ;`, which raises warning CS0642.
+    private const string EmptyStatementBodiesSource = """
+        namespace TestApp;
+
+        public class Gate
+        {
+            public int Spin(bool flag, int n)
+            {
+                if (flag)
+                {
+                    ;
+                }
+                while (n-- > 0)
+                {
+                    ;
+                }
+                for (var i = 0; i < n; i++)
+                {
+                    ;
+                }
+                if (n > 3)
+                {
+                    Work();
+                }
+                return n;
+            }
+
+            private static void Work() { }
+        }
+        """;
+
+    private static async Task<List<string>> GetCs0642Async(TempWorkspace workspace)
+    {
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath);
+        Assert.NotNull(document);
+        var compilation = await document.Project.GetCompilationAsync();
+        Assert.NotNull(compilation);
+        return compilation.GetDiagnostics()
+            .Where(diagnostic => diagnostic.Id == "CS0642")
+            .Select(diagnostic => diagnostic.ToString())
+            .ToList();
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_FileScope_SkipsEmptyStatementBodies()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EmptyStatementBodiesSource);
+        var operation = new RemoveBracesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveBracesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Scope = "file"
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(3, updated.Split('\n').Count(line => line.Trim() == ";"));
+        Assert.DoesNotContain("{\n                Work();", updated.Replace("\r\n", "\n"), StringComparison.Ordinal);
+        var cs0642 = await GetCs0642Async(workspace);
+        Assert.True(cs0642.Count == 0, string.Join(Environment.NewLine, cs0642));
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableTheory]
+    [InlineData("if (flag)")]
+    [InlineData("while (n-- > 0)")]
+    [InlineData("for (var i = 0; i < n; i++)")]
+    public async Task RemoveBraces_StatementScope_EmptyStatementBody_Throws(string ownerLine)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EmptyStatementBodiesSource);
+        var operation = new RemoveBracesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveBracesParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(EmptyStatementBodiesSource, ownerLine)
+            }));
+
+        Assert.Equal(ErrorCodes.CompilationError, ex.ErrorCode);
+        Assert.Contains("CS0642", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     private static async Task AssertCompilesAsync(TempWorkspace workspace)
     {
         var document = workspace.Context.GetDocumentByPath(workspace.SourcePath);

@@ -40,23 +40,33 @@ public sealed class StdioTransport : IDisposable
     /// Reads the next message from stdin.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The parsed request, or null if stream ended.</returns>
+    /// <returns>The parsed request, or null only if the stream ended.</returns>
     public async Task<McpRequest?> ReadMessageAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
 
-        var line = await _reader.ReadLineAsync(cancellationToken);
-        if (line == null) return null;
-
-        if (string.IsNullOrWhiteSpace(line)) return null;
-
-        try
+        // A null return means end of stream only. Blank / whitespace-only lines and a bare JSON
+        // null are empty frames under newline-delimited framing (e.g. "\r\n\r\n" separators or a
+        // keep-alive newline), so they are skipped and the next line is read instead of ending the
+        // message loop while stdin is still open (#3075).
+        while (true)
         {
-            return JsonSerializer.Deserialize<McpRequest>(line, _jsonOptions);
-        }
-        catch (JsonException ex)
-        {
-            throw new InvalidOperationException($"Failed to parse MCP message: {ex.Message}", ex);
+            var line = await _reader.ReadLineAsync(cancellationToken);
+            if (line == null) return null;
+
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
+            McpRequest? request;
+            try
+            {
+                request = JsonSerializer.Deserialize<McpRequest>(line, _jsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException($"Failed to parse MCP message: {ex.Message}", ex);
+            }
+
+            if (request != null) return request;
         }
     }
 
