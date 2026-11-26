@@ -260,7 +260,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                 @params,
                 fieldDeclaration,
                 newSolution.GetDocument(document.Id),
-                fieldSymbol.ContainingType.Name,
+                fieldSymbol.ContainingType,
                 newFieldName,
                 propertyName,
                 externalReferences.Count,
@@ -1070,31 +1070,24 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         EncapsulateFieldParams @params,
         FieldDeclarationSyntax fieldDeclaration,
         Document? newDocument,
-        string containingTypeName,
+        INamedTypeSymbol containingType,
         string newFieldName,
         string propertyName,
         int externalRefCount,
         bool fieldRenamed,
         CancellationToken cancellationToken)
     {
+        // Locate the rewritten field and new property through the containing type's symbol in the computed
+        // compilation (metadata name, so E vs E<T> and A.E vs B.E stay distinct), not by short type name,
+        // which could pick another same-named type's existing property (#3066 review).
         var afterParts = new List<string>();
-        if (newDocument != null && await newDocument.GetSyntaxRootAsync(cancellationToken) is { } newRoot)
+        if (newDocument != null &&
+            await newDocument.GetSyntaxTreeAsync(cancellationToken) is { } newTree &&
+            await newDocument.Project.GetCompilationAsync(cancellationToken) is { } newCompilation &&
+            newCompilation.Assembly.GetTypeByMetadataName(GetMetadataName(containingType)) is { } newType)
         {
-            var containingType = newRoot.DescendantNodes()
-                .OfType<TypeDeclarationSyntax>()
-                .FirstOrDefault(t => t.Identifier.ValueText == containingTypeName &&
-                                     t.Members.OfType<PropertyDeclarationSyntax>().Any(p => p.Identifier.ValueText == propertyName));
-            if (containingType != null)
-            {
-                afterParts.AddRange(containingType.Members
-                    .OfType<FieldDeclarationSyntax>()
-                    .Where(f => f.Declaration.Variables.Any(v => v.Identifier.ValueText == newFieldName))
-                    .Select(f => f.ToString()));
-                afterParts.AddRange(containingType.Members
-                    .OfType<PropertyDeclarationSyntax>()
-                    .Where(p => p.Identifier.ValueText == propertyName)
-                    .Select(p => p.ToString()));
-            }
+            afterParts.AddRange(DeclarationsInTree<IFieldSymbol, FieldDeclarationSyntax>(newType, newFieldName, newTree, cancellationToken));
+            afterParts.AddRange(DeclarationsInTree<IPropertySymbol, PropertyDeclarationSyntax>(newType, propertyName, newTree, cancellationToken));
         }
 
         var pendingChanges = new List<PendingChange>
@@ -1115,6 +1108,38 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         };
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
+    }
+
+    private static IEnumerable<string> DeclarationsInTree<TSymbol, TSyntax>(
+        INamedTypeSymbol type,
+        string memberName,
+        SyntaxTree tree,
+        CancellationToken cancellationToken)
+        where TSymbol : ISymbol
+        where TSyntax : MemberDeclarationSyntax =>
+        type.GetMembers(memberName)
+            .OfType<TSymbol>()
+            .SelectMany(member => member.DeclaringSyntaxReferences)
+            .Where(reference => reference.SyntaxTree == tree)
+            .Select(reference => reference.GetSyntax(cancellationToken).FirstAncestorOrSelf<TSyntax>())
+            .OfType<TSyntax>()
+            .Distinct()
+            .OrderBy(declaration => declaration.SpanStart)
+            .Select(declaration => declaration.ToString());
+
+    /// <summary>
+    /// CLR metadata name (<c>Ns.Outer+Inner`1</c>) for <see cref="IAssemblySymbol.GetTypeByMetadataName"/>.
+    /// </summary>
+    private static string GetMetadataName(INamedTypeSymbol type)
+    {
+        if (type.ContainingType != null)
+            return GetMetadataName(type.ContainingType) + "+" + type.MetadataName;
+
+        var namespaces = new Stack<string>();
+        for (var ns = type.ContainingNamespace; ns is { IsGlobalNamespace: false }; ns = ns.ContainingNamespace)
+            namespaces.Push(ns.MetadataName);
+
+        return namespaces.Count == 0 ? type.MetadataName : string.Join(".", namespaces) + "." + type.MetadataName;
     }
 
     internal static string DescribeReferenceUpdates(

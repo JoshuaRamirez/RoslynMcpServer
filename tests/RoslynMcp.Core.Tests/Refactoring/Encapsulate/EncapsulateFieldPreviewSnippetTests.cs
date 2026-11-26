@@ -69,6 +69,72 @@ public class EncapsulateFieldPreviewSnippetTests
             Assert.Contains(Squash(part), applied, StringComparison.Ordinal);
     }
 
+    [SkippableTheory]
+    [InlineData("""
+        public class E { public int Size { get; set; } }
+        public class E<T> { public int size; }
+        """)]
+    [InlineData("""
+        public class E<T> { public int Size { get; set; } }
+        public class E { public int size; }
+        """)]
+    [InlineData("""
+        namespace B { public class E { public int Size { get; set; } } }
+        namespace A { public class E { public int size; } }
+        """)]
+    [InlineData("""
+        public class B { public class E { public int Size { get; set; } } }
+        public class A { public class E { public int size; } }
+        """)]
+    public async Task AfterSnippet_ComesFromTheFieldsOwnType_WhenAnotherTypeSharesItsShortName(string source)
+    {
+        // Another type with the same short name (E vs E<T>, A.E vs B.E) already has a Size property and is
+        // declared first; the preview used to show that property instead of the rewritten field + new property.
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        var change = await PreviewAsync(workspace, "size");
+
+        Assert.Equal("public int size;", change.BeforeSnippet);
+        var parts = change.AfterSnippet!.Split("\n\n");
+        Assert.Equal(2, parts.Length);
+        Assert.Contains("_size", parts[0], StringComparison.Ordinal);
+        Assert.Contains("Size", parts[1], StringComparison.Ordinal);
+        Assert.Contains("_size", parts[1], StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+
+        var result = await new EncapsulateFieldOperation(workspace.Context).ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "size"
+        });
+        Assert.True(result.Success, result.Error?.Message);
+
+        var applied = Squash(await File.ReadAllTextAsync(workspace.SourcePath));
+        foreach (var part in parts)
+            Assert.Contains(Squash(part), applied, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task PrivateProtectedField_SnippetsShowRealModifiers()
+    {
+        const string source = """
+            namespace Sb;
+            public class E
+            {
+                private protected int _size;
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        var change = await PreviewAsync(workspace, "_size");
+
+        Assert.Equal("private protected int _size;", change.BeforeSnippet);
+        Assert.DoesNotContain("protectedandinternal", change.AfterSnippet, StringComparison.Ordinal);
+        Assert.Contains("_size", change.AfterSnippet, StringComparison.Ordinal);
+        Assert.Contains("Size", change.AfterSnippet, StringComparison.Ordinal);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     private static async Task<PendingChange> PreviewAsync(TempWorkspace workspace, string fieldName)
     {
         var result = await new EncapsulateFieldOperation(workspace.Context).ExecuteAsync(new EncapsulateFieldParams
