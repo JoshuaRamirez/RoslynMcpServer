@@ -172,8 +172,10 @@ public sealed class TypeSymbolResolver
                     $"Multiple types named '{symbolName}' found. Provide line number to disambiguate.",
                     new Dictionary<string, object>
                     {
+                        // Report each candidate's own start line (the value `line` is matched against below);
+                        // this used to read the compilation unit's location, so every entry was 1 (#3272).
                         ["matches"] = matchingDeclarations.Select(t =>
-                            root.GetLocation().GetLineSpan().StartLinePosition.Line + 1).ToList()
+                            t.GetLocation().GetLineSpan().StartLinePosition.Line + 1).ToList()
                     });
             }
 
