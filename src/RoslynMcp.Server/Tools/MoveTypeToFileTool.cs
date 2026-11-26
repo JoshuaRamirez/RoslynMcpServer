@@ -32,7 +32,7 @@ public sealed class MoveTypeToFileTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Move a C# type declaration to a different file within the solution. Updates all references automatically. line (optional) disambiguates same-named top-level types by start-line equality; omitted with several matches is SymbolAmbiguous; a single match ignores line. column (optional) picks the top-level type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering type); omitted keeps today's symbolName + optional line pick; column without line keeps today's omitted-line path. sourceFile, symbolName, and targetFile are required when allFiles is omitted or false. allFiles: true walks every C# file and extracts every eligible top-level type into {directory}/{TypeName}.cs (sourceFile optional when true — limits the walk via FilterAllFilesDocumentsBySourceFile; cannot be combined with symbolName, targetFile, line, or column).";
+        "Move a C# type declaration to a different file within the solution. Updates all references automatically. line (optional) disambiguates same-named top-level types by line (the declaration's start line, i.e. its first attribute list or modifier, or the type identifier's line; a line that matches more than one is SymbolAmbiguous); omitted with several matches is SymbolAmbiguous; a single match ignores line. column (optional) picks the top-level type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering type); omitted keeps today's symbolName + optional line pick; column without line keeps today's omitted-line path. sourceFile, symbolName, and targetFile are required when allFiles is omitted or false. allFiles: true walks every C# file and extracts every eligible top-level type into {directory}/{TypeName}.cs (sourceFile optional when true — limits the walk via FilterAllFilesDocumentsBySourceFile; cannot be combined with symbolName, targetFile, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -65,7 +65,7 @@ public sealed class MoveTypeToFileTool : IToolHandler
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation if multiple types match. When column is omitted, matching stays today's start-line equality. A single match ignores line. Single-site only; cannot be combined with allFiles.",
+                description = "1-based line number for disambiguation if multiple types match. When column is omitted, the declaration's start line (first attribute list or modifier) or the type identifier's line matches; a line that matches more than one type is SymbolAmbiguous. A single match ignores line. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new

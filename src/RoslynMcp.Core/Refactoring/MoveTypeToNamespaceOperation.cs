@@ -21,7 +21,7 @@ namespace RoslynMcp.Core.Refactoring;
 /// Changes the namespace of a type, updating all references across the solution.
 /// Honors optional <c>line</c> and <c>column</c> to disambiguate
 /// same-named top-level types in one file. Omitted column keeps today's
-/// symbolName + optional line pick (start-line equality /
+/// symbolName + optional line pick (start or identifier line /
 /// <c>SymbolAmbiguous</c> / single-match ignores line). Column without
 /// line keeps that omitted-line path. When column is set with line, picks
 /// the covering top-level type (identifier preferred, then smallest
@@ -82,7 +82,7 @@ public sealed class MoveTypeToNamespaceOperation
 
             // Resolve symbol. Optional line/column disambiguates
             // same-named top-level types. Omitted column keeps today's
-            // symbolName + optional line pick (start-line equality /
+            // symbolName + optional line pick (start or identifier line /
             // SymbolAmbiguous / single-match ignores line). Column
             // without line keeps that omitted-line path. Column set
             // with line picks the covering top-level type (identifier
@@ -1509,7 +1509,8 @@ public sealed class MoveTypeToNamespaceOperation
         string? newFilePath = null)
     {
         var oldNamespace = resolution.Symbol.ContainingNamespace.ToDisplayString();
-        var location = resolution.Declaration.GetLocation().GetLineSpan();
+        // Report the type identifier, not the first attribute list / modifier (#3274).
+        var location = resolution.Declaration.Identifier.GetLocation().GetLineSpan();
         var previousFile = resolution.Document.FilePath!;
         var line = location.StartLinePosition.Line + 1;
         var column = location.StartLinePosition.Character + 1;
