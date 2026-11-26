@@ -2198,6 +2198,64 @@ public class FindCallersOperationTests
             .ThenBy(c => c.CallerName, StringComparer.Ordinal)
             .ToList();
 
+    // #3044: SymbolFinder makes no ordering promise, so Callers are sorted by file / line / column before
+    // maxResults keeps the first N.
+    private static Dictionary<string, string> EightCallSiteSources()
+    {
+        var files = new Dictionary<string, string> { ["Util.cs"] = "namespace Demo;\npublic static class Util\n{\n    public static int Twice(int x) => x * 2;\n}\n" };
+        foreach (var name in new[] { "Hotel", "Delta", "Charlie", "Foxtrot", "Golf", "Echo", "Alpha", "Bravo" })
+            files[name + ".cs"] = $"namespace Demo;\npublic class {name}\n{{\n    public int Run() => Util.Twice(1) + Util.Twice(2);\n}}\n";
+        return files;
+    }
+
+    private static string[] SortedCallSiteKeys(IEnumerable<(string File, int Line, int Column)> sites) =>
+        sites.OrderBy(s => s.File, StringComparer.Ordinal).ThenBy(s => s.Line).ThenBy(s => s.Column)
+            .Select(s => $"{Path.GetFileName(s.File)}:{s.Line}:{s.Column}").ToArray();
+
+    [SkippableFact]
+    public async Task FindCallers_ReturnsCallersSortedByFileThenLineThenColumn()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EightCallSiteSources());
+
+        for (var run = 0; run < 3; run++)
+        {
+            var result = await new FindCallersOperation(workspace.Context).ExecuteAsync(new FindCallersParams
+            {
+                SourceFile = workspace.PathOf("Util.cs"),
+                SymbolName = "Twice"
+            });
+
+            Assert.True(result.Success, result.Error?.Message);
+            var actual = result.Data!.Callers.Select(s => $"{Path.GetFileName(s.File)}:{s.Line}:{s.Column}").ToArray();
+            Assert.Equal(16, actual.Length);
+            Assert.Equal(SortedCallSiteKeys(result.Data.Callers.Select(s => (s.File, s.Line, s.Column))), actual);
+            Assert.StartsWith("Alpha.cs:", actual[0]);
+            Assert.StartsWith("Hotel.cs:", actual[^1]);
+        }
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_MaxResults_ReturnsFirstCallersInSortedOrder()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EightCallSiteSources());
+
+        for (var run = 0; run < 3; run++)
+        {
+            var result = await new FindCallersOperation(workspace.Context).ExecuteAsync(new FindCallersParams
+            {
+                SourceFile = workspace.PathOf("Util.cs"),
+                SymbolName = "Twice",
+                MaxResults = 3
+            });
+
+            Assert.True(result.Success, result.Error?.Message);
+            Assert.Equal(new[] { "Alpha.cs:4:30", "Alpha.cs:4:46", "Bravo.cs:4:30" },
+                result.Data!.Callers.Select(s => $"{Path.GetFileName(s.File)}:{s.Line}:{s.Column}"));
+            Assert.Equal(16, result.Data.TotalCount);
+            Assert.True(result.Data.Truncated);
+        }
+    }
+
     private static bool SamePath(string a, string b) =>
         string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
 
