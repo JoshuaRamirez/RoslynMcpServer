@@ -679,7 +679,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             if (!SymbolEqualityComparer.Default.Equals(semanticModel.GetSymbolInfo(id, cancellationToken).Symbol, variableSymbol))
                 continue;
 
-            switch (ClassifyWrite(id))
+            switch (ClassifyWrite(id, variableSymbol.Type))
             {
                 case WriteKind.Direct:
                     return true;
@@ -698,15 +698,18 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
     /// <summary>
     /// Walks up from a use of the local through the nodes that keep referring to the same
-    /// storage or object: parentheses, <c>!</c>, casts, <c>as</c>, and member / element /
-    /// conditional access or invocation with the local's chain as receiver, plus deconstruction
-    /// tuples. The use is a write when the top of that chain is an assignment target, a
-    /// <c>++</c>/<c>--</c> operand, a <c>ref</c>/<c>out</c> argument or a <c>ref</c> expression
-    /// (the last two only through a receiver: direct by-reference uses are refused earlier with
-    /// UsedInRefContext), or when a conditional access on the chain assigns.
-    /// Anything that leaves the chain (an argument, an index, an operator operand) is a read.
+    /// storage or object: parentheses, <c>!</c>, <c>checked</c>/<c>unchecked</c>, casts, <c>as</c>,
+    /// <c>?:</c> branches, <c>??</c> operands, switch-expression arms, an assignment's value,
+    /// pointer indirection, and member / element / conditional access or invocation with the
+    /// local's chain as receiver, plus deconstruction tuples. The use is a write when the top of
+    /// that chain is an assignment target, a <c>++</c>/<c>--</c> operand, a foreach deconstruction
+    /// target, <c>__makeref</c>, or (through a receiver) a <c>ref</c>/<c>out</c> argument, a
+    /// <c>ref</c> expression or <c>&amp;</c> (direct by-reference uses are refused earlier with
+    /// UsedInRefContext), or when a conditional access on the chain assigns. A non-unmanaged local
+    /// passed as a call argument inside an assignment target counts as a receiver write.
+    /// Anything else that leaves the chain (an index, an operator operand) is a read.
     /// </summary>
-    private static WriteKind ClassifyWrite(IdentifierNameSyntax id)
+    private static WriteKind ClassifyWrite(IdentifierNameSyntax id, ITypeSymbol variableType)
     {
         SyntaxNode current = id;
         var throughReceiver = false;
@@ -719,6 +722,24 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                     current = parent;
                     continue;
                 case PostfixUnaryExpressionSyntax suppress when suppress.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                    current = parent;
+                    continue;
+                case CheckedExpressionSyntax:
+                    // checked(n) / unchecked(n) is still the variable n: checked(n) = 4 writes it.
+                    current = parent;
+                    continue;
+                case ConditionalExpressionSyntax conditionalValue when conditionalValue.Condition != current:
+                case BinaryExpressionSyntax coalesce when coalesce.IsKind(SyntaxKind.CoalesceExpression):
+                case AssignmentExpressionSyntax assignmentValue when assignmentValue.IsKind(SyntaxKind.SimpleAssignmentExpression) && assignmentValue.Right == current:
+                    // The local's value (or, for ref ?:, the variable itself) flows out of ?: branches,
+                    // ?? operands and an assignment's value: (c ? arr : other)[0] = 1 writes arr's array.
+                    current = parent;
+                    continue;
+                case SwitchExpressionArmSyntax arm when arm.Expression == current && arm.Parent is SwitchExpressionSyntax switchExpression:
+                    current = switchExpression;
+                    continue;
+                case PrefixUnaryExpressionSyntax indirection when indirection.IsKind(SyntaxKind.PointerIndirectionExpression):
+                    throughReceiver = true;
                     current = parent;
                     continue;
                 case CastExpressionSyntax cast when cast.Expression == current:
@@ -756,17 +777,48 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         var written = current.Parent switch
         {
             AssignmentExpressionSyntax assignment => assignment.Left == current,
-            PrefixUnaryExpressionSyntax prefix => prefix.Operand == current && IsIncrementOrDecrement(prefix),
+            PrefixUnaryExpressionSyntax prefix => prefix.Operand == current &&
+                (IsIncrementOrDecrement(prefix) || (throughReceiver && prefix.IsKind(SyntaxKind.AddressOfExpression))),
             PostfixUnaryExpressionSyntax postfix => postfix.Operand == current && IsIncrementOrDecrement(postfix),
             ArgumentSyntax argument => throughReceiver &&
                 (argument.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword)),
             RefExpressionSyntax => throughReceiver,
+            MakeRefExpressionSyntax => true,
+            ForEachVariableStatementSyntax forEach => forEach.Variable == current,
             _ => false
         };
 
-        if (!written)
-            return WriteKind.None;
-        return throughReceiver ? WriteKind.ThroughReceiver : WriteKind.Direct;
+        if (written)
+            return throughReceiver ? WriteKind.ThroughReceiver : WriteKind.Direct;
+
+        // A local that can hold a reference, passed as a call argument inside an assignment target
+        // (Ext.Id(arr)[0] = 1), may be the object written: treat it as a receiver write. Unmanaged
+        // values (int, enum, ...) carry no reference, so values[Compute(index)] = 10 stays a read.
+        if (current.Parent is ArgumentSyntax { Parent: ArgumentListSyntax } escape &&
+            !variableType.IsUnmanagedType &&
+            IsInsideWriteTarget(escape))
+        {
+            return WriteKind.ThroughReceiver;
+        }
+
+        return WriteKind.None;
+    }
+
+    private static bool IsInsideWriteTarget(SyntaxNode node)
+    {
+        for (var current = node; current.Parent is { } parent; current = parent)
+        {
+            if (parent is StatementSyntax or AnonymousFunctionExpressionSyntax or MemberDeclarationSyntax)
+                return false;
+            if (parent is AssignmentExpressionSyntax assignment && assignment.Left == current)
+                return true;
+            if (parent is PrefixUnaryExpressionSyntax prefix && prefix.Operand == current && IsIncrementOrDecrement(prefix))
+                return true;
+            if (parent is PostfixUnaryExpressionSyntax postfix && postfix.Operand == current && IsIncrementOrDecrement(postfix))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool IsWriteExpression(SyntaxNode node) =>

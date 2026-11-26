@@ -147,7 +147,8 @@ public class InlineVariableAssignmentTargetReadTests
     /// object (#3090 review): a boxed struct copy, or a fresh instance re-created at every use site (which
     /// also fails to compile: CS0178, CS9176, CS1002). The receiver may sit under parentheses, casts,
     /// <c>as</c> or <c>!</c>, and a user-defined operator / conversion or a property getter counts as a
-    /// call that may return a fresh object (third review).
+    /// call that may return a fresh object (third review). checked/unchecked, ?:, ??, switch arms, an
+    /// assignment's value and a call argument inside the target do not hide a write either (fourth review).
     /// </summary>
     public static TheoryData<string, string> NotSharedReceiverSources => new()
     {
@@ -446,6 +447,204 @@ public class InlineVariableAssignmentTargetReadTests
             """
         },
         {
+            "checked-assign",
+            """
+            namespace Demo;
+
+            public class Counter
+            {
+                private int _i = 1;
+
+                public int Touch()
+                {
+                    int n = _i;
+                    checked(n) = 4;
+                    return n;
+                }
+            }
+            """
+        },
+        {
+            "unchecked-assign",
+            """
+            namespace Demo;
+
+            public class Counter
+            {
+                private int _i = 1;
+
+                public int Touch()
+                {
+                    int n = _i;
+                    unchecked(n) = 4;
+                    return n;
+                }
+            }
+            """
+        },
+        {
+            "checked-increment",
+            """
+            namespace Demo;
+
+            public class Counter
+            {
+                private int _i = 1;
+
+                public int Touch()
+                {
+                    int n = _i;
+                    checked(n)++;
+                    return n;
+                }
+            }
+            """
+        },
+        {
+            "array-checked",
+            """
+            namespace Demo;
+
+            public static class Ext
+            {
+                public static int[] IdA(int[] a) => a;
+            }
+
+            public class Arrays
+            {
+                private bool _flag = true;
+                private int[] _other = new int[1];
+
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    checked(arr[0]) = 5;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "array-conditional",
+            """
+            namespace Demo;
+
+            public static class Ext
+            {
+                public static int[] IdA(int[] a) => a;
+            }
+
+            public class Arrays
+            {
+                private bool _flag = true;
+                private int[] _other = new int[1];
+
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    (_flag ? arr : _other)[0] = 1;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "array-coalesce",
+            """
+            namespace Demo;
+
+            public static class Ext
+            {
+                public static int[] IdA(int[] a) => a;
+            }
+
+            public class Arrays
+            {
+                private bool _flag = true;
+                private int[] _other = new int[1];
+
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    (arr ?? _other)[0] = 1;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "array-switch",
+            """
+            namespace Demo;
+
+            public static class Ext
+            {
+                public static int[] IdA(int[] a) => a;
+            }
+
+            public class Arrays
+            {
+                private bool _flag = true;
+                private int[] _other = new int[1];
+
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    (_flag switch { true => arr, _ => _other })[0] = 1;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "array-assignment-value",
+            """
+            namespace Demo;
+
+            public static class Ext
+            {
+                public static int[] IdA(int[] a) => a;
+            }
+
+            public class Arrays
+            {
+                private bool _flag = true;
+                private int[] _other = new int[1];
+
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    (_other = arr)[0] = 1;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "array-argument-escape",
+            """
+            namespace Demo;
+
+            public static class Ext
+            {
+                public static int[] IdA(int[] a) => a;
+            }
+
+            public class Arrays
+            {
+                private bool _flag = true;
+                private int[] _other = new int[1];
+
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    Ext.IdA(arr)[0] = 1;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
             "array-creation",
             """
             namespace Demo;
@@ -543,6 +742,7 @@ public class InlineVariableAssignmentTargetReadTests
         var variableName = kind switch
         {
             _ when kind.StartsWith("boxing", StringComparison.Ordinal) => "v",
+            _ when kind.StartsWith("checked", StringComparison.Ordinal) || kind.StartsWith("unchecked", StringComparison.Ordinal) => "n",
             _ when kind.StartsWith("operator", StringComparison.Ordinal) || kind == "property-getter" => "w",
             "collection-expression" => "list",
             "with-expression" => "r",
