@@ -82,6 +82,9 @@ public static class UsingDirectiveSorter
         }
 
         return ordered
+            // Case-insensitive first, like Roslyn / dotnet format (Autofac before AutoMapper, iText before Zeta);
+            // ordinal only breaks ties so the order stays deterministic (#3085).
+            .ThenBy(u => u.Name?.ToString() ?? "", StringComparer.OrdinalIgnoreCase)
             .ThenBy(u => u.Name?.ToString() ?? "", StringComparer.Ordinal)
             .ToList();
     }
@@ -94,6 +97,7 @@ public static class UsingDirectiveSorter
     {
         return usings
             .OrderBy(u => IsGlobalUsing(u) ? 0 : 1)
+            .ThenBy(u => u.Alias?.Name.ToString() ?? "", StringComparer.OrdinalIgnoreCase)
             .ThenBy(u => u.Alias?.Name.ToString() ?? "", StringComparer.Ordinal)
             .ToList();
     }
