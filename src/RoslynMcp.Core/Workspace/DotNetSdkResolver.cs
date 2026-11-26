@@ -1,17 +1,18 @@
-using System.Diagnostics;
-
 namespace RoslynMcp.Core.Workspace;
 
 internal sealed record DotNetSdkInfo(string Version, string Path);
 
+/// <summary>
+/// Finds the installed .NET SDKs by reading the SDK folders of each dotnet root (DOTNET_ROOT, the host the server runs
+/// under, the dotnet found on PATH with its links followed, ~/.dotnet and the standard install folders). It starts no
+/// program: `dotnet --list-sdks` reads the same folders, and starting it forked the long-lived server and handed the
+/// child its whole environment on every workspace load (his rule, 26 Nov 2026: no clone-first starts; read directly).
+/// </summary>
 internal static class DotNetSdkResolver
 {
-    private static readonly TimeSpan DotNetCommandTimeout = TimeSpan.FromSeconds(5);
-
     public static DotNetSdkInfo? FindLatest()
     {
         var sdkPaths = FindFromKnownRoots()
-            .Concat(FindFromDotNetHost())
             .Distinct(StringComparer.OrdinalIgnoreCase);
 
         return SelectLatest(sdkPaths);
@@ -45,13 +46,15 @@ internal static class DotNetSdkResolver
             .FirstOrDefault();
     }
 
-    private static IReadOnlyList<string> FindFromKnownRoots()
+    internal static IReadOnlyList<string> FindFromKnownRoots()
     {
         var roots = new List<string?>
         {
             Environment.GetEnvironmentVariable("DOTNET_ROOT"),
             Environment.GetEnvironmentVariable("DOTNET_ROOT(x86)"),
             GetDotNetHostDirectory(),
+            GetDotNetOnPathDirectory(),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet"),
             "/usr/local/share/dotnet",
             "/usr/share/dotnet"
         };
@@ -92,84 +95,34 @@ internal static class DotNetSdkResolver
         return sdkPaths;
     }
 
-    private static IReadOnlyList<string> FindFromDotNetHost()
+    /// <summary>The folder of the dotnet found on PATH, its links followed (Homebrew's dotnet is a link into its root).</summary>
+    internal static string? GetDotNetOnPathDirectory()
     {
-        try
+        var name = OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet";
+        foreach (var folder in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
-            using var process = Process.Start(new ProcessStartInfo
-            {
-                FileName = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet",
-                Arguments = "--list-sdks",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            });
-
-            if (process == null)
-            {
-                return Array.Empty<string>();
-            }
-
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask = process.StandardError.ReadToEndAsync();
-            using var timeoutCts = new CancellationTokenSource(DotNetCommandTimeout);
-
             try
             {
-                process.WaitForExitAsync(timeoutCts.Token).GetAwaiter().GetResult();
-            }
-            catch (OperationCanceledException)
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-
-                process.WaitForExitAsync().GetAwaiter().GetResult();
-                _ = outputTask.GetAwaiter().GetResult();
-                _ = errorTask.GetAwaiter().GetResult();
-                return Array.Empty<string>();
-            }
-
-            var output = outputTask.GetAwaiter().GetResult();
-            _ = errorTask.GetAwaiter().GetResult();
-            var sdkPaths = new List<string>();
-            foreach (var line in output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
-            {
-                var separatorIndex = line.IndexOf(" [", StringComparison.Ordinal);
-                if (separatorIndex <= 0 || !line.EndsWith(']'))
+                var candidate = new FileInfo(Path.Combine(folder, name));
+                if (!candidate.Exists)
                 {
                     continue;
                 }
 
-                var version = line[..separatorIndex].Trim();
-                var sdkRoot = line[(separatorIndex + 2)..^1];
-                var sdkPath = Path.Combine(sdkRoot, version);
-                if (Directory.Exists(sdkPath))
-                {
-                    sdkPaths.Add(sdkPath);
-                }
+                var target = candidate.LinkTarget is null ? candidate : candidate.ResolveLinkTarget(returnFinalTarget: true) as FileInfo ?? candidate;
+                return target.DirectoryName;
             }
+            catch (IOException)
+            {
+                // a broken link or unreadable folder: try the next one
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // try the next one
+            }
+        }
 
-            return sdkPaths;
-        }
-        catch (System.ComponentModel.Win32Exception)
-        {
-            return Array.Empty<string>();
-        }
-        catch (InvalidOperationException)
-        {
-            return Array.Empty<string>();
-        }
-        catch (IOException)
-        {
-            return Array.Empty<string>();
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return Array.Empty<string>();
-        }
+        return null;
     }
 
     private static void AddProgramFilesRoot(
