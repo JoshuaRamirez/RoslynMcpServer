@@ -820,10 +820,18 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                               node.Parent is InvocationExpressionSyntax ||
                               node.Parent is ElementAccessExpressionSyntax;
 
-            if (needsParens &&
-                (_replacement is BinaryExpressionSyntax or
-                 ConditionalExpressionSyntax or
-                 AnonymousFunctionExpressionSyntax))
+            // A prefix-unary initializer pasted right after a prefix-unary or binary operator would
+            // merge with it (var neg = -a; return -neg; → return --a;, a-neg → a--a), silently
+            // turning a negation into a decrement or breaking the build, so parenthesize it:
+            // -(-a), a-(-a) (#3121).
+            var mergesWithOperator = _replacement is PrefixUnaryExpressionSyntax &&
+                                     node.Parent is PrefixUnaryExpressionSyntax or BinaryExpressionSyntax;
+
+            if (mergesWithOperator ||
+                (needsParens &&
+                 (_replacement is BinaryExpressionSyntax or
+                  ConditionalExpressionSyntax or
+                  AnonymousFunctionExpressionSyntax)))
             {
                 return SyntaxFactory.ParenthesizedExpression(_replacement)
                     .WithTriviaFrom(node);

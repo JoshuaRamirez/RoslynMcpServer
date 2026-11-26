@@ -793,10 +793,14 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
             }
 
             // Keep retained-component trivia (inner comments). Concatenate the
-            // original node's exterior trivia so indentation / trailing newline stay.
+            // original node's leading trivia so indentation stays. The replacement keeps
+            // the original's last component, and a node's trailing trivia lives on its
+            // last token, so that token already carries the original trailing trivia:
+            // use it once instead of appending it again, which duplicated trailing
+            // comments / spaces (App.Models.Order /* c */ → Models.Order /* c */  /* c */, #3129).
             var rewritten = replacement
                 .WithLeadingTrivia(original.GetLeadingTrivia().AddRange(replacement.GetLeadingTrivia()))
-                .WithTrailingTrivia(replacement.GetTrailingTrivia().AddRange(original.GetTrailingTrivia()));
+                .WithTrailingTrivia(original.GetTrailingTrivia());
             replacements[original] = rewritten;
             applied.Add(new AppliedSimplification(original, original.ToString(), rewritten.ToString()));
         }
