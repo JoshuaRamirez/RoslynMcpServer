@@ -45,6 +45,28 @@ public class ConvertPropertyInitializedBackingFieldTests
         }
         """;
 
+    private const string StaticAndSuppressedSource = """
+        public class S
+        {
+            private static int _s = 5;
+            private string _n = "x";
+
+            public int St { get { return S._s; } set { S._s = value; } }
+
+            public string N { get { return _n!; } set { _n = value; } }
+        }
+
+        public class Base
+        {
+            protected int _b = 7;
+        }
+
+        public class Derived : Base
+        {
+            public int B { get { return _b; } set { _b = value; } }
+        }
+        """;
+
     // Another part of Split, in a second file, initializes R's backing field.
     private const string OtherPart = """
         public partial class Split
@@ -59,9 +81,12 @@ public class ConvertPropertyInitializedBackingFieldTests
     [InlineData("P", "_p")]
     [InlineData("Q", "_q")]
     [InlineData("R", "_r")]
+    [InlineData("St", "_s")]
+    [InlineData("N", "_n")]
+    [InlineData("B", "_b")]
     public async Task ToAutoProperty_InitializedBackingField_IsRefusedAndWritesNothing(string propertyName, string fieldName)
     {
-        await using var workspace = await TempWorkspace.CreateAsync(Source, "latest", OtherPart);
+        await using var workspace = await TempWorkspace.CreateAsync(Source + "\n" + StaticAndSuppressedSource, "latest", OtherPart);
         var before = await File.ReadAllTextAsync(workspace.SourcePath);
 
         var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
@@ -80,7 +105,7 @@ public class ConvertPropertyInitializedBackingFieldTests
     [SkippableFact]
     public async Task ToAutoProperty_UninitializedBackingField_StillConverts()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(Source, "latest", OtherPart);
+        await using var workspace = await TempWorkspace.CreateAsync(Source + "\n" + StaticAndSuppressedSource, "latest", OtherPart);
 
         var result = await new ConvertPropertyOperation(workspace.Context).ExecuteAsync(new ConvertPropertyParams
         {
@@ -96,7 +121,7 @@ public class ConvertPropertyInitializedBackingFieldTests
     [SkippableFact]
     public async Task ToAutoProperty_AllFiles_SkipsInitializedBackingFields()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(Source, "latest", OtherPart);
+        await using var workspace = await TempWorkspace.CreateAsync(Source + "\n" + StaticAndSuppressedSource, "latest", OtherPart);
 
         await new ConvertPropertyOperation(workspace.Context).ExecuteAsync(new ConvertPropertyParams
         {
@@ -110,6 +135,9 @@ public class ConvertPropertyInitializedBackingFieldTests
         Assert.Contains("get { return (_p); }", after, StringComparison.Ordinal);
         Assert.Contains("get { return _q; }", after, StringComparison.Ordinal);
         Assert.Contains("get { return _r; }", after, StringComparison.Ordinal);
+        Assert.Contains("get { return S._s; }", after, StringComparison.Ordinal);
+        Assert.Contains("get { return _n!; }", after, StringComparison.Ordinal);
+        Assert.Contains("get { return _b; }", after, StringComparison.Ordinal);
         Assert.Contains("public int Plain { get; set; }", after, StringComparison.Ordinal);
         var errors = await workspace.GetErrorsAsync();
         Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors));

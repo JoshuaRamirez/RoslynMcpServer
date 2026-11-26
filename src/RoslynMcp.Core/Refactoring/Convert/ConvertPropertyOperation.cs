@@ -373,11 +373,13 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
     }
 
     /// <summary>
-    /// True when the getter returns (possibly parenthesized) a field of the containing type that has an initializer
-    /// in any of the type's declaring parts (<c>private int _retries = 3;</c> + <c>get { return _retries; }</c>). The
-    /// generated auto-property has no initializer, so converting would silently reset the property to
-    /// <c>default</c> (#3281). Without a semantic model (or when the property is not in it) only the property's own
-    /// type declaration is searched.
+    /// True when the getter returns a field that has an initializer (<c>private int _retries = 3;</c> +
+    /// <c>get { return _retries; }</c>), looking past parentheses and <c>!</c>. The generated auto-property has no
+    /// initializer, so converting would silently reset the property to <c>default</c> (#3281). With a semantic model
+    /// the returned field is resolved (<c>_x</c>, <c>this._x</c>, <c>S._s</c>, inherited fields) and its own
+    /// declarator is checked wherever it is declared (any partial part, any file, a base class); without one
+    /// (or when the property is not in it) only simple / <c>this.</c> names in the property's own type declaration
+    /// are matched.
     /// </summary>
     internal static bool TryGetInitializedBackingField(
         PropertyDeclarationSyntax property, SemanticModel? semanticModel, out string fieldName)
@@ -389,9 +391,34 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
         var getter = property.AccessorList.Accessors.FirstOrDefault(a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
         var returned = getter?.ExpressionBody?.Expression
             ?? (getter?.Body?.Statements is [ReturnStatementSyntax { Expression: { } expression }] ? expression : null);
-        while (returned is ParenthesizedExpressionSyntax parenthesized)
-            returned = parenthesized.Expression;
+        // Look past parentheses and the null-forgiving operator: (_p), _n!, (S._s)!.
+        while (returned is ParenthesizedExpressionSyntax or PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression })
+        {
+            returned = returned is ParenthesizedExpressionSyntax parenthesized
+                ? parenthesized.Expression
+                : ((PostfixUnaryExpressionSyntax)returned).Operand;
+        }
 
+        if (returned == null)
+            return false;
+
+        // Semantic path: resolve the returned field (instance, this., static Type._s, inherited) and check its own
+        // declarator, wherever it is declared (another partial part, another file, a base class).
+        if (semanticModel != null && property.SyntaxTree == semanticModel.SyntaxTree)
+        {
+            if (semanticModel.GetSymbolInfo(returned).Symbol is not IFieldSymbol field)
+                return false;
+
+            var hasInitializer = field.OriginalDefinition.DeclaringSyntaxReferences
+                .Select(r => r.GetSyntax())
+                .OfType<VariableDeclaratorSyntax>()
+                .Any(v => v.Initializer != null);
+            if (hasInitializer)
+                fieldName = field.Name;
+            return hasInitializer;
+        }
+
+        // Syntactic fallback (no semantic model): a simple or this.-qualified name declared in this type declaration.
         var name = returned switch
         {
             IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
@@ -402,21 +429,7 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
         if (name == null)
             return false;
 
-        IEnumerable<TypeDeclarationSyntax> parts = [type];
-        if (semanticModel != null
-            && property.SyntaxTree == semanticModel.SyntaxTree
-            && semanticModel.GetDeclaredSymbol(property)?.ContainingType is { } containingType)
-        {
-            var declaringParts = containingType.DeclaringSyntaxReferences
-                .Select(r => r.GetSyntax())
-                .OfType<TypeDeclarationSyntax>()
-                .ToList();
-            if (declaringParts.Count > 0)
-                parts = declaringParts;
-        }
-
-        var initialized = parts
-            .SelectMany(p => p.Members)
+        var initialized = type.Members
             .OfType<FieldDeclarationSyntax>()
             .SelectMany(f => f.Declaration.Variables)
             .Any(v => v.Identifier.ValueText == name && v.Initializer != null);
