@@ -69,14 +69,68 @@ internal static class MemberInsertionTrivia
     /// <summary>
     /// Re-lays out a multi-line member built with <c>NormalizeWhitespace</c>
     /// so every line carries <paramref name="indentation"/> and ends with <paramref name="endOfLine"/>.
+    /// Only trivia is changed: the indentation goes into the leading whitespace of each token that starts
+    /// a line, so line breaks inside string, char, interpolated or raw literal tokens keep their value
+    /// (#3123 review; splitting the text on line endings put indentation inside <c>@"a&lt;newline&gt;b"</c>).
     /// </summary>
     public static MemberDeclarationSyntax Reindent(MemberDeclarationSyntax member, string indentation, SyntaxTrivia endOfLine)
     {
-        var eol = endOfLine.ToString();
-        var unit = indentation.Contains('\t') ? "\t" : "    ";
-        var lines = member.NormalizeWhitespace(unit, eol).ToFullString().Split(eol);
-        var text = string.Join(eol, lines.Select((line, i) => i == 0 || line.Length == 0 ? line : indentation + line));
-        return SyntaxFactory.ParseMemberDeclaration(text)!;
+        var unit = IndentUnit(indentation);
+        var normalized = member.NormalizeWhitespace(unit, endOfLine.ToString());
+        if (indentation.Length == 0)
+            return normalized;
+
+        var firstToken = normalized.GetFirstToken();
+        return normalized.ReplaceTokens(
+            normalized.DescendantTokens(),
+            (original, _) => original == firstToken
+                ? original
+                : original.WithLeadingTrivia(IndentLines(
+                    original.LeadingTrivia,
+                    EndsWithEndOfLine(original.GetPreviousToken().TrailingTrivia),
+                    indentation)));
+    }
+
+    /// <summary>One indentation step: a tab when <paramref name="indentation"/> uses tabs, else 4 spaces.</summary>
+    public static string IndentUnit(string indentation) => indentation.Contains('\t') ? "\t" : "    ";
+
+    /// <summary>
+    /// The indentation of the line <paramref name="token"/> starts, or empty when it does not start a line.
+    /// </summary>
+    public static string LineIndentation(SyntaxToken token) =>
+        TryGetLineIndentation(token, out var indentation) ? indentation : string.Empty;
+
+    /// <summary>
+    /// Prefixes <paramref name="indentation"/> at every line start in <paramref name="trivia"/> (its start
+    /// when <paramref name="startsAtLineStart"/>, and after each end-of-line), skipping blank lines.
+    /// </summary>
+    private static SyntaxTriviaList IndentLines(SyntaxTriviaList trivia, bool startsAtLineStart, string indentation)
+    {
+        var result = new List<SyntaxTrivia>();
+        var atLineStart = startsAtLineStart;
+        for (var i = 0; i <= trivia.Count; i++)
+        {
+            var current = i < trivia.Count ? trivia[i] : default;
+            if (atLineStart && !current.IsKind(SyntaxKind.EndOfLineTrivia))
+            {
+                if (current.IsKind(SyntaxKind.WhitespaceTrivia))
+                {
+                    result.Add(SyntaxFactory.Whitespace(indentation + current.ToString()));
+                    atLineStart = false;
+                    continue;
+                }
+
+                result.Add(SyntaxFactory.Whitespace(indentation));
+            }
+
+            if (i == trivia.Count)
+                break;
+
+            result.Add(current);
+            atLineStart = current.IsKind(SyntaxKind.EndOfLineTrivia);
+        }
+
+        return SyntaxFactory.TriviaList(result);
     }
 
     private static bool EndsWithEndOfLine(SyntaxTriviaList trivia) =>

@@ -1558,18 +1558,51 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         ExpressionStatementSyntax assignment)
     {
         if (constructor.ExpressionBody != null)
-        {
-            var original = SyntaxFactory.ExpressionStatement(constructor.ExpressionBody.Expression);
-            var body = SyntaxFactory.Block(assignment, original);
-            return constructor
-                .WithExpressionBody(null)
-                .WithSemicolonToken(default)
-                .WithBody(body.NormalizeWhitespace());
-        }
+            return ExpandExpressionBody(constructor, assignment);
 
         var bodyBlock = constructor.Body ?? SyntaxFactory.Block();
         return constructor.WithBody(
             bodyBlock.WithStatements(bodyBlock.Statements.Insert(0, LayOutFirstStatement(constructor, bodyBlock, assignment))));
+    }
+
+    /// <summary>
+    /// <c>P() =&gt; A = 1;</c> becomes a block body laid out with the constructor's own indentation and
+    /// the file's line ending; <c>NormalizeWhitespace</c> wrote CRLF at column 0 and dropped the blank
+    /// line after the constructor (#3123 review).
+    /// </summary>
+    private static ConstructorDeclarationSyntax ExpandExpressionBody(
+        ConstructorDeclarationSyntax constructor,
+        ExpressionStatementSyntax assignment)
+    {
+        var endOfLine = MemberInsertionTrivia.DetectEndOfLine(constructor.SyntaxTree.GetRoot());
+        var indentation = MemberInsertionTrivia.LineIndentation(constructor.GetFirstToken());
+        var statementIndentation = SyntaxFactory.Whitespace(indentation + MemberInsertionTrivia.IndentUnit(indentation));
+        var braceIndentation = SyntaxFactory.TriviaList(SyntaxFactory.Whitespace(indentation));
+
+        var original = SyntaxFactory.ExpressionStatement(constructor.ExpressionBody!.Expression.WithoutTrivia());
+        var body = SyntaxFactory.Block(
+                SyntaxFactory.Token(SyntaxKind.OpenBraceToken)
+                    .WithLeadingTrivia(braceIndentation)
+                    .WithTrailingTrivia(endOfLine),
+                SyntaxFactory.List<StatementSyntax>(new[]
+                {
+                    assignment.WithLeadingTrivia(statementIndentation).WithTrailingTrivia(endOfLine),
+                    original.WithLeadingTrivia(statementIndentation).WithTrailingTrivia(endOfLine)
+                }),
+                SyntaxFactory.Token(SyntaxKind.CloseBraceToken)
+                    .WithLeadingTrivia(braceIndentation)
+                    .WithTrailingTrivia(constructor.SemicolonToken.TrailingTrivia));
+
+        var parameterList = constructor.ParameterList.WithCloseParenToken(
+            constructor.ParameterList.CloseParenToken.WithTrailingTrivia(endOfLine));
+        var withParameters = constructor.Initializer == null
+            ? constructor.WithParameterList(parameterList)
+            : constructor.WithInitializer(constructor.Initializer.WithTrailingTrivia(endOfLine));
+
+        return withParameters
+            .WithExpressionBody(null)
+            .WithSemicolonToken(default)
+            .WithBody(body);
     }
 
     /// <summary>

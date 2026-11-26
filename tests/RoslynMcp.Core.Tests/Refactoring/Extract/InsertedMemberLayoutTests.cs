@@ -113,7 +113,10 @@ public class InsertedMemberLayoutTests
         Assert.True(result.Success, result.Error?.Message);
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.DoesNotContain("\r", text, StringComparison.Ordinal);
-        Assert.Matches(@"\n    private const int Max = 5;\n    private const decimal \w+ = 1\.08m;\n\n    public decimal A", text);
+        var name = ExtractConstantOperation.DeriveConstantNameFromLiteral(
+            (Microsoft.CodeAnalysis.CSharp.Syntax.LiteralExpressionSyntax)Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression("1.08m"));
+        Assert.NotNull(name);
+        Assert.Contains($"\n    private const int Max = 5;\n    private const decimal {name} = 1.08m;\n\n    public decimal A", text, StringComparison.Ordinal);
     }
 
     [SkippableTheory]
@@ -194,7 +197,25 @@ public class InsertedMemberLayoutTests
         Assert.True(result.Success, result.Error?.Message);
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.DoesNotContain("\r", text, StringComparison.Ordinal);
-        Assert.Contains("\n    public int A;\n    private int _k;\n    public P()\n    {\n        this._k = 42;\n    }\n", text, StringComparison.Ordinal);
+        Assert.Equal(WithEol("""
+            namespace TestApp;
+
+            public class P
+            {
+                public int A;
+                private int _k;
+                public P()
+                {
+                    this._k = 42;
+                }
+
+                public int Get()
+                {
+                    return A + this._k;
+                }
+            }
+
+            """, "\n"), text);
         Assert.Empty(await workspace.GetDiskErrorsAsync());
     }
 
@@ -237,8 +258,164 @@ public class InsertedMemberLayoutTests
         Assert.True(result.Success, result.Error?.Message);
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.DoesNotContain("\r", text, StringComparison.Ordinal);
-        Assert.Contains("\n    public P()\n    {\n        this._k = 42;\n        A = 1;\n    }\n", text, StringComparison.Ordinal);
+        Assert.Equal(WithEol("""
+            namespace TestApp;
+
+            public class P
+            {
+                public int A;
+                private int _k;
+
+                public P()
+                {
+                    this._k = 42;
+                    A = 1;
+                }
+
+                public int Get()
+                {
+                    return A + this._k;
+                }
+            }
+
+            """, "\n"), text);
         Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData("@\"a\nb\"")]
+    [InlineData("$@\"a{A}\nb\"")]
+    [InlineData("\"\"\"\n        a\n          b\n        \"\"\"")]
+    public async Task IntroduceField_InitializeInSynthesizedConstructor_KeepsMultiLineLiteralValue(string literal)
+    {
+        // Reindent split the whole constructor text on line endings and indented every line, including the
+        // lines inside a multi-line literal, so @"a<LF>b" became @"a<LF>    b" (#3123 review).
+        var source = WithEol($$"""
+            namespace TestApp;
+
+            public class P
+            {
+                public string A = "";
+
+                public string Get()
+                {
+                    return {{literal}};
+                }
+            }
+
+            """, "\n");
+        var expected = WithEol($$"""
+            namespace TestApp;
+
+            public class P
+            {
+                public string A = "";
+                private string _k;
+                public P()
+                {
+                    this._k = {{literal}};
+                }
+
+                public string Get()
+                {
+                    return this._k;
+                }
+            }
+
+            """, "\n");
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+        var start = source.IndexOf("return ", StringComparison.Ordinal) + "return ".Length;
+        var (line, column) = Position(source, start);
+        var (endLine, endColumn) = Position(source, start + literal.Length);
+
+        var result = await new IntroduceFieldOperation(workspace.Context).ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            StartColumn = column,
+            EndLine = endLine,
+            EndColumn = endColumn,
+            FieldName = "_k",
+            InitializeInConstructor = true
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("this._k = " + literal + ";", text, StringComparison.Ordinal);
+        Assert.Equal(expected, text);
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public async Task IntroduceField_InitializeInExpressionBodiedConstructor_UsesIndentationAndFileLineEnding(string eol)
+    {
+        // P() => A = 1; was expanded with NormalizeWhitespace: CRLF at column 0 and the blank line after the
+        // constructor dropped (#3123 review).
+        var source = WithEol("""
+            namespace TestApp;
+
+            public class P
+            {
+                public int A;
+
+                public P() => A = 1;
+
+                public int Get()
+                {
+                    return A + 42;
+                }
+            }
+
+            """, eol);
+        var expected = WithEol("""
+            namespace TestApp;
+
+            public class P
+            {
+                public int A;
+                private int _k;
+
+                public P()
+                {
+                    this._k = 42;
+                    A = 1;
+                }
+
+                public int Get()
+                {
+                    return A + this._k;
+                }
+            }
+
+            """, eol);
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+        var (line, column) = Find(source, "42");
+
+        var result = await new IntroduceFieldOperation(workspace.Context).ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            StartColumn = column,
+            EndLine = line,
+            EndColumn = column + 2,
+            FieldName = "_k",
+            InitializeInConstructor = true
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(expected, text);
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    private static (int Line, int Column) Position(string source, int offset)
+    {
+        var before = source[..offset];
+        var line = before.Count(c => c == '\n') + 1;
+        var column = offset - (before.LastIndexOf('\n') + 1) + 1;
+        return (line, column);
     }
 
     private static string WithEol(string text, string eol) =>
