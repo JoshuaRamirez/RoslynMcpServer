@@ -135,7 +135,8 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
             ValidateDefaultValue(
                 semanticModel,
                 @params.ParameterType,
-                @params.DefaultValue);
+                @params.DefaultValue,
+                methodDecl);
         }
 
         var solution = document.Project.Solution;
@@ -455,7 +456,8 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
             ValidateDefaultValue(
                 semanticModel,
                 @params.ParameterType,
-                @params.DefaultValue);
+                @params.DefaultValue,
+                methodDecl);
         }
 
         // Use the document's solution (allFiles currentSolution), not Context.Solution,
@@ -969,7 +971,8 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
     internal static void ValidateDefaultValue(
         SemanticModel semanticModel,
         string parameterType,
-        string defaultValue)
+        string defaultValue,
+        SyntaxNode? scope = null)
     {
         var expression = SyntaxFactory.ParseExpression(defaultValue);
         if (expression.IsMissing || expression.ContainsDiagnostics)
@@ -980,18 +983,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         }
 
         var parseOptions = (CSharpParseOptions)semanticModel.SyntaxTree.Options;
-        var probeTree = CSharpSyntaxTree.ParseText($$"""
-            namespace __RoslynMcpProbe
-            {
-                static class Probe
-                {
-                    static void M()
-                    {
-                        {{parameterType}} __v = {{defaultValue}};
-                    }
-                }
-            }
-            """, parseOptions);
+        var probeTree = CSharpSyntaxTree.ParseText(BuildProbeSource(parameterType, defaultValue, scope), parseOptions);
 
         var probeCompilation = semanticModel.Compilation.AddSyntaxTrees(probeTree);
         var probeModel = probeCompilation.GetSemanticModel(probeTree);
@@ -1029,6 +1021,32 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
                 ErrorCodes.InvalidDefaultValue,
                 $"'{defaultValue}' is not a compile-time constant or default(T).");
         }
+    }
+
+    /// <summary>
+    /// The probe binds the type and default as the target file would: with its file-level and namespace-level
+    /// usings and inside the target's namespace, so CancellationToken (via using System.Threading;) or an enum
+    /// declared in the same namespace is not rejected as an invalid type (#3150).
+    /// </summary>
+    private static string BuildProbeSource(string parameterType, string defaultValue, SyntaxNode? scope)
+    {
+        var probe = $"static class __RoslynMcpProbe {{ static void M() {{ {parameterType} __v = {defaultValue}; }} }}";
+        if (scope == null)
+            return $"namespace __RoslynMcpProbe {{ {probe} }}";
+
+        var fileUsings = scope.SyntaxTree.GetCompilationUnitRoot().Usings
+            .Where(u => u.GlobalKeyword.IsKind(SyntaxKind.None))
+            .Select(u => u.WithoutTrivia().ToString());
+        var namespaces = scope.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().Reverse().ToList();
+        if (namespaces.Count == 0)
+            return string.Join("\n", fileUsings.Append(probe));
+
+        var namespaceUsings = namespaces
+            .SelectMany(ns => ns.Usings)
+            .Select(u => u.WithoutTrivia().ToString());
+        var namespaceName = string.Join(".", namespaces.Select(ns => ns.Name.ToString()));
+        return string.Join("\n", fileUsings) +
+            $"\nnamespace {namespaceName}\n{{\n{string.Join("\n", namespaceUsings)}\n{probe}\n}}\n";
     }
 
     private static SeparatedSyntaxList<T> SeparatedWithSpaces<T>(IReadOnlyList<T> nodes)
