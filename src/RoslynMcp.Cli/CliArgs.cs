@@ -25,6 +25,12 @@ public sealed class ParsedArgs
 
     /// <summary>Whether verbose output is enabled.</summary>
     public bool Verbose { get; init; }
+
+    /// <summary>
+    /// Tool-specific options given with no value (the last token, or followed by another <c>--option</c>).
+    /// They appear in <see cref="Options"/> as <c>"true"</c>, which is only right for boolean options (#3288).
+    /// </summary>
+    public IReadOnlySet<string> ValuelessOptions { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -61,7 +67,7 @@ public static class CliArgs
         {
             var solutionPath = args[0];
             var toolName = args[1];
-            var (options, format, verbose) = ParseOptions(args, startIndex: 2);
+            var (options, format, verbose, valueless) = ParseOptions(args, startIndex: 2);
 
             // Check for --help among the options
             if (options.ContainsKey("help"))
@@ -76,7 +82,8 @@ public static class CliArgs
                 ToolName = toolName,
                 Options = options,
                 Format = format,
-                Verbose = verbose
+                Verbose = verbose,
+                ValuelessOptions = valueless
             };
         }
 
@@ -84,10 +91,11 @@ public static class CliArgs
         return new ParsedArgs { ShowHelp = true };
     }
 
-    private static (Dictionary<string, string> options, string format, bool verbose) ParseOptions(
+    private static (Dictionary<string, string> options, string format, bool verbose, HashSet<string> valueless) ParseOptions(
         string[] args, int startIndex)
     {
         var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var valueless = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var format = "json";
         var verbose = false;
 
@@ -129,15 +137,18 @@ public static class CliArgs
             {
                 // --key value
                 options[key] = args[++i];
+                valueless.Remove(key);
             }
             else
             {
-                // --flag (boolean true)
+                // --flag (boolean true); recorded so a non-boolean option missing its value
+                // can be rejected instead of binding the literal "true" (#3288)
                 options[key] = "true";
+                valueless.Add(key);
             }
         }
 
-        return (options, format, verbose);
+        return (options, format, verbose, valueless);
     }
 
     private static bool IsHelpFlag(string arg) =>

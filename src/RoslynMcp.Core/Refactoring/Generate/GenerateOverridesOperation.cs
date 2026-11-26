@@ -526,11 +526,14 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
     private static List<ISymbol> GetObjectMethodsToOverride(INamedTypeSymbol typeSymbol)
     {
         var result = new List<ISymbol>();
+        // Key on the System.Object member each existing override ultimately overrides, not on its name:
+        // an override of an unrelated same-name overload (ToString(string), Equals(Document),
+        // GetHashCode(bool)) must not hide the un-overridden Object member (#3113).
         var existingOverrides = typeSymbol.GetMembers()
             .OfType<IMethodSymbol>()
             .Where(m => m.IsOverride)
-            .Select(m => m.Name)
-            .ToHashSet();
+            .Select(GetRootOverriddenMethod)
+            .ToHashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
 
         // Find Object type
         var objectType = typeSymbol.BaseType;
@@ -547,7 +550,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
             if (member is IMethodSymbol method &&
                 (method.Name == "ToString" || method.Name == "Equals" || method.Name == "GetHashCode") &&
                 method.IsVirtual &&
-                !existingOverrides.Contains(method.Name))
+                !existingOverrides.Contains(method.OriginalDefinition))
             {
                 // Skip Equals(object, object) static method
                 if (method.Name == "Equals" && method.Parameters.Length != 1)
@@ -558,6 +561,14 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         }
 
         return result;
+    }
+
+    private static IMethodSymbol GetRootOverriddenMethod(IMethodSymbol method)
+    {
+        var current = method;
+        while (current.OverriddenMethod != null)
+            current = current.OverriddenMethod;
+        return current.OriginalDefinition;
     }
 
     private static IEnumerable<ISymbol> GetExistingOverrideTargets(INamedTypeSymbol typeSymbol)
