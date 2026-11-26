@@ -258,7 +258,9 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
 
         if (symbol is INamedTypeSymbol type)
         {
-            if (type.BaseType != null && type.BaseType.SpecialType != SpecialType.System_Object)
+            // Only a class inherits its base type's docs: a struct's or enum's BaseType is
+            // System.ValueType / System.Enum, whose summary is not the type's (#3092 review).
+            if (type.TypeKind == TypeKind.Class && type.BaseType != null && type.BaseType.SpecialType != SpecialType.System_Object)
                 return type.BaseType;
             return type.Interfaces.FirstOrDefault();
         }

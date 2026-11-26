@@ -100,6 +100,32 @@ public class GetSymbolInfoInheritDocTests
         Assert.Null(await GetSummary(workspace, "Circle.Orphan"));
     }
 
+    [SkippableTheory]
+    [InlineData("Point")]
+    [InlineData("Color")]
+    public async Task InheritDoc_OnStructOrEnum_DoesNotTakeValueTypeOrEnumSummary(string typeName)
+    {
+        // A struct's BaseType is System.ValueType and an enum's is System.Enum; their summaries are not the
+        // type's, so <inheritdoc/> with nothing else to inherit stays null as on master (#3092 review).
+        const string source = """
+            namespace Demo;
+
+            /// <inheritdoc/>
+            public struct Point { public int X; }
+
+            /// <inheritdoc/>
+            public enum Color { Red, Green }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        var result = await new GetSymbolInfoOperation(workspace.Context).ExecuteAsync(
+            new GetSymbolInfoParams { SourceFile = workspace.SourcePath, SymbolName = typeName });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(typeName, result.Data?.Name);
+        Assert.Null(result.Data?.DocumentationSummary);
+    }
+
     private static async Task<string?> GetSummary(TempWorkspace workspace, string member)
     {
         var lines = File.ReadAllLines(workspace.SourcePath);
