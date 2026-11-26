@@ -513,9 +513,10 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             }
         }
 
-        // Search in current compilation
+        // Search in current compilation. A file-local type (file class Widget) is visible only in
+        // its own file, where it never produces CS0246, so a using for its namespace cannot help (#3094).
         var localTypes = GetAllTypes(compilation.GlobalNamespace)
-            .Where(t => t.Name == typeName)
+            .Where(t => t.Name == typeName && !t.IsFileLocal)
             .ToList();
 
         foreach (var type in localTypes)
