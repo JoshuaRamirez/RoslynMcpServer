@@ -52,6 +52,12 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
+        if (!SupportsInterpolatedStrings(root.SyntaxTree))
+        {
+            throw new RefactoringException(ErrorCodes.CannotConvert,
+                "Interpolated strings require C# 6 or later; this project's language version does not support them (CS8026).");
+        }
+
         var target = FindConvertibleExpression(root, semanticModel, @params.Line!.Value, @params.Column);
 
         if (target is InvocationExpressionSyntax formatInvocation)
@@ -70,6 +76,15 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         throw new RefactoringException(ErrorCodes.CannotConvert,
             $"No string.Format() call or string concatenation found at {location}.");
     }
+
+    /// <summary>
+    /// True when <paramref name="tree"/>'s effective language version has interpolated strings
+    /// (C# 6+). Rewriting to <c>$"..."</c> on LangVersion 5 and earlier is CS8026, so the single
+    /// path refuses and allFiles skips such documents (#2892).
+    /// </summary>
+    internal static bool SupportsInterpolatedStrings(SyntaxTree tree) =>
+        tree.Options is not CSharpParseOptions parseOptions
+        || parseOptions.LanguageVersion.MapSpecifiedToEffectiveVersion() >= LanguageVersion.CSharp6;
 
     /// <summary>
     /// Converts every distinct convertible <c>string.Format</c> invocation and
@@ -112,6 +127,10 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
             var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
             if (originalRoot == null)
+                continue;
+
+            // Pre-C# 6 documents cannot hold $"..." (CS8026): skip them.
+            if (!SupportsInterpolatedStrings(originalRoot.SyntaxTree))
                 continue;
 
             var workingDocument = originalDocument;

@@ -96,7 +96,13 @@ public static class CliArgs
             var arg = args[i];
             if (!arg.StartsWith("--"))
             {
-                // Positional arg after flags — skip (shouldn't happen in normal usage)
+                // A stray positional help spelling (-h, -?, help) is a help request, the same as
+                // --help: dropping it would run the tool (and possibly rewrite files) instead of
+                // printing its help (#3064). Option values never reach here (consumed below).
+                if (IsHelpFlag(arg))
+                    options["help"] = "true";
+
+                // Other positional args after flags — skip (shouldn't happen in normal usage)
                 continue;
             }
 
