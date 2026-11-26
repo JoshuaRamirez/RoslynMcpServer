@@ -145,7 +145,9 @@ public class InlineVariableAssignmentTargetReadTests
     /// <summary>
     /// Sources where writing through the local and through the inlined initializer would not hit the same
     /// object (#3090 review): a boxed struct copy, or a fresh instance re-created at every use site (which
-    /// also fails to compile: CS0178, CS9176, CS1002).
+    /// also fails to compile: CS0178, CS9176, CS1002). The receiver may sit under parentheses, casts,
+    /// <c>as</c> or <c>!</c>, and a user-defined operator / conversion or a property getter counts as a
+    /// call that may return a fresh object (third review).
     /// </summary>
     public static TheoryData<string, string> NotSharedReceiverSources => new()
     {
@@ -203,6 +205,242 @@ public class InlineVariableAssignmentTargetReadTests
                     int[] arr = new int[3];
                     arr![0] = 1;
                     return arr;
+                }
+            }
+            """
+        },
+        {
+            "boxing-cast",
+            """
+            namespace Demo;
+
+            public interface IHas { int Value { get; set; } }
+            public struct S : IHas { public int Value { get; set; } }
+
+            public class Box
+            {
+                private S _s;
+
+                public int Touch()
+                {
+                    IHas v = _s;
+                    ((IHas)v).Value = 5;
+                    return v.Value;
+                }
+            }
+            """
+        },
+        {
+            "boxing-cast-suppressed",
+            """
+            namespace Demo;
+
+            public interface IHas { int Value { get; set; } }
+            public struct S : IHas { public int Value { get; set; } }
+
+            public class Box
+            {
+                private S _s;
+
+                public int Touch()
+                {
+                    IHas v = _s;
+                    ((IHas)v!).Value = 5;
+                    return v.Value;
+                }
+            }
+            """
+        },
+        {
+            "boxing-double-cast",
+            """
+            namespace Demo;
+
+            public interface IHas { int Value { get; set; } }
+            public struct S : IHas { public int Value { get; set; } }
+
+            public class Box
+            {
+                private S _s;
+
+                public int Touch()
+                {
+                    IHas v = _s;
+                    ((IHas)(object)v!).Value = 5;
+                    return v.Value;
+                }
+            }
+            """
+        },
+        {
+            "boxing-as",
+            """
+            namespace Demo;
+
+            public interface IHas { int Value { get; set; } }
+            public struct S : IHas { public int Value { get; set; } }
+
+            public class Box
+            {
+                private S _s;
+
+                public int Touch()
+                {
+                    IHas v = _s;
+                    (v as IHas)!.Value = 5;
+                    return v.Value;
+                }
+            }
+            """
+        },
+        {
+            "array-cast",
+            """
+            namespace Demo;
+
+            public class Arrays
+            {
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    ((int[])arr)[0] = 1;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "array-as",
+            """
+            namespace Demo;
+
+            public class Arrays
+            {
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    (arr as int[])![0] = 1;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "operator-unary",
+            """
+            namespace Demo;
+
+            public class Gadget { }
+
+            public class Widget
+            {
+                public string Name = "";
+                public static Widget operator -(Widget w) => new Widget { Name = w.Name };
+                public static Widget operator +(Widget a, Widget b) => new Widget();
+                public static explicit operator Widget(Gadget g) => new Widget();
+            }
+
+            public class Factory
+            {
+                private Widget _w = new Widget();
+                private Gadget _g = new Gadget();
+                private Widget Fresh => new Widget();
+
+                public Widget Make()
+                {
+                    Widget w = -_w;
+                    w.Name = "x";
+                    return w;
+                }
+            }
+            """
+        },
+        {
+            "operator-binary",
+            """
+            namespace Demo;
+
+            public class Gadget { }
+
+            public class Widget
+            {
+                public string Name = "";
+                public static Widget operator -(Widget w) => new Widget { Name = w.Name };
+                public static Widget operator +(Widget a, Widget b) => new Widget();
+                public static explicit operator Widget(Gadget g) => new Widget();
+            }
+
+            public class Factory
+            {
+                private Widget _w = new Widget();
+                private Gadget _g = new Gadget();
+                private Widget Fresh => new Widget();
+
+                public Widget Make()
+                {
+                    Widget w = _w + _w;
+                    w.Name = "x";
+                    return w;
+                }
+            }
+            """
+        },
+        {
+            "operator-conversion",
+            """
+            namespace Demo;
+
+            public class Gadget { }
+
+            public class Widget
+            {
+                public string Name = "";
+                public static Widget operator -(Widget w) => new Widget { Name = w.Name };
+                public static Widget operator +(Widget a, Widget b) => new Widget();
+                public static explicit operator Widget(Gadget g) => new Widget();
+            }
+
+            public class Factory
+            {
+                private Widget _w = new Widget();
+                private Gadget _g = new Gadget();
+                private Widget Fresh => new Widget();
+
+                public Widget Make()
+                {
+                    Widget w = (Widget)_g;
+                    w.Name = "x";
+                    return w;
+                }
+            }
+            """
+        },
+        {
+            "property-getter",
+            """
+            namespace Demo;
+
+            public class Gadget { }
+
+            public class Widget
+            {
+                public string Name = "";
+                public static Widget operator -(Widget w) => new Widget { Name = w.Name };
+                public static Widget operator +(Widget a, Widget b) => new Widget();
+                public static explicit operator Widget(Gadget g) => new Widget();
+            }
+
+            public class Factory
+            {
+                private Widget _w = new Widget();
+                private Gadget _g = new Gadget();
+                private Widget Fresh => new Widget();
+
+                public Widget Make()
+                {
+                    Widget w = Fresh;
+                    w.Name = "x";
+                    return w;
                 }
             }
             """
@@ -304,7 +542,8 @@ public class InlineVariableAssignmentTargetReadTests
         await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
         var variableName = kind switch
         {
-            "boxing" or "boxing-suppressed" => "v",
+            _ when kind.StartsWith("boxing", StringComparison.Ordinal) => "v",
+            _ when kind.StartsWith("operator", StringComparison.Ordinal) || kind == "property-getter" => "w",
             "collection-expression" => "list",
             "with-expression" => "r",
             "target-typed-new" => "w",
@@ -456,6 +695,126 @@ public class InlineVariableAssignmentTargetReadTests
             }
         }
 
+        Assert.Equal(expected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PrefixUnaryInitializer_IsParenthesizedAsReceiver(bool allFiles)
+    {
+        // -_i.ToString() negates the string (CS0023) and -_w.Name negates the field (#3090 review).
+        // The extra indentation is the existing declaration-removal trivia behavior (one level per removed line).
+        const string source = """
+            namespace Demo;
+
+            public class Widget
+            {
+                public string Name = "";
+                public static Widget operator -(Widget w) => new Widget { Name = w.Name };
+            }
+
+            public class Reader
+            {
+                private int _i = 3;
+                private Widget _w = new Widget();
+
+                public string Read()
+                {
+                    int n = -_i;
+                    Widget w = -_w;
+                    return n.ToString() + w.Name;
+                }
+            }
+            """;
+        const string expected = """
+            namespace Demo;
+
+            public class Widget
+            {
+                public string Name = "";
+                public static Widget operator -(Widget w) => new Widget { Name = w.Name };
+            }
+
+            public class Reader
+            {
+                private int _i = 3;
+                private Widget _w = new Widget();
+
+                public string Read()
+                {
+                                    return (-_i).ToString() + (-_w).Name;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        if (allFiles)
+        {
+            var result = await new InlineVariableOperation(workspace.Context).ExecuteAsync(new InlineVariableParams { AllFiles = true });
+            Assert.True(result.Success, result.Error?.Message);
+        }
+        else
+        {
+            foreach (var name in new[] { "n", "w" })
+            {
+                var result = await new InlineVariableOperation(workspace.Context).ExecuteAsync(
+                    new InlineVariableParams { SourceFile = workspace.SourcePath, VariableName = name });
+                Assert.True(result.Success, result.Error?.Message);
+            }
+        }
+
+        Assert.Equal(expected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SharedReceiverUnderCast_IsStillInlined_FullOutput(bool allFiles)
+    {
+        // Walking through casts must not over-refuse: the field is the same object at every site.
+        const string source = """
+            namespace Demo;
+
+            public class Widget { public string Name = ""; }
+
+            public class Holder
+            {
+                private Widget _current = new Widget();
+
+                public object Rename()
+                {
+                    object target = _current;
+                    ((Widget)target).Name = "renamed";
+                    return target;
+                }
+            }
+            """;
+        const string expected = """
+            namespace Demo;
+
+            public class Widget { public string Name = ""; }
+
+            public class Holder
+            {
+                private Widget _current = new Widget();
+
+                public object Rename()
+                {
+                            ((Widget)_current).Name = "renamed";
+                    return _current;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        var result = await new InlineVariableOperation(workspace.Context).ExecuteAsync(allFiles
+            ? new InlineVariableParams { AllFiles = true }
+            : new InlineVariableParams { SourceFile = workspace.SourcePath, VariableName = "target" });
+
+        Assert.True(result.Success, result.Error?.Message);
         Assert.Equal(expected, await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Empty(await workspace.GetDiskErrorsAsync());
     }
