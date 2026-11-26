@@ -115,7 +115,7 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
         }
         else
         {
-            (newRoot, beforeSnippet, afterSnippet) = ConvertToAutoProperty(root, property);
+            (newRoot, beforeSnippet, afterSnippet) = ConvertToAutoProperty(root, property, semanticModel);
         }
 
         if (@params.Preview)
@@ -187,7 +187,10 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
             if (root == null)
                 continue;
 
-            var newRoot = ConvertAllProperties(root, direction, out var convertedCount);
+            var allFilesModel = direction == ConversionDirection.ToAutoProperty
+                ? await currentDocument.GetSemanticModelAsync(cancellationToken)
+                : null;
+            var newRoot = ConvertAllProperties(root, direction, out var convertedCount, allFilesModel);
             if (convertedCount == 0)
                 continue;
 
@@ -238,6 +241,8 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
             null, 0, 0);
     }
 
+    private static readonly SyntaxAnnotation InitializedBackingFieldAnnotation = new("ConvertProperty.InitializedBackingField");
+
     internal static string BuildAllFilesDescription(ConversionDirection direction, int convertedCount) =>
         convertedCount == 1
             ? $"Convert property to {direction}"
@@ -267,8 +272,21 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
     internal static SyntaxNode ConvertAllProperties(
         SyntaxNode root,
         ConversionDirection direction,
-        out int convertedCount)
+        out int convertedCount,
+        SemanticModel? semanticModel = null)
     {
+        if (direction == ConversionDirection.ToAutoProperty)
+        {
+            // Mark properties over an initialized backing field (any partial part) up front, while the nodes are
+            // still in the semantic model's tree; the rewriter then skips them (#3281).
+            var blocked = root.DescendantNodes()
+                .OfType<PropertyDeclarationSyntax>()
+                .Where(p => TryGetInitializedBackingField(p, semanticModel, out _))
+                .ToList();
+            if (blocked.Count > 0)
+                root = root.ReplaceNodes(blocked, (_, rewritten) => rewritten.WithAdditionalAnnotations(InitializedBackingFieldAnnotation));
+        }
+
         var rewriter = new ConvertPropertyRewriter(direction);
         var rewritten = rewriter.Visit(root);
         convertedCount = rewriter.ConvertedCount;
@@ -334,7 +352,7 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
     }
 
     private static (SyntaxNode newRoot, string before, string after) ConvertToAutoProperty(
-        SyntaxNode root, PropertyDeclarationSyntax property)
+        SyntaxNode root, PropertyDeclarationSyntax property, SemanticModel semanticModel)
     {
         if (!TryBuildAutoProperty(property, out var newProperty, out var before, out var after))
         {
@@ -344,7 +362,80 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
             throw new RefactoringException(ErrorCodes.CannotConvert, "Property is already an auto-property.");
         }
 
+        if (TryGetInitializedBackingField(property, semanticModel, out var fieldName))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CannotConvert,
+                $"Backing field '{fieldName}' has an initializer; the auto-property would start at its default value instead.");
+        }
+
         return (root.ReplaceNode(property, newProperty), before, after);
+    }
+
+    /// <summary>
+    /// True when the getter returns a field that has an initializer (<c>private int _retries = 3;</c> +
+    /// <c>get { return _retries; }</c>), looking past parentheses and <c>!</c>. The generated auto-property has no
+    /// initializer, so converting would silently reset the property to <c>default</c> (#3281). With a semantic model
+    /// the returned field is resolved (<c>_x</c>, <c>this._x</c>, <c>S._s</c>, inherited fields) and its own
+    /// declarator is checked wherever it is declared (any partial part, any file, a base class); without one
+    /// (or when the property is not in it) only simple / <c>this.</c> names in the property's own type declaration
+    /// are matched.
+    /// </summary>
+    internal static bool TryGetInitializedBackingField(
+        PropertyDeclarationSyntax property, SemanticModel? semanticModel, out string fieldName)
+    {
+        fieldName = string.Empty;
+        if (property.Parent is not TypeDeclarationSyntax type || property.AccessorList == null)
+            return false;
+
+        var getter = property.AccessorList.Accessors.FirstOrDefault(a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        var returned = getter?.ExpressionBody?.Expression
+            ?? (getter?.Body?.Statements is [ReturnStatementSyntax { Expression: { } expression }] ? expression : null);
+        // Look past parentheses and the null-forgiving operator: (_p), _n!, (S._s)!.
+        while (returned is ParenthesizedExpressionSyntax or PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression })
+        {
+            returned = returned is ParenthesizedExpressionSyntax parenthesized
+                ? parenthesized.Expression
+                : ((PostfixUnaryExpressionSyntax)returned).Operand;
+        }
+
+        if (returned == null)
+            return false;
+
+        // Semantic path: resolve the returned field (instance, this., static Type._s, inherited) and check its own
+        // declarator, wherever it is declared (another partial part, another file, a base class).
+        if (semanticModel != null && property.SyntaxTree == semanticModel.SyntaxTree)
+        {
+            if (semanticModel.GetSymbolInfo(returned).Symbol is not IFieldSymbol field)
+                return false;
+
+            var hasInitializer = field.OriginalDefinition.DeclaringSyntaxReferences
+                .Select(r => r.GetSyntax())
+                .OfType<VariableDeclaratorSyntax>()
+                .Any(v => v.Initializer != null);
+            if (hasInitializer)
+                fieldName = field.Name;
+            return hasInitializer;
+        }
+
+        // Syntactic fallback (no semantic model): a simple or this.-qualified name declared in this type declaration.
+        var name = returned switch
+        {
+            IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+            MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax, Name: IdentifierNameSyntax member } =>
+                member.Identifier.ValueText,
+            _ => null
+        };
+        if (name == null)
+            return false;
+
+        var initialized = type.Members
+            .OfType<FieldDeclarationSyntax>()
+            .SelectMany(f => f.Declaration.Variables)
+            .Any(v => v.Identifier.ValueText == name && v.Initializer != null);
+        if (initialized)
+            fieldName = name;
+        return initialized;
     }
 
     /// <summary>
@@ -579,6 +670,7 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
                     }
 
                     if (_direction == ConversionDirection.ToAutoProperty &&
+                        !property.HasAnnotation(InitializedBackingFieldAnnotation) &&
                         TryBuildAutoProperty(property, out var autoProperty, out _, out _))
                     {
                         newMembers.Add(autoProperty);

@@ -206,6 +206,17 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
             interfaces.Add(CreateEntry(iface));
         }
 
+        // SymbolFinder.FindDerivedClassesAsync makes no ordering promise (the order changes from run to
+        // run), so sort DerivedTypes deterministically before maxResults keeps the first N (#3042):
+        // source entries by file path (ordinal), then line, then fully qualified name; entries without
+        // a source location last, by fully qualified name.
+        derivedTypes = derivedTypes
+            .OrderBy(entry => entry.File == null)
+            .ThenBy(entry => entry.File, StringComparer.Ordinal)
+            .ThenBy(entry => entry.Line ?? 0)
+            .ThenBy(entry => entry.FullyQualifiedName, StringComparer.Ordinal)
+            .ToList();
+
         var totalCount = derivedTypes.Count;
         IReadOnlyList<TypeHierarchyEntry> returnedDerived = derivedTypes;
         if (@params.MaxResults.HasValue && derivedTypes.Count > @params.MaxResults.Value)
