@@ -160,7 +160,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                         File = lineSpan.Path,
                         Line = lineSpan.StartLinePosition.Line + 1,
                         Column = lineSpan.StartLinePosition.Character + 1,
-                        ContainerName = symbol.ContainingType?.Name ?? symbol.ContainingNamespace?.ToDisplayString()
+                        ContainerName = GetContainerName(symbol)
                     });
                 }
             }
@@ -190,5 +190,20 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             Contracts.Enums.SymbolKind.Namespace => SymbolFilter.Namespace,
             _ => SymbolFilter.Member
         };
+    }
+
+    /// <summary>
+    /// The containing type's name, or the containing namespace when there is no containing type.
+    /// A member of a C# 14 <c>extension(...)</c> block is contained by the compiler's nameless
+    /// extension grouping type (Name ""), so the declaring static class is reported instead; an empty
+    /// name used to be returned for every extension-block member (#3047).
+    /// </summary>
+    private static string? GetContainerName(ISymbol symbol)
+    {
+        var containingType = symbol.ContainingType;
+        while (containingType is { Name.Length: 0, ContainingType: not null })
+            containingType = containingType.ContainingType;
+
+        return containingType?.Name ?? symbol.ContainingNamespace?.ToDisplayString();
     }
 }

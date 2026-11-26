@@ -126,7 +126,7 @@ catch (Exception ex)
     Console.Error.WriteLine($"Error: {ex.Message}");
     if (parsed.Verbose)
         Console.Error.WriteLine(ex.ToString());
-    return IsEnvironmentError(ex) ? ExitEnvironmentError : ExitToolError;
+    return ExitCodeClassifier.IsEnvironmentError(ex) ? ExitEnvironmentError : ExitToolError;
 }
 
 // ── Helper methods ───────────────────────────────────────────────
@@ -149,17 +149,6 @@ int GetExitCode(object result)
         return success ? ExitSuccess : ExitToolError;
     }
     return ExitSuccess;
-}
-
-bool IsEnvironmentError(Exception ex)
-{
-    // Check exception types first for reliable detection
-    if (ex is FileNotFoundException or DirectoryNotFoundException)
-        return true;
-
-    // Fallback to message matching for MSBuild/SDK loading failures
-    return ex.Message.Contains("MSBuild", StringComparison.OrdinalIgnoreCase) ||
-           ex.Message.Contains("SDK", StringComparison.OrdinalIgnoreCase);
 }
 
 async Task<DiagnoseResult> ExecuteDiagnoseAsync(
