@@ -158,7 +158,6 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
             if (!filtered)
             {
                 totalCount++;
-                if (implementations.Count >= maxResults) continue;
 
                 location = impl.Locations.FirstOrDefault(l => l.IsInSource);
                 if (location == null) continue;
@@ -177,7 +176,6 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
                 if (location == null) continue;
 
                 totalCount++;
-                if (implementations.Count >= maxResults) continue;
             }
 
             var lineSpan = location.GetLineSpan();
@@ -192,13 +190,24 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
             });
         }
 
+        // SymbolFinder.FindImplementationsAsync makes no ordering promise (the order changes from run
+        // to run), so sort deterministically before maxResults keeps the first N (#3041): file path
+        // (ordinal), then line, then column, then fully qualified name.
+        var returned = implementations
+            .OrderBy(i => i.File, StringComparer.Ordinal)
+            .ThenBy(i => i.Line)
+            .ThenBy(i => i.Column)
+            .ThenBy(i => i.FullyQualifiedName, StringComparer.Ordinal)
+            .Take(maxResults)
+            .ToList();
+
         var result = new FindImplementationsResult
         {
             SymbolName = symbol.Name,
             FullyQualifiedName = symbol.ToDisplayString(),
-            Implementations = implementations,
+            Implementations = returned,
             TotalCount = totalCount,
-            Truncated = totalCount > implementations.Count
+            Truncated = totalCount > returned.Count
         };
 
         return QueryResult<FindImplementationsResult>.Succeeded(operationId, result);
