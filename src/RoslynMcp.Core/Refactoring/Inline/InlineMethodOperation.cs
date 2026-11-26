@@ -1519,6 +1519,12 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 return SyntaxFactory.ParenthesizedExpression(expression);
             }
 
+            // A bare ?: in an interpolation hole ends at its ':', which starts the format clause (#3127).
+            if (parent is InterpolationSyntax && expression is ConditionalExpressionSyntax)
+            {
+                return SyntaxFactory.ParenthesizedExpression(expression);
+            }
+
             return expression;
         }
     }
@@ -1541,8 +1547,11 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 or ConditionalExpressionSyntax or PrefixUnaryExpressionSyntax
                 or ElementAccessExpressionSyntax or AssignmentExpressionSyntax or AwaitExpressionSyntax;
 
-            if (needsParens && replacement is BinaryExpressionSyntax or ConditionalExpressionSyntax
-                or AssignmentExpressionSyntax or PrefixUnaryExpressionSyntax)
+            // A ?: argument pasted into an interpolation hole ({s}) needs parentheses too (#3127).
+            var conditionalInHole = node.Parent is InterpolationSyntax && replacement is ConditionalExpressionSyntax;
+
+            if (conditionalInHole || (needsParens && replacement is BinaryExpressionSyntax or ConditionalExpressionSyntax
+                or AssignmentExpressionSyntax or PrefixUnaryExpressionSyntax))
             {
                 return SyntaxFactory.ParenthesizedExpression(replacement.WithoutTrivia())
                     .WithTriviaFrom(node);
