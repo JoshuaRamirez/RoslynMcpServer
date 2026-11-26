@@ -770,6 +770,17 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         if (type == null || !IsCompatibleReceiverType(type, requiredType))
             return false;
 
+        // LookupSymbols judges the property's own accessibility, not its getter's: a property with a
+        // private / otherwise unreachable get (public Calc Engine { private get; set; } in a base class)
+        // cannot be read here (CS0271), and an indexer is not a plain receiver (#3058).
+        if (symbol is IPropertySymbol property
+            && (property.IsIndexer
+                || property.GetMethod == null
+                || !model.IsAccessible(callSite.SpanStart, property.GetMethod)))
+        {
+            return false;
+        }
+
         if (symbol is ILocalSymbol local
             && !IsDefinitelyAssignedAt(local, callSite, model))
         {

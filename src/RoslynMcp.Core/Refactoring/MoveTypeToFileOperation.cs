@@ -101,7 +101,11 @@ public sealed class MoveTypeToFileOperation
             // If preview mode, return without applying
             if (@params.Preview)
             {
-                return CreatePreviewResult(operationId, changeInfo, resolution);
+                // Reuse the allFiles helper so the target entry names targetFile, not the moved
+                // type's source tree path (which listed sourceFile twice) (#3194).
+                return RefactoringResult.PreviewResult(
+                    operationId,
+                    CreatePendingChanges(changeInfo, resolution, @params.TargetFile!));
             }
 
             // Commit changes
@@ -725,36 +729,6 @@ public sealed class MoveTypeToFileOperation
 
     private static Contracts.Enums.SymbolKind MapSymbolKind(INamedTypeSymbol symbol) =>
         NamedTypeSymbolKindHelpers.Map(symbol);
-
-    private RefactoringResult CreatePreviewResult(
-        Guid operationId,
-        ChangeInfo changeInfo,
-        SymbolResolutionResult resolution)
-    {
-        var pendingChanges = new List<PendingChange>();
-
-        // Source file change
-        pendingChanges.Add(new PendingChange
-        {
-            File = resolution.Document.FilePath!,
-            ChangeType = changeInfo.SourceFileEmptied ? ChangeKind.Delete : ChangeKind.Modify,
-            Description = changeInfo.SourceFileEmptied
-                ? $"Delete file (emptied after removing {resolution.Symbol.Name})"
-                : $"Remove {resolution.Symbol.Name} declaration"
-        });
-
-        // Target file change
-        pendingChanges.Add(new PendingChange
-        {
-            File = changeInfo.TypeNode.SyntaxTree.FilePath,
-            ChangeType = changeInfo.TargetFileCreated ? ChangeKind.Create : ChangeKind.Modify,
-            Description = changeInfo.TargetFileCreated
-                ? $"Create file with {resolution.Symbol.Name}"
-                : $"Add {resolution.Symbol.Name} declaration"
-        });
-
-        return RefactoringResult.PreviewResult(operationId, pendingChanges);
-    }
 
     private sealed class ChangeInfo
     {

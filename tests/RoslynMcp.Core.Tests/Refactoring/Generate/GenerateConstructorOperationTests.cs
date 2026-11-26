@@ -6190,7 +6190,7 @@ public class GenerateConstructorOperationTests
     }
 
     [SkippableFact]
-    public async Task GenerateConstructor_StructLangVersion10_CopyConstructor_ChainsThisAndCompiles()
+    public async Task GenerateConstructor_StructLangVersion10_CopyConstructor_CopiesGetOnlyAutoPropertyAndCompiles()
     {
         const string source = """
             public struct Point
@@ -6215,9 +6215,9 @@ public class GenerateConstructorOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var ctor = ExtractConstructor(updated, "Point");
         Assert.Contains("Point(Point other)", ctor, StringComparison.Ordinal);
-        Assert.Contains(": this()", ctor, StringComparison.Ordinal);
         Assert.Contains("this._x = other._x", ctor, StringComparison.Ordinal);
-        Assert.DoesNotContain("Id =", ctor, StringComparison.Ordinal);
+        // The get-only auto-property is copied too (#3170), so every field is assigned.
+        Assert.Contains("Id = other.Id", ctor, StringComparison.Ordinal);
         AssertGeneratedSourceCompiles(updated, LanguageVersion.CSharp10);
     }
 

@@ -279,8 +279,10 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
                 continue;
             }
 
+            // Ambiguity is about the destination name: Result + Result<T>, or two partial parts of one
+            // type, all map to Result.cs (#3112).
             var types = FindTopLevelTypes(root);
-            if (types.Count != 1)
+            if (types.Select(t => t.Name).Distinct(StringComparer.Ordinal).Count() != 1)
             {
                 skippedSources.Add(sourceFile);
                 continue;
@@ -527,7 +529,8 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
                 $"Multiple types found at line {@params.Line}. Provide column or typeName.");
         }
 
-        if (candidates.Count == 1)
+        // Same-named declarations (Result + Result<T>, partial parts) share one destination name (#3112).
+        if (candidates.Select(t => t.Name).Distinct(StringComparer.Ordinal).Count() == 1)
             return candidates[0];
 
         throw new RefactoringException(
