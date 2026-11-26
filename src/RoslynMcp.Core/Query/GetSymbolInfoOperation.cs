@@ -1,3 +1,6 @@
+using System.Text;
+using System.Xml;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -347,19 +350,73 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         var xml = symbol.GetDocumentationCommentXml();
         if (string.IsNullOrWhiteSpace(xml)) return null;
 
-        // Extract the <summary> content
-        var startTag = "<summary>";
-        var endTag = "</summary>";
-        var startIndex = xml.IndexOf(startTag, StringComparison.Ordinal);
-        var endIndex = xml.IndexOf(endTag, StringComparison.Ordinal);
-
-        if (startIndex < 0 || endIndex < 0) return null;
-
-        startIndex += startTag.Length;
-        var summary = xml[startIndex..endIndex].Trim();
+        // Render the <summary> element as text instead of slicing raw XML: inner tags
+        // (<paramref/>, <see cref/>, <c>) leaked as markup, crefs kept their T:/M: doc-ID
+        // prefix, and entities such as &lt; stayed encoded (#3091).
+        string summary;
+        try
+        {
+            // PreserveWhitespace keeps the space between adjacent inline elements (<c>x</c> <c>y</c>).
+            var element = XDocument.Parse(xml, LoadOptions.PreserveWhitespace).Descendants("summary").FirstOrDefault();
+            if (element == null) return null;
+            var builder = new StringBuilder();
+            RenderDocumentationNodes(element.Nodes(), builder);
+            summary = builder.ToString();
+        }
+        catch (XmlException)
+        {
+            return null;
+        }
 
         // Clean up whitespace
         summary = string.Join(" ", summary.Split(default(char[]), StringSplitOptions.RemoveEmptyEntries));
         return string.IsNullOrWhiteSpace(summary) ? null : summary;
     }
+
+    private static void RenderDocumentationNodes(IEnumerable<XNode> nodes, StringBuilder builder)
+    {
+        foreach (var node in nodes)
+        {
+            switch (node)
+            {
+                case XText text:
+                    builder.Append(text.Value);
+                    break;
+                case XElement element:
+                    RenderDocumentationElement(element, builder);
+                    break;
+            }
+        }
+    }
+
+    private static void RenderDocumentationElement(XElement element, StringBuilder builder)
+    {
+        switch (element.Name.LocalName)
+        {
+            case "see" or "seealso" when !element.Nodes().Any():
+                var reference = (string?)element.Attribute("cref") ?? (string?)element.Attribute("langword") ?? (string?)element.Attribute("href");
+                if (reference != null)
+                    builder.Append(StripDocumentationIdPrefix(reference));
+                break;
+            case "paramref" or "typeparamref":
+                builder.Append((string?)element.Attribute("name"));
+                break;
+            case "para" or "br":
+                builder.Append(' ');
+                RenderDocumentationNodes(element.Nodes(), builder);
+                builder.Append(' ');
+                break;
+            default:
+                RenderDocumentationNodes(element.Nodes(), builder);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Drops the compiler's doc-ID kind prefix (<c>T:</c>, <c>M:</c>, …) from a cref.
+    /// </summary>
+    private static string StripDocumentationIdPrefix(string reference) =>
+        reference.Length > 2 && reference[1] == ':' && (char.IsUpper(reference[0]) || reference[0] == '!')
+            ? reference[2..]
+            : reference;
 }

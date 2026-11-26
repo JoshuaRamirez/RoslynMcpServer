@@ -64,6 +64,14 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
                 "Project or solution path is required.");
         }
 
+        // Report a relative path as such; it used to get the extension message even for a .csproj (#3061).
+        if (!PathResolver.IsAbsolutePath(projectOrSolutionPath))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSourcePath,
+                $"Project or solution path must be an absolute path: {projectOrSolutionPath}");
+        }
+
         if (!PathResolver.IsValidSolutionOrProjectPath(projectOrSolutionPath))
         {
             throw new RefactoringException(
