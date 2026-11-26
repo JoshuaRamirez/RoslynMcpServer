@@ -42,6 +42,49 @@ public class MoveTypeQualifiedNameTests
         }
         """;
 
+    private const string NestedShippingOnly = """
+        namespace Co.Shipping
+        {
+            public class Widget
+            {
+                public string Kind => "co-shipping";
+            }
+        }
+        """;
+
+    private const string RootAndNestedShipping = """
+        namespace Co.Shipping
+        {
+            public class Widget
+            {
+                public string Kind => "co-shipping";
+            }
+        }
+
+        namespace Shipping
+        {
+            public class Widget
+            {
+                public string Kind => "shipping";
+            }
+        }
+        """;
+
+    private const string GlobalNamespaceWidget = """
+        public class Widget
+        {
+            public string Kind => "global";
+        }
+
+        namespace Billing
+        {
+            public class Widget
+            {
+                public string Kind => "billing";
+            }
+        }
+        """;
+
     [SkippableFact]
     public async Task MoveTypeToFile_QualifiedName_PicksThatNamespacesType()
     {
@@ -116,6 +159,111 @@ public class MoveTypeQualifiedNameTests
 
         Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
         Assert.Equal(OneWidget, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_GlobalQualifiedName_DoesNotMatchNestedNamespace()
+    {
+        // Only Co.Shipping.Widget exists: global::Shipping.Widget names a different (missing) type,
+        // so it must not fall back to a suffix match and move Co.Shipping.Widget.
+        await using var workspace = await TempWorkspace.CreateAsync(NestedShippingOnly, "latest");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            new MoveTypeToNamespaceOperation(workspace.Context).ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "global::Shipping.Widget",
+                TargetNamespace = "Receiving"
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Equal(NestedShippingOnly, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_GlobalQualifiedName_DoesNotMatchNestedNamespace()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedShippingOnly, "latest");
+        var targetFile = Path.Combine(workspace.DirectoryPath, "Widget.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            new MoveTypeToFileOperation(workspace.Context).ExecuteAsync(new MoveTypeToFileParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "global::Shipping.Widget",
+                TargetFile = targetFile,
+                CreateTargetFile = true
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.False(File.Exists(targetFile));
+        Assert.Equal(NestedShippingOnly, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_GlobalQualifiedName_PicksRootType_WhenNestedNamespaceAlsoMatches()
+    {
+        // Both Co.Shipping.Widget and Shipping.Widget exist: global::Shipping.Widget is exactly the
+        // root one, so it is not ambiguous.
+        await using var workspace = await TempWorkspace.CreateAsync(RootAndNestedShipping, "latest");
+
+        var result = await new MoveTypeToNamespaceOperation(workspace.Context).ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "global::Shipping.Widget",
+            TargetNamespace = "Receiving"
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var receiving = text.IndexOf("Receiving", StringComparison.Ordinal);
+        Assert.True(receiving >= 0, text);
+        Assert.True(text.IndexOf("\"shipping\"", StringComparison.Ordinal) > receiving, text);
+        Assert.True(text.IndexOf("\"co-shipping\"", StringComparison.Ordinal) < receiving, text);
+        Assert.Contains("namespace Co.Shipping", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_GlobalQualifiedName_PicksRootType_WhenNestedNamespaceAlsoMatches()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(RootAndNestedShipping, "latest");
+        var targetFile = Path.Combine(workspace.DirectoryPath, "Widget.cs");
+
+        var result = await new MoveTypeToFileOperation(workspace.Context).ExecuteAsync(new MoveTypeToFileParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "global::Shipping.Widget",
+            TargetFile = targetFile,
+            CreateTargetFile = true
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var moved = await File.ReadAllTextAsync(targetFile);
+        Assert.Contains("\"shipping\"", moved, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"co-shipping\"", moved, StringComparison.Ordinal);
+        Assert.Contains("\"co-shipping\"", await File.ReadAllTextAsync(workspace.SourcePath), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_GlobalSimpleName_PicksGlobalNamespaceType()
+    {
+        // global::Widget is the type declared in the global namespace, not Billing.Widget.
+        await using var workspace = await TempWorkspace.CreateAsync(GlobalNamespaceWidget, "latest");
+        var targetFile = Path.Combine(workspace.DirectoryPath, "Widget.cs");
+
+        var result = await new MoveTypeToFileOperation(workspace.Context).ExecuteAsync(new MoveTypeToFileParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "global::Widget",
+            TargetFile = targetFile,
+            CreateTargetFile = true
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var moved = await File.ReadAllTextAsync(targetFile);
+        Assert.Contains("\"global\"", moved, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"billing\"", moved, StringComparison.Ordinal);
+        Assert.Contains("\"billing\"", await File.ReadAllTextAsync(workspace.SourcePath), StringComparison.Ordinal);
     }
 
     private sealed class TempWorkspace : IAsyncDisposable
