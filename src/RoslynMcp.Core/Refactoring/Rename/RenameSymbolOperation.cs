@@ -62,6 +62,15 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
             throw new RefactoringException(ErrorCodes.ReservedKeyword, $"'{@params.NewName}' is a C# reserved keyword.");
         }
 
+        // A symbol named '_' captures every discard in its scope ('_ = Log(x)', 'out _'), silently turning them
+        // into writes to the renamed symbol, and the renamer sees no conflict because discards are not symbols (#3296).
+        if (@params.NewName is "_" or "@_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidNewName,
+                "'_' cannot be used as newName: a symbol named '_' would capture existing discards ('_ = ...', 'out _') in its scope.");
+        }
+
         if (@params.SymbolName == @params.NewName)
             throw new RefactoringException(ErrorCodes.SameLocation, "New name is the same as current name.");
 
