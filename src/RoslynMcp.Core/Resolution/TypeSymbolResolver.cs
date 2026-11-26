@@ -124,11 +124,26 @@ public sealed class TypeSymbolResolver
             .Where(t => t.Parent is CompilationUnitSyntax or BaseNamespaceDeclarationSyntax) // Top-level only
             .ToList();
 
-        // Filter by name
-        var simpleName = symbolName.Contains('.') ? symbolName.Split('.').Last() : symbolName;
+        // Filter by name. A leading "global::" anchors the name at the global namespace, so it must
+        // equal the candidate's full namespace-qualified name rather than end with it (#3273).
+        const string globalPrefix = "global::";
+        var isGlobalQualified = symbolName.StartsWith(globalPrefix, StringComparison.Ordinal);
+        var qualifiedName = isGlobalQualified ? symbolName[globalPrefix.Length..] : symbolName;
+        var simpleName = qualifiedName.Contains('.') ? qualifiedName.Split('.').Last() : qualifiedName;
         var matchingDeclarations = typeDeclarations
             .Where(t => t.Identifier.Text == simpleName)
             .ToList();
+
+        // A qualified symbolName ("Shipping.Widget") must match the candidate's namespace too, either the
+        // full name or a trailing run of its segments; the qualifier used to be dropped, so a wrong one
+        // moved another type and the right one could not disambiguate (#3273). With "global::" only the
+        // exact full name matches, so "global::Shipping.Widget" never resolves to Co.Shipping.Widget.
+        if (isGlobalQualified || qualifiedName.Contains('.'))
+        {
+            matchingDeclarations = matchingDeclarations
+                .Where(t => MatchesQualifiedName(t, qualifiedName, exact: isGlobalQualified))
+                .ToList();
+        }
 
         if (matchingDeclarations.Count == 0)
         {
@@ -220,6 +235,22 @@ public sealed class TypeSymbolResolver
             Declaration = declaration,
             Document = document
         };
+    }
+
+    private static bool MatchesQualifiedName(TypeDeclarationSyntax type, string qualifiedName, bool exact)
+    {
+        var segments = type.Ancestors()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Reverse()
+            .Select(ns => ns.Name.ToString())
+            .Append(type.Identifier.Text);
+        var fullName = string.Join(".", segments);
+        if (string.Equals(fullName, qualifiedName, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return !exact && fullName.EndsWith("." + qualifiedName, StringComparison.Ordinal);
     }
 
     /// <summary>

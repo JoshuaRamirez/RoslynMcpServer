@@ -1517,6 +1517,18 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                 : !c.Modifiers.Any(SyntaxKind.StaticKeyword) && !ChainsToThis(c))
             .ToList();
 
+        // A synthesized parameterless struct constructor needs C# 10 and never runs for default(T), array
+        // elements or new T[n], so default instances would see the field unset; refuse instead (#3270).
+        if (constructors.Count == 0 && !@params.IsStatic &&
+            (typeDeclaration is StructDeclarationSyntax ||
+             typeDeclaration is RecordDeclarationSyntax record && record.ClassOrStructKeyword.IsKind(SyntaxKind.StructKeyword)))
+        {
+            throw new RefactoringException(
+                ErrorCodes.ConstructorNotFound,
+                $"Cannot initialize in a constructor: struct '{typeDeclaration.Identifier.Text}' has no instance constructor, " +
+                "and a synthesized parameterless constructor would not run for default instances or array elements.");
+        }
+
         if (constructors.Count == 0)
         {
             var created = CreateConstructor(typeDeclaration.Identifier.Text, @params.IsStatic, assignment);
