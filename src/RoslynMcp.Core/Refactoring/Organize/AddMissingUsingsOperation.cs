@@ -178,7 +178,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         var newUsingDirectives = newUsings
             .Select(n => SyntaxFactory.UsingDirective(
                     SyntaxFactory.ParseName(n).WithLeadingTrivia(SyntaxFactory.Space))
-                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed))
+                .WithTrailingTrivia(DetectEndOfLine(root)))
             .ToList();
 
         var allUsings = root.Usings.AddRange(newUsingDirectives);
@@ -429,7 +429,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         var newUsingDirectives = newUsings
             .Select(n => SyntaxFactory.UsingDirective(
                     SyntaxFactory.ParseName(n).WithLeadingTrivia(SyntaxFactory.Space))
-                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed))
+                .WithTrailingTrivia(DetectEndOfLine(root)))
             .ToList();
 
         var allUsingsForFile = root.Usings.AddRange(newUsingDirectives);
@@ -579,5 +579,21 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         };
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
+    }
+
+    /// <summary>
+    /// The end-of-line trivia to put after each added using: the file's own line ending (its first
+    /// end-of-line trivia), so an LF-only file does not gain CRLF lines and end up with mixed line
+    /// endings (#3087). CRLF only when the file has no line break at all.
+    /// </summary>
+    private static SyntaxTrivia DetectEndOfLine(SyntaxNode root)
+    {
+        foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
+        {
+            if (trivia.IsKind(SyntaxKind.EndOfLineTrivia))
+                return SyntaxFactory.EndOfLine(trivia.ToString());
+        }
+
+        return SyntaxFactory.CarriageReturnLineFeed;
     }
 }
