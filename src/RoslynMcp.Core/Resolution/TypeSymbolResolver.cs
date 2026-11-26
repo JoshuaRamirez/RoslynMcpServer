@@ -130,6 +130,19 @@ public sealed class TypeSymbolResolver
             .Where(t => t.Identifier.Text == simpleName)
             .ToList();
 
+        // A qualified symbolName ("Shipping.Widget") must match the candidate's namespace too, either the
+        // full name or a trailing run of its segments; the qualifier used to be dropped, so a wrong one
+        // moved another type and the right one could not disambiguate (#3273).
+        if (symbolName.Contains('.'))
+        {
+            var qualifiedName = symbolName.StartsWith("global::", StringComparison.Ordinal)
+                ? symbolName["global::".Length..]
+                : symbolName;
+            matchingDeclarations = matchingDeclarations
+                .Where(t => MatchesQualifiedName(t, qualifiedName))
+                .ToList();
+        }
+
         if (matchingDeclarations.Count == 0)
         {
             throw new RefactoringException(
@@ -220,6 +233,17 @@ public sealed class TypeSymbolResolver
             Declaration = declaration,
             Document = document
         };
+    }
+
+    private static bool MatchesQualifiedName(TypeDeclarationSyntax type, string qualifiedName)
+    {
+        var segments = type.Ancestors()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Reverse()
+            .Select(ns => ns.Name.ToString())
+            .Append(type.Identifier.Text);
+        var fullName = string.Join(".", segments);
+        return fullName == qualifiedName || fullName.EndsWith("." + qualifiedName, StringComparison.Ordinal);
     }
 
     /// <summary>
