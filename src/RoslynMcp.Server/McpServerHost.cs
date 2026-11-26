@@ -21,8 +21,18 @@ public sealed class McpServerHost : IAsyncDisposable
     /// </summary>
     /// <param name="workspaceProvider">Workspace provider for refactoring operations.</param>
     public McpServerHost(IWorkspaceProvider workspaceProvider)
+        : this(workspaceProvider, new StdioTransport())
     {
-        _transport = new StdioTransport();
+    }
+
+    /// <summary>
+    /// Creates a new MCP server host over a custom transport (for testing).
+    /// </summary>
+    /// <param name="workspaceProvider">Workspace provider for refactoring operations.</param>
+    /// <param name="transport">Transport the message loop reads from and writes to.</param>
+    public McpServerHost(IWorkspaceProvider workspaceProvider, StdioTransport transport)
+    {
+        _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _toolRegistry = new ToolRegistry();
         _sessionManager = new SolutionSessionManager(workspaceProvider);
 
@@ -188,6 +198,8 @@ public sealed class McpServerHost : IAsyncDisposable
             "tools/list" => HandleToolsList(request),
             "tools/call" => await HandleToolCallAsync(request, cancellationToken),
             "shutdown" => HandleShutdown(request),
+            // MCP base protocol: the receiver of a ping MUST answer promptly with an empty result.
+            "ping" => McpResponse.Success(request.Id, new { }),
             _ => McpResponse.Failure(request.Id, -32601, $"Method not found: {request.Method}")
         };
     }
