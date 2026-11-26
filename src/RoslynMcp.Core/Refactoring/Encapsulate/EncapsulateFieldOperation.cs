@@ -235,19 +235,6 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                 $"Cannot rewrite references to '{hit.Name}': a local, parameter or lambda parameter named '{hit.Name}' is already in scope at {Path.GetFileName(hit.FilePath)}:{hit.Line}, so the use would bind to it instead.");
         }
 
-        // If preview mode, return without applying
-        if (@params.Preview)
-        {
-            return CreatePreviewResult(
-                operationId,
-                @params,
-                fieldSymbol,
-                propertyName,
-                property,
-                externalReferences.Count,
-                fieldRenamed);
-        }
-
         var newSolution = await ApplyEncapsulateToSolutionAsync(
             document,
             root,
@@ -263,6 +250,23 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             fieldRenamed,
             @params.UpdateReferences,
             cancellationToken);
+
+        // If preview mode, return without applying. The snippets come from the source declaration and the
+        // computed result, so they show real modifiers and the renamed backing field (#3066).
+        if (@params.Preview)
+        {
+            return await CreatePreviewResultAsync(
+                operationId,
+                @params,
+                fieldDeclaration,
+                newSolution.GetDocument(document.Id),
+                fieldSymbol.ContainingType,
+                newFieldName,
+                propertyName,
+                externalReferences.Count,
+                fieldRenamed,
+                cancellationToken);
+        }
 
         var referenceReplacement = @params.UpdateReferences
             ? propertyName
@@ -1061,15 +1065,31 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             });
     }
 
-    private static RefactoringResult CreatePreviewResult(
+    private static async Task<RefactoringResult> CreatePreviewResultAsync(
         Guid operationId,
         EncapsulateFieldParams @params,
-        IFieldSymbol field,
+        FieldDeclarationSyntax fieldDeclaration,
+        Document? newDocument,
+        INamedTypeSymbol containingType,
+        string newFieldName,
         string propertyName,
-        PropertyDeclarationSyntax property,
         int externalRefCount,
-        bool fieldRenamed)
+        bool fieldRenamed,
+        CancellationToken cancellationToken)
     {
+        // Locate the rewritten field and new property through the containing type's symbol in the computed
+        // compilation (metadata name, so E vs E<T> and A.E vs B.E stay distinct), not by short type name,
+        // which could pick another same-named type's existing property (#3066 review).
+        var afterParts = new List<string>();
+        if (newDocument != null &&
+            await newDocument.GetSyntaxTreeAsync(cancellationToken) is { } newTree &&
+            await newDocument.Project.GetCompilationAsync(cancellationToken) is { } newCompilation &&
+            newCompilation.Assembly.GetTypeByMetadataName(GetMetadataName(containingType)) is { } newType)
+        {
+            afterParts.AddRange(DeclarationsInTree<IFieldSymbol, FieldDeclarationSyntax>(newType, newFieldName, newTree, cancellationToken));
+            afterParts.AddRange(DeclarationsInTree<IPropertySymbol, PropertyDeclarationSyntax>(newType, propertyName, newTree, cancellationToken));
+        }
+
         var pendingChanges = new List<PendingChange>
         {
             new()
@@ -1082,12 +1102,44 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                     @params.UpdateReferences,
                     externalRefCount,
                     fieldRenamed),
-                BeforeSnippet = $"{field.DeclaredAccessibility.ToString().ToLower()} {field.Type.ToDisplayString()} {@params.FieldName};",
-                AfterSnippet = $"private {field.Type.ToDisplayString()} {@params.FieldName};\n\n{property.NormalizeWhitespace()}"
+                BeforeSnippet = fieldDeclaration.ToString(),
+                AfterSnippet = string.Join("\n\n", afterParts)
             }
         };
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
+    }
+
+    private static IEnumerable<string> DeclarationsInTree<TSymbol, TSyntax>(
+        INamedTypeSymbol type,
+        string memberName,
+        SyntaxTree tree,
+        CancellationToken cancellationToken)
+        where TSymbol : ISymbol
+        where TSyntax : MemberDeclarationSyntax =>
+        type.GetMembers(memberName)
+            .OfType<TSymbol>()
+            .SelectMany(member => member.DeclaringSyntaxReferences)
+            .Where(reference => reference.SyntaxTree == tree)
+            .Select(reference => reference.GetSyntax(cancellationToken).FirstAncestorOrSelf<TSyntax>())
+            .OfType<TSyntax>()
+            .Distinct()
+            .OrderBy(declaration => declaration.SpanStart)
+            .Select(declaration => declaration.ToString());
+
+    /// <summary>
+    /// CLR metadata name (<c>Ns.Outer+Inner`1</c>) for <see cref="IAssemblySymbol.GetTypeByMetadataName"/>.
+    /// </summary>
+    private static string GetMetadataName(INamedTypeSymbol type)
+    {
+        if (type.ContainingType != null)
+            return GetMetadataName(type.ContainingType) + "+" + type.MetadataName;
+
+        var namespaces = new Stack<string>();
+        for (var ns = type.ContainingNamespace; ns is { IsGlobalNamespace: false }; ns = ns.ContainingNamespace)
+            namespaces.Push(ns.MetadataName);
+
+        return namespaces.Count == 0 ? type.MetadataName : string.Join(".", namespaces) + "." + type.MetadataName;
     }
 
     internal static string DescribeReferenceUpdates(

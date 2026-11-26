@@ -106,7 +106,13 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                 ? null
                 : namedType.BaseType?.ToDisplayString();
             interfaces = namedType.Interfaces.Select(i => i.ToDisplayString()).ToList();
+            // A C# 14 extension block is a nameless nested type (TypeKind.Extension) that
+            // CanBeReferencedByName drops; list its members in its place, so Shout / IsBlank inside
+            // extension(string tag) { … } are members of the static class like classic extensions (#3046).
             var memberSymbols = namedType.GetMembers()
+                .SelectMany(m => m is INamedTypeSymbol { TypeKind: TypeKind.Extension } extensionBlock
+                    ? extensionBlock.GetMembers()
+                    : [m])
                 .Where(m => !m.IsImplicitlyDeclared && m.CanBeReferencedByName)
                 .Where(memberFilter.Matches);
 
