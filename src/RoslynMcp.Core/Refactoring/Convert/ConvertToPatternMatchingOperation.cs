@@ -532,7 +532,10 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
             {
                 case ReturnStatementSyntax returnStmt:
                     return returnStmt.Expression;
-                case ExpressionStatementSyntax exprStmt when exprStmt.Expression is AssignmentExpressionSyntax assign:
+                // Only a plain '=' arm maps to lhs = <switch>; a compound arm (total += 5, name ??= "x")
+                // would lose its operator, turning each delta into the value (#3200).
+                case ExpressionStatementSyntax exprStmt when exprStmt.Expression is AssignmentExpressionSyntax assign &&
+                                                             assign.IsKind(SyntaxKind.SimpleAssignmentExpression):
                     return assign.Right;
                 case BreakStatementSyntax:
                     continue;
@@ -559,7 +562,8 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
         return body switch
         {
             ReturnStatementSyntax returnStmt => returnStmt.Expression,
-            ExpressionStatementSyntax exprStmt when exprStmt.Expression is AssignmentExpressionSyntax assign => assign.Right,
+            ExpressionStatementSyntax exprStmt when exprStmt.Expression is AssignmentExpressionSyntax assign &&
+                                                    assign.IsKind(SyntaxKind.SimpleAssignmentExpression) => assign.Right,
             _ => null
         };
     }
