@@ -72,6 +72,15 @@ if (tool.RequiresWorkspace && string.IsNullOrEmpty(parsed.SolutionPath))
     return ExitCliError;
 }
 
+// A non-boolean option with no value is a usage error, not the literal "true" (#3288)
+var missingValue = ArgsToJsonConverter.FindOptionMissingValue(parsed.ValuelessOptions, tool.ParamsType);
+if (missingValue is not null)
+{
+    Console.Error.WriteLine($"Option --{missingValue} requires a value.");
+    Console.Error.WriteLine($"Run 'roslyn-cli {parsed.ToolName} --help' to see its options.");
+    return ExitCliError;
+}
+
 // Set up cancellation
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>

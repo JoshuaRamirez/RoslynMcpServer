@@ -471,10 +471,21 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     private static ExpressionSyntax? ExtractExpression(StatementSyntax statement) => statement switch
     {
         ReturnStatementSyntax returnStmt => returnStmt.Expression,
+        // A deconstruction declaration (var (a, b) = pair; / (var c, var d) = pair;) is not allowed
+        // in an arrow body (CS8185) (#3188).
+        ExpressionStatementSyntax { Expression: AssignmentExpressionSyntax assignment }
+            when DeclaresDeconstructionVariables(assignment.Left) => null,
         ExpressionStatementSyntax exprStmt => exprStmt.Expression,
         ThrowStatementSyntax throwStmt => throwStmt.Expression != null
             ? SyntaxFactory.ThrowExpression(throwStmt.Expression)
             : null,
         _ => null
+    };
+
+    private static bool DeclaresDeconstructionVariables(ExpressionSyntax left) => left switch
+    {
+        DeclarationExpressionSyntax => true,
+        TupleExpressionSyntax tuple => tuple.Arguments.Any(a => DeclaresDeconstructionVariables(a.Expression)),
+        _ => false
     };
 }
