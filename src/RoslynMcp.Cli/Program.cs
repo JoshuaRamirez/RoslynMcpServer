@@ -81,6 +81,20 @@ if (missingValue is not null)
     return ExitCliError;
 }
 
+// Resolve a relative solution path and path-typed options against the working directory (#3061)
+parsed = new ParsedArgs
+{
+    SolutionPath = CliPathResolver.ResolvePath(parsed.SolutionPath),
+    ToolName = parsed.ToolName,
+    Options = parsed.Options,
+    ShowHelp = parsed.ShowHelp,
+    ShowToolHelp = parsed.ShowToolHelp,
+    Format = parsed.Format,
+    Verbose = parsed.Verbose,
+    ValuelessOptions = parsed.ValuelessOptions
+};
+CliPathResolver.ResolvePathOptions(parsed.Options, tool.ParamsType);
+
 // Set up cancellation
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
