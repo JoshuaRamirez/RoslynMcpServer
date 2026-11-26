@@ -45,9 +45,12 @@ public sealed class McpResponse
     public string JsonRpc { get; init; } = "2.0";
 
     /// <summary>
-    /// Request identifier matching the original request.
+    /// Request identifier matching the original request. Always serialized: JSON-RPC 2.0 requires
+    /// every response to carry <c>id</c>, and <c>"id": null</c> when the request id could not be
+    /// detected (parse error / invalid request), even though the transport omits other null members.
     /// </summary>
     [JsonPropertyName("id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public object? Id { get; init; }
 
     /// <summary>
