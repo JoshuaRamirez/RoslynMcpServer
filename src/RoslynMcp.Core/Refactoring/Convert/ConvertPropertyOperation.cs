@@ -344,7 +344,47 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
             throw new RefactoringException(ErrorCodes.CannotConvert, "Property is already an auto-property.");
         }
 
+        if (TryGetInitializedBackingField(property, out var fieldName))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CannotConvert,
+                $"Backing field '{fieldName}' has an initializer; the auto-property would start at its default value instead.");
+        }
+
         return (root.ReplaceNode(property, newProperty), before, after);
+    }
+
+    /// <summary>
+    /// True when the getter returns a field of the same type declaration that has an initializer
+    /// (<c>private int _retries = 3;</c> + <c>get { return _retries; }</c>). The generated auto-property has no
+    /// initializer, so converting would silently reset the property to <c>default</c> (#3281).
+    /// </summary>
+    internal static bool TryGetInitializedBackingField(PropertyDeclarationSyntax property, out string fieldName)
+    {
+        fieldName = string.Empty;
+        if (property.Parent is not TypeDeclarationSyntax type || property.AccessorList == null)
+            return false;
+
+        var getter = property.AccessorList.Accessors.FirstOrDefault(a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        var returned = getter?.ExpressionBody?.Expression
+            ?? (getter?.Body?.Statements is [ReturnStatementSyntax { Expression: { } expression }] ? expression : null);
+        var name = returned switch
+        {
+            IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+            MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax, Name: IdentifierNameSyntax member } =>
+                member.Identifier.ValueText,
+            _ => null
+        };
+        if (name == null)
+            return false;
+
+        var initialized = type.Members
+            .OfType<FieldDeclarationSyntax>()
+            .SelectMany(f => f.Declaration.Variables)
+            .Any(v => v.Identifier.ValueText == name && v.Initializer != null);
+        if (initialized)
+            fieldName = name;
+        return initialized;
     }
 
     /// <summary>
@@ -578,6 +618,7 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
                     }
 
                     if (_direction == ConversionDirection.ToAutoProperty &&
+                        !TryGetInitializedBackingField(property, out _) &&
                         TryBuildAutoProperty(property, out var autoProperty, out _, out _))
                     {
                         newMembers.Add(autoProperty);
