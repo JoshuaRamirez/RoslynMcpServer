@@ -116,6 +116,13 @@ public static class MetricsCalculator
                 _ => null
             };
 
+            // dynamic, anonymous types and function pointers are not named types the code depends on, and
+            // a data pointer couples to its pointed-at type (int* → int), matching Roslyn's metrics (#3101).
+            while (typeSymbol is IPointerTypeSymbol pointer)
+                typeSymbol = pointer.PointedAtType;
+            if (typeSymbol is { TypeKind: TypeKind.Dynamic or TypeKind.FunctionPointer } or INamedTypeSymbol { IsAnonymousType: true })
+                continue;
+
             if (typeSymbol != null &&
                 typeSymbol.SpecialType == SpecialType.None &&
                 !typeSymbol.ToDisplayString().StartsWith("System.") &&
