@@ -22,18 +22,30 @@ internal static class SymbolKindFilterParser
     /// <exception cref="RefactoringException">
     /// <see cref="ErrorCodes.InvalidSymbolKind"/> when the value is not a recognized symbol kind name.
     /// </exception>
-    public static Contracts.Enums.SymbolKind? Parse(string? kindFilter)
+    public static Contracts.Enums.SymbolKind? Parse(string? kindFilter) =>
+        ParseAllowed(kindFilter, System.Enum.GetValues<Contracts.Enums.SymbolKind>());
+
+    /// <summary>
+    /// Like <see cref="Parse"/>, but accepts (and lists in the error) only
+    /// <paramref name="allowedKinds"/>, for a tool that can never return the other kinds.
+    /// </summary>
+    /// <exception cref="RefactoringException">
+    /// <see cref="ErrorCodes.InvalidSymbolKind"/> when the value is not one of <paramref name="allowedKinds"/>.
+    /// </exception>
+    public static Contracts.Enums.SymbolKind? ParseAllowed(
+        string? kindFilter,
+        System.Collections.Generic.IReadOnlyCollection<Contracts.Enums.SymbolKind> allowedKinds)
     {
         if (string.IsNullOrWhiteSpace(kindFilter)) return null;
 
         var name = kindFilter.Trim();
-        foreach (var kind in System.Enum.GetValues<Contracts.Enums.SymbolKind>())
+        foreach (var kind in allowedKinds)
         {
             if (string.Equals(kind.ToString(), name, System.StringComparison.OrdinalIgnoreCase))
                 return kind;
         }
 
-        var validKinds = string.Join(", ", System.Enum.GetNames<Contracts.Enums.SymbolKind>());
+        var validKinds = string.Join(", ", allowedKinds);
         throw new RefactoringException(
             ErrorCodes.InvalidSymbolKind,
             $"Invalid kindFilter '{kindFilter}'. Valid values: {validKinds}");
