@@ -3114,6 +3114,58 @@ public class GetTypeHierarchyOperationTests
             .ThenBy(e => e.TypeName, StringComparer.Ordinal)
             .ToList();
 
+    // #3042: SymbolFinder.FindDerivedClassesAsync has no ordering promise, so DerivedTypes are sorted by
+    // file / line before maxResults keeps the first N.
+    private static Dictionary<string, string> EightDerivedSources()
+    {
+        var files = new Dictionary<string, string> { ["Shape.cs"] = "namespace Demo;\npublic abstract class Shape { public abstract double Area(); }\n" };
+        foreach (var name in new[] { "Hotel", "Delta", "Charlie", "Foxtrot", "Golf", "Echo", "Alpha", "Bravo" })
+            files[name + ".cs"] = $"namespace Demo;\npublic class {name} : Shape\n{{\n    public override double Area() => 1;\n}}\n";
+        return files;
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ReturnsDerivedTypesSortedByFileThenLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EightDerivedSources(), "Shape.cs");
+        var expected = new[] { "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel" };
+
+        for (var run = 0; run < 3; run++)
+        {
+            var result = await new GetTypeHierarchyOperation(workspace.Context).ExecuteAsync(new GetTypeHierarchyParams
+            {
+                SourceFile = workspace.PathOf("Shape.cs"),
+                SymbolName = "Shape",
+                Direction = "Descendants"
+            });
+
+            Assert.True(result.Success, result.Error?.Message);
+            Assert.Equal(expected, result.Data!.DerivedTypes.Select(t => t.TypeName));
+        }
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_MaxResults_ReturnsFirstDerivedTypesInSortedOrder()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EightDerivedSources(), "Shape.cs");
+
+        for (var run = 0; run < 3; run++)
+        {
+            var result = await new GetTypeHierarchyOperation(workspace.Context).ExecuteAsync(new GetTypeHierarchyParams
+            {
+                SourceFile = workspace.PathOf("Shape.cs"),
+                SymbolName = "Shape",
+                Direction = "Descendants",
+                MaxResults = 2
+            });
+
+            Assert.True(result.Success, result.Error?.Message);
+            Assert.Equal(new[] { "Alpha", "Bravo" }, result.Data!.DerivedTypes.Select(t => t.TypeName));
+            Assert.Equal(8, result.Data.TotalCount);
+            Assert.True(result.Data.Truncated);
+        }
+    }
+
     private static bool SamePath(string? a, string b) =>
         a != null && string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
 

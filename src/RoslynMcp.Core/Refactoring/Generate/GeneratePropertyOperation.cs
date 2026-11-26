@@ -184,6 +184,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         var propertyType = ResolvePropertyType(@params, backingField);
         var existingProperty = ResolvePropertyToReplace(typeSymbol, propertyName, @params.ReplaceExisting);
         ValidateAutoPropertyAccessors(typeSymbol, @params.InitOnly, hasBackingField: backingField != null);
+        ValidateInitOnlyLanguageVersion(typeDecl.SyntaxTree, @params.InitOnly);
 
         var visibility = string.IsNullOrWhiteSpace(@params.Visibility) ? "public" : @params.Visibility.Trim();
         var property = backingField != null
@@ -439,6 +440,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             propertyType = ResolvePropertyType(@params, backingField);
             existingProperty = ResolvePropertyToReplace(typeSymbol, propertyName, @params.ReplaceExisting);
             ValidateAutoPropertyAccessors(typeSymbol, @params.InitOnly, hasBackingField: backingField != null);
+            ValidateInitOnlyLanguageVersion(typeDeclaration.SyntaxTree, @params.InitOnly);
         }
         catch (RefactoringException)
         {
@@ -582,6 +584,25 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             throw new RefactoringException(
                 ErrorCodes.InvalidSymbolKind,
                 $"Cannot generate a settable auto-property on readonly struct '{typeSymbol.Name}'. Use initOnly.");
+        }
+    }
+
+    /// <summary>
+    /// initOnly emits a C# 9 <c>init</c> accessor (<c>{ get; init; }</c> / <c>init => _f = value</c>),
+    /// which is CS8370 on earlier language versions (e.g. LangVersion 7.3, the netstandard2.0
+    /// default), so it is refused there instead of reporting success on code that no longer
+    /// compiles (#2878).
+    /// </summary>
+    internal static void ValidateInitOnlyLanguageVersion(SyntaxTree tree, bool initOnly)
+    {
+        if (!initOnly || tree.Options is not CSharpParseOptions parseOptions)
+            return;
+
+        if (parseOptions.LanguageVersion.MapSpecifiedToEffectiveVersion() < LanguageVersion.CSharp9)
+        {
+            throw new RefactoringException(
+                ErrorCodes.CompilationError,
+                "initOnly requires C# 9 or later (init-only setters are not available in this project's language version, CS8370).");
         }
     }
 
