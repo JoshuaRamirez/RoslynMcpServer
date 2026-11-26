@@ -42,6 +42,24 @@ public sealed class RenameSymbolDiscardNameTests : IDisposable
     }
 
     [Theory]
+    [InlineData("_\n")]
+    [InlineData("@_\n")]
+    [InlineData("total2\n")]
+    public void Validate_NewNameWithTrailingNewline_IsRejected(string newName)
+    {
+        // The identifier pattern ended in '$', which also matches before a trailing '\n', so "_\n" / "@_\n" slipped
+        // past both the identifier check and the exact '_' check.
+        var ex = Assert.Throws<RefactoringException>(() => RenameSymbolOperation.Validate(new RenameSymbolParams
+        {
+            SourceFile = _sourceFile,
+            SymbolName = "total",
+            NewName = newName
+        }));
+
+        Assert.Equal(ErrorCodes.InvalidNewName, ex.ErrorCode);
+    }
+
+    [Theory]
     [InlineData("__")]
     [InlineData("_total")]
     [InlineData("total_")]

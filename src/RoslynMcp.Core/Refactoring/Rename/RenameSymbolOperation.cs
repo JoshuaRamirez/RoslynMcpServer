@@ -26,7 +26,7 @@ namespace RoslynMcp.Core.Refactoring.Rename;
 public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbolParams>
 {
     private static readonly Regex IdentifierPattern = new(
-        @"^@?[A-Za-z_][A-Za-z0-9_]*$",
+        @"^@?[A-Za-z_][A-Za-z0-9_]*\z",
         RegexOptions.Compiled);
 
     /// <summary>
