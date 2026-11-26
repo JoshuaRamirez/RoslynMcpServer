@@ -1446,6 +1446,54 @@ public class SimplifyNameOperationTests
     #region Helpers
 
 
+    // #3129: the speculative suffix rewrite (App.Models.Order → Models.Order) used to append the
+    // original trailing trivia again, duplicating trailing comments / spaces.
+    [SkippableFact]
+    public async Task SimplifyName_SpeculativePartialQualification_DoesNotDuplicateTrailingTrivia()
+    {
+        const string source = """
+            namespace App.Models
+            {
+                public class Order { public static Order Create() => new Order(); }
+            }
+            namespace App.Ui
+            {
+                public class OrderView
+                {
+                    public App.Models.Order /* result */ Make() => null!;
+                    public object Build() => App.Models.Order // factory
+                        .Create();
+                    public App.Models.Order Plain() => null!;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new SimplifyNameOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var updated = (await File.ReadAllTextAsync(workspace.SourcePath)).Replace("\r\n", "\n");
+        Assert.Contains("public Models.Order /* result */ Make() => null!;", updated, StringComparison.Ordinal);
+        Assert.Contains("public object Build() => Models.Order // factory\n            .Create();", updated, StringComparison.Ordinal);
+        Assert.Contains("public Models.Order Plain() => null!;", updated, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(updated, "/* result */"));
+        Assert.Equal(1, CountOccurrences(updated, "// factory"));
+        await AssertCompilesAsync(workspace);
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        for (var index = text.IndexOf(value, StringComparison.Ordinal); index >= 0; index = text.IndexOf(value, index + value.Length, StringComparison.Ordinal))
+            count++;
+        return count;
+    }
+
     private static async Task AssertCompilesAsync(TempWorkspace workspace)
     {
         var document = workspace.Context.GetDocumentByPath(workspace.SourcePath);

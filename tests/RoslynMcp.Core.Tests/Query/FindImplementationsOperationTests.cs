@@ -3324,6 +3324,56 @@ public class FindImplementationsOperationTests
             .ThenBy(i => i.Name, StringComparer.Ordinal)
             .ToList();
 
+    // #3041: SymbolFinder.FindImplementationsAsync has no ordering promise, so the operation sorts by
+    // file / line / column before maxResults keeps the first N.
+    private static Dictionary<string, string> EightImplementerSources()
+    {
+        var files = new Dictionary<string, string> { ["IShape.cs"] = "namespace Demo;\npublic interface IShape { double Area(); }\n" };
+        foreach (var name in new[] { "Hotel", "Delta", "Charlie", "Foxtrot", "Golf", "Echo", "Alpha", "Bravo" })
+            files[name + ".cs"] = $"namespace Demo;\npublic class {name} : IShape\n{{\n    public double Area() => 1;\n}}\n";
+        return files;
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_ReturnsImplementationsSortedByFileThenLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EightImplementerSources(), "IShape.cs");
+        var expected = new[] { "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel" };
+
+        for (var run = 0; run < 3; run++)
+        {
+            var result = await new FindImplementationsOperation(workspace.Context).ExecuteAsync(new FindImplementationsParams
+            {
+                SourceFile = workspace.PathOf("IShape.cs"),
+                SymbolName = "IShape"
+            });
+
+            Assert.True(result.Success, result.Error?.Message);
+            Assert.Equal(expected, result.Data!.Implementations.Select(i => i.Name));
+        }
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_MaxResults_ReturnsFirstImplementationsInSortedOrder()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EightImplementerSources(), "IShape.cs");
+
+        for (var run = 0; run < 3; run++)
+        {
+            var result = await new FindImplementationsOperation(workspace.Context).ExecuteAsync(new FindImplementationsParams
+            {
+                SourceFile = workspace.PathOf("IShape.cs"),
+                SymbolName = "IShape",
+                MaxResults = 2
+            });
+
+            Assert.True(result.Success, result.Error?.Message);
+            Assert.Equal(new[] { "Alpha", "Bravo" }, result.Data!.Implementations.Select(i => i.Name));
+            Assert.Equal(8, result.Data.TotalCount);
+            Assert.True(result.Data.Truncated);
+        }
+    }
+
     private static bool SamePath(string a, string b) =>
         string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
 
