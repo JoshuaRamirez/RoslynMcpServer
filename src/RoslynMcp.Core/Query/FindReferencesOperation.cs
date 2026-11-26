@@ -153,6 +153,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
             .Select(s => s.Definition)
             .ToHashSet(SymbolEqualityComparer.Default);
 
+        var candidates = new List<(Location Location, string File, int Line, int Column, bool IsDefinition)>();
+
         foreach (var referencedSymbol in referencedSymbols)
         {
             // Every definition location of this entry declares the same symbol, so its accessibility /
@@ -187,20 +189,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 if (!siteSymbolFilter.Matches(definitionSiteSymbol)) continue;
 
                 totalCount++;
-                if (locations.Count < maxResults)
-                {
-                    var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(defLocation, cancellationToken);
-
-                    locations.Add(new ReferenceLocationInfo
-                    {
-                        File = lineSpan.Path,
-                        Line = lineSpan.StartLinePosition.Line + 1,
-                        Column = lineSpan.StartLinePosition.Character + 1,
-                        ContextSnippet = snippet,
-                        IsWriteAccess = false,
-                        IsDefinition = true
-                    });
-                }
+                candidates.Add((defLocation, lineSpan.Path, lineSpan.StartLinePosition.Line + 1,
+                    lineSpan.StartLinePosition.Character + 1, IsDefinition: true));
             }
 
             // Add each reference
@@ -227,22 +217,33 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                     continue;
 
                 totalCount++;
-
-                if (locations.Count < maxResults)
-                {
-                    var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(refLocation.Location, cancellationToken);
-
-                    locations.Add(new ReferenceLocationInfo
-                    {
-                        File = file,
-                        Line = span.StartLinePosition.Line + 1,
-                        Column = span.StartLinePosition.Character + 1,
-                        ContextSnippet = snippet,
-                        IsWriteAccess = false,
-                        IsDefinition = false
-                    });
-                }
+                candidates.Add((refLocation.Location, file, span.StartLinePosition.Line + 1,
+                    span.StartLinePosition.Character + 1, IsDefinition: false));
             }
+        }
+
+        // SymbolFinder.FindReferencesAsync makes no ordering promise (the order changes from run to run),
+        // so sort every matching location deterministically before maxResults keeps the first N (#3043):
+        // file path (ordinal), then line, then column, a definition before a reference at the same
+        // position. Snippets are read only for the returned locations.
+        foreach (var candidate in candidates
+            .OrderBy(c => c.File, StringComparer.Ordinal)
+            .ThenBy(c => c.Line)
+            .ThenBy(c => c.Column)
+            .ThenBy(c => c.IsDefinition ? 0 : 1)
+            .Take(maxResults))
+        {
+            var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(candidate.Location, cancellationToken);
+
+            locations.Add(new ReferenceLocationInfo
+            {
+                File = candidate.File,
+                Line = candidate.Line,
+                Column = candidate.Column,
+                ContextSnippet = snippet,
+                IsWriteAccess = false,
+                IsDefinition = candidate.IsDefinition
+            });
         }
 
         var result = new FindReferencesResult
