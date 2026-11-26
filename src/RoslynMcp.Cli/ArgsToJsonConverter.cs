@@ -77,6 +77,26 @@ public static class ArgsToJsonConverter
         return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
+    /// <summary>
+    /// Returns the first option in <paramref name="valuelessOptions"/> (kebab-case keys given with no value)
+    /// that binds to a non-boolean property of <paramref name="paramsType"/>, or <c>null</c> when every
+    /// such option is a boolean flag (#3288). Options with no matching property are not judged here.
+    /// </summary>
+    public static string? FindOptionMissingValue(IEnumerable<string> valuelessOptions, Type? paramsType)
+    {
+        if (paramsType is null)
+            return null;
+
+        foreach (var kebabKey in valuelessOptions)
+        {
+            var prop = FindProperty(paramsType, KebabToCamel(kebabKey));
+            if (prop is not null && prop.PropertyType != typeof(bool) && prop.PropertyType != typeof(bool?))
+                return kebabKey;
+        }
+
+        return null;
+    }
+
     private static bool IsStringProperty(Type paramsType, string camelKey) =>
         FindProperty(paramsType, camelKey)?.PropertyType == typeof(string);
 
