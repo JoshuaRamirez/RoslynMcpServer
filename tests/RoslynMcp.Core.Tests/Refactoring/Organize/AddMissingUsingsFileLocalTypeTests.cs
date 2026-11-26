@@ -120,7 +120,10 @@ public class AddMissingUsingsFileLocalTypeTests
 
         Assert.True(result.Success, result.Error?.Message);
         Assert.Equal(1, result.UsingDirectivesAdded);
-        Assert.Equal("using App.Internal;\n" + SharedFileLocal, await File.ReadAllTextAsync(workspace.SourcePath));
+        // The tool writes the file's own line ending, which follows the checkout's (CRLF on Windows).
+        Assert.Equal(
+            ("using App.Internal;\n" + SharedFileLocal).ReplaceLineEndings("\n"),
+            (await File.ReadAllTextAsync(workspace.SourcePath)).ReplaceLineEndings("\n"));
         Assert.Empty(await workspace.GetDiskErrorsAsync());
     }
 
