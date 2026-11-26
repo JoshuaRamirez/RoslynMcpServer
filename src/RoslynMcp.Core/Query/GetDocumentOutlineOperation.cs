@@ -105,6 +105,9 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
                 del.GetLocation(), GetAccessibility(del.Modifiers), del.ReturnType.ToString()), del, declarations));
         }
 
+        // Collected kind by kind above; report in source order (#3050).
+        entries = InSourceOrder(entries);
+
         IReadOnlyList<OutlineEntry> returned = entries;
         var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
         var nameFilter = NameFilterMatcher.Normalize(@params.NameFilter);
@@ -524,6 +527,8 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
                 del.GetLocation(), GetAccessibility(del.Modifiers), del.ReturnType.ToString()), del, declarations));
         }
 
+        children = InSourceOrder(children);
+
         var lineSpan = ns.GetLocation().GetLineSpan();
         return Track(new OutlineEntry
         {
@@ -616,6 +621,8 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
             children.Add(BuildEnumEntry(enumDecl, ref totalCount, declarations));
         }
 
+        children = InSourceOrder(children);
+
         var lineSpan = type.GetLocation().GetLineSpan();
         return Track(new OutlineEntry
         {
@@ -649,6 +656,15 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
             Children = children.Count > 0 ? children : null
         }, enumDecl, declarations);
     }
+
+    /// <summary>
+    /// Sibling entries are collected kind by kind (nested types, constructors, methods, ... /
+    /// types, enums, delegates); this puts them back in source order (line, then column) so the
+    /// outline matches the file and the documented DFS pre-order <c>maxResults</c> prefix is the
+    /// first N declarations in the document (#3050). The sort is stable.
+    /// </summary>
+    private static List<OutlineEntry> InSourceOrder(List<OutlineEntry> entries) =>
+        entries.OrderBy(entry => entry.Line).ThenBy(entry => entry.Column).ToList();
 
     private static OutlineEntry CreateEntry(string name, string kind, Location location,
         string? accessibility = null, string? returnType = null)
