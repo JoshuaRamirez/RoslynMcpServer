@@ -1,0 +1,167 @@
+using Microsoft.CodeAnalysis;
+using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.Refactoring.Organize;
+using RoslynMcp.Core.Workspace;
+using Xunit;
+
+namespace RoslynMcp.Core.Tests.Refactoring.Organize;
+
+/// <summary>
+/// Regression tests for #3117: add_missing_usings preferred a same-named BCL type (static
+/// System.IO.Path) over the project's own type (App.Geometry.Path), leaving CS0712.
+/// </summary>
+public class AddMissingUsingsPreferSourceTypeTests
+{
+    private const string PathSource = """
+        namespace App.Geometry;
+
+        public sealed class Path
+        {
+            public Path(int segments) { Segments = segments; }
+            public int Segments { get; }
+        }
+        """;
+
+    private const string Program = """
+        namespace App;
+
+        public static class Program
+        {
+            public static int Run() => new Path(3).Segments;
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProjectTypeBeatsSameNamedBclType(bool allFiles)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(Program, "latest", ("Path.cs", PathSource));
+
+        var result = await new AddMissingUsingsOperation(workspace.Context).ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = allFiles ? null : workspace.SourcePath,
+            AllFiles = allFiles
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("using App.Geometry;", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("using System.IO;", text, StringComparison.Ordinal);
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [SkippableFact]
+    public async Task BclTypeStillChosenWhenProjectHasNoSuchType()
+    {
+        const string source = """
+            namespace App;
+
+            public static class Program
+            {
+                public static string Run() => Path.Combine("a", "b");
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        var result = await new AddMissingUsingsOperation(workspace.Context).ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Contains("using System.IO;", await File.ReadAllTextAsync(workspace.SourcePath), StringComparison.Ordinal);
+    }
+
+    private sealed class TempWorkspace : IAsyncDisposable
+    {
+        public required string DirectoryPath { get; init; }
+        public required string SourcePath { get; init; }
+        public required WorkspaceContext Context { get; init; }
+
+        public static async Task<TempWorkspace> CreateAsync(string source, string langVersion, params (string Name, string Text)[] extraFiles)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpLangVersion_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            var projectPath = Path.Combine(directory, "Case.csproj");
+            var sourcePath = Path.Combine(directory, "Program.cs");
+            await File.WriteAllTextAsync(projectPath, $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <OutputType>Library</OutputType>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <ImplicitUsings>disable</ImplicitUsings>
+                    <LangVersion>{langVersion}</LangVersion>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(sourcePath, source);
+            foreach (var (name, text) in extraFiles)
+                await File.WriteAllTextAsync(Path.Combine(directory, name), text);
+
+            try
+            {
+                var context = await new MSBuildWorkspaceProvider().CreateContextAsync(projectPath);
+                if (context.GetDocumentByPath(sourcePath) == null)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                }
+
+                return new TempWorkspace { DirectoryPath = directory, SourcePath = sourcePath, Context = context };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try { Directory.Delete(directory, recursive: true); } catch { /* ignore cleanup failures */ }
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public async Task<List<string>> GetErrorsAsync()
+        {
+            var document = Context.GetDocumentByPath(SourcePath);
+            Assert.NotNull(document);
+            var compilation = await document.Project.GetCompilationAsync();
+            Assert.NotNull(compilation);
+            return compilation.GetDiagnostics()
+                .Where(d => d.Severity == DiagnosticSeverity.Error)
+                .Select(d => d.ToString())
+                .ToList();
+        }
+
+        /// <summary>Compile errors of the project with every .cs file re-read from disk.</summary>
+        public async Task<List<string>> GetDiskErrorsAsync()
+        {
+            var document = Context.GetDocumentByPath(SourcePath);
+            Assert.NotNull(document);
+            var project = document.Project;
+            foreach (var path in Directory.GetFiles(DirectoryPath, "*.cs"))
+            {
+                var existing = project.Documents.FirstOrDefault(d => string.Equals(d.FilePath, path, StringComparison.Ordinal));
+                var text = Microsoft.CodeAnalysis.Text.SourceText.From(await File.ReadAllTextAsync(path));
+                project = existing != null
+                    ? existing.WithText(text).Project
+                    : project.AddDocument(Path.GetFileName(path), text, filePath: path).Project;
+            }
+
+            var compilation = await project.GetCompilationAsync();
+            Assert.NotNull(compilation);
+            return compilation.GetDiagnostics()
+                .Where(d => d.Severity == DiagnosticSeverity.Error)
+                .Select(d => d.ToString())
+                .ToList();
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Context.Dispose();
+            await Task.Run(() =>
+            {
+                try { Directory.Delete(DirectoryPath, recursive: true); } catch { /* ignore locked temp files */ }
+            });
+        }
+    }
+}
