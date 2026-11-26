@@ -1572,6 +1572,51 @@ public class ConvertPropertyOperationTests
         return index - lineStart;
     }
 
+    [SkippableTheory]
+    [InlineData("tr-TR")]
+    [InlineData("az")]
+    public async Task Convert_AutoToFull_BackingFieldNameIsCultureInvariant(string cultureName)
+    {
+        // #3068: under tr-TR / az, char.ToLower('I') is the dotless 'ı' (U+0131), so "Index" used to get
+        // a "_ındex" backing field instead of "_index".
+        var culture = System.Globalization.CultureInfo.GetCultureInfo(cultureName);
+        Skip.IfNot(char.ToLower('I', culture) == '\u0131', $"Culture {cultureName} has no Turkic casing here (invariant globalization).");
+
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace TestApp;
+
+            public class U2
+            {
+                public int Index { get; set; }
+                public int Use() => Index;
+            }
+            """);
+        var operation = new ConvertPropertyOperation(workspace.Context);
+
+        var original = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = culture;
+            var result = await operation.ExecuteAsync(new ConvertPropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                PropertyName = "Index",
+                Direction = "ToFullProperty"
+            });
+            Assert.True(result.Success, result.Error?.Message);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = original;
+        }
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int _index;", updated, StringComparison.Ordinal);
+        Assert.Contains("return _index;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("\u0131", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }

@@ -366,8 +366,9 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
         if (!CanConvertToFullProperty(property))
             return false;
 
-        // Generate backing field name
-        var fieldName = "_" + char.ToLower(property.Identifier.Text[0]) + property.Identifier.Text.Substring(1);
+        // Generate backing field name (culture-invariant, like every other backing-field name generator:
+        // under tr-TR / az, char.ToLower turns "Index" into "_\u0131ndex" with a dotless i, #3068)
+        var fieldName = "_" + char.ToLowerInvariant(property.Identifier.Text[0]) + property.Identifier.Text.Substring(1);
 
         var declarator = SyntaxFactory.VariableDeclarator(fieldName);
         if (property.Initializer != null)
