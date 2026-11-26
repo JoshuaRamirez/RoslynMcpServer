@@ -113,6 +113,10 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             // right/middle segments (e.g. Task in App.Task.Widget).
             if (IsQualifiedRightHandSegment(node))
                 continue;
+            // Alias and using-static targets bind without the sibling usings, so adding a
+            // namespace using can never resolve a name inside a using directive (#3093).
+            if (node.FirstAncestorOrSelf<UsingDirectiveSyntax>() != null)
+                continue;
 
             var typeName = GetTypeName(node);
             if (string.IsNullOrEmpty(typeName)) continue;
@@ -398,6 +402,10 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             // A using only affects unqualified lookup. Skip CS0234-style
             // right/middle segments (e.g. Task in App.Task.Widget).
             if (IsQualifiedRightHandSegment(node))
+                continue;
+            // Alias and using-static targets bind without the sibling usings, so adding a
+            // namespace using can never resolve a name inside a using directive (#3093).
+            if (node.FirstAncestorOrSelf<UsingDirectiveSyntax>() != null)
                 continue;
 
             var typeName = GetTypeName(node);
