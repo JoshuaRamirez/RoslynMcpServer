@@ -54,7 +54,7 @@ public sealed class SearchSymbolsTool : IToolHandler
             kindFilter = new
             {
                 type = "string",
-                description = "Filter by symbol kind: Class, Struct, Interface, Enum, Record, Delegate, Method, Property, Field, Event, Constant"
+                description = "Filter by symbol kind: Class, Struct, Interface, Enum, Record, Delegate, Method, Property, Field, Event, Constant, Namespace (Local and Parameter are rejected: locals and parameters are never searched)"
             },
             maxResults = new
             {

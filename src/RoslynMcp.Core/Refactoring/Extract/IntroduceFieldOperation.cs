@@ -1451,9 +1451,8 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         var members = typeDeclaration.Members.ToList();
         var insertIndex = FindFieldInsertIndex(members, insertBeforeFieldVariable);
 
-        members.Insert(insertIndex, field
-            .WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed)
-            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed));
+        // Own line, sibling indentation, the file's line ending (was CRLF at column 0, #3123).
+        members.Insert(insertIndex, MemberInsertionTrivia.WithInsertionTrivia(field, typeDeclaration, members, insertIndex));
 
         return typeDeclaration.WithMembers(SyntaxFactory.List(members));
     }
@@ -1540,9 +1539,11 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                     insertIndex = i + 1;
             }
 
-            members.Insert(insertIndex, created
-                .WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed)
-                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed));
+            var laidOut = MemberInsertionTrivia.Reindent(
+                created,
+                MemberInsertionTrivia.MemberIndentation(typeDeclaration, members),
+                MemberInsertionTrivia.DetectEndOfLine(typeDeclaration));
+            members.Insert(insertIndex, MemberInsertionTrivia.WithInsertionTrivia(laidOut, typeDeclaration, members, insertIndex));
             return typeDeclaration.WithMembers(SyntaxFactory.List(members));
         }
 
@@ -1557,18 +1558,84 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         ExpressionStatementSyntax assignment)
     {
         if (constructor.ExpressionBody != null)
-        {
-            var original = SyntaxFactory.ExpressionStatement(constructor.ExpressionBody.Expression);
-            var body = SyntaxFactory.Block(assignment, original);
-            return constructor
-                .WithExpressionBody(null)
-                .WithSemicolonToken(default)
-                .WithBody(body.NormalizeWhitespace());
-        }
+            return ExpandExpressionBody(constructor, assignment);
 
         var bodyBlock = constructor.Body ?? SyntaxFactory.Block();
         return constructor.WithBody(
-            bodyBlock.WithStatements(bodyBlock.Statements.Insert(0, assignment)));
+            bodyBlock.WithStatements(bodyBlock.Statements.Insert(0, LayOutFirstStatement(constructor, bodyBlock, assignment))));
+    }
+
+    /// <summary>
+    /// <c>P() =&gt; A = 1;</c> becomes a block body laid out with the constructor's own indentation and
+    /// the file's line ending; <c>NormalizeWhitespace</c> wrote CRLF at column 0 and dropped the blank
+    /// line after the constructor (#3123 review).
+    /// </summary>
+    private static ConstructorDeclarationSyntax ExpandExpressionBody(
+        ConstructorDeclarationSyntax constructor,
+        ExpressionStatementSyntax assignment)
+    {
+        var endOfLine = MemberInsertionTrivia.DetectEndOfLine(constructor.SyntaxTree.GetRoot());
+        var indentation = MemberInsertionTrivia.LineIndentation(constructor.GetFirstToken());
+        var statementIndentation = SyntaxFactory.Whitespace(indentation + MemberInsertionTrivia.IndentUnit(indentation));
+        var braceIndentation = SyntaxFactory.TriviaList(SyntaxFactory.Whitespace(indentation));
+
+        var original = SyntaxFactory.ExpressionStatement(constructor.ExpressionBody!.Expression.WithoutTrivia());
+        var body = SyntaxFactory.Block(
+                SyntaxFactory.Token(SyntaxKind.OpenBraceToken)
+                    .WithLeadingTrivia(braceIndentation)
+                    .WithTrailingTrivia(endOfLine),
+                SyntaxFactory.List<StatementSyntax>(new[]
+                {
+                    assignment.WithLeadingTrivia(statementIndentation).WithTrailingTrivia(endOfLine),
+                    original.WithLeadingTrivia(statementIndentation).WithTrailingTrivia(endOfLine)
+                }),
+                SyntaxFactory.Token(SyntaxKind.CloseBraceToken)
+                    .WithLeadingTrivia(braceIndentation)
+                    .WithTrailingTrivia(constructor.SemicolonToken.TrailingTrivia));
+
+        var parameterList = constructor.ParameterList.WithCloseParenToken(
+            constructor.ParameterList.CloseParenToken.WithTrailingTrivia(endOfLine));
+        var withParameters = constructor.Initializer == null
+            ? constructor.WithParameterList(parameterList)
+            : constructor.WithInitializer(constructor.Initializer.WithTrailingTrivia(endOfLine));
+
+        return withParameters
+            .WithExpressionBody(null)
+            .WithSemicolonToken(default)
+            .WithBody(body);
+    }
+
+    /// <summary>
+    /// Puts the assignment on its own line with the body's statement indentation and the file's line
+    /// ending (it was written at column 0 with CRLF, #3123).
+    /// </summary>
+    private static StatementSyntax LayOutFirstStatement(
+        ConstructorDeclarationSyntax constructor,
+        BlockSyntax body,
+        ExpressionStatementSyntax assignment)
+    {
+        var endOfLine = MemberInsertionTrivia.DetectEndOfLine(constructor);
+        string indentation;
+        if (body.Statements.Count > 0 &&
+            body.Statements[0].GetLeadingTrivia() is { Count: > 0 } leading &&
+            leading[^1].IsKind(SyntaxKind.WhitespaceTrivia))
+        {
+            indentation = leading[^1].ToString();
+        }
+        else
+        {
+            var braceTrivia = body.CloseBraceToken.LeadingTrivia;
+            var braceIndentation = braceTrivia.Count > 0 && braceTrivia[^1].IsKind(SyntaxKind.WhitespaceTrivia)
+                ? braceTrivia[^1].ToString()
+                : string.Empty;
+            indentation = braceIndentation + (braceIndentation.Contains('\t') ? "\t" : "    ");
+        }
+
+        var leadingTrivia = body.OpenBraceToken.TrailingTrivia is { Count: > 0 } openTrailing &&
+            openTrailing[^1].IsKind(SyntaxKind.EndOfLineTrivia)
+                ? SyntaxFactory.TriviaList(SyntaxFactory.Whitespace(indentation))
+                : SyntaxFactory.TriviaList(endOfLine, SyntaxFactory.Whitespace(indentation));
+        return assignment.WithLeadingTrivia(leadingTrivia).WithTrailingTrivia(endOfLine);
     }
 
     private static ConstructorDeclarationSyntax CreateConstructor(

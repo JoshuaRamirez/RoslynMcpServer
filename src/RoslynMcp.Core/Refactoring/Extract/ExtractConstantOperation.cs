@@ -1710,9 +1710,8 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             }
         }
 
-        members.Insert(insertIndex, constField
-            .WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed)
-            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed));
+        // Own line, sibling indentation, the file's line ending (was CRLF at column 0, #3123).
+        members.Insert(insertIndex, MemberInsertionTrivia.WithInsertionTrivia(constField, typeDeclaration, members, insertIndex));
 
         return typeDeclaration.WithMembers(SyntaxFactory.List(members));
     }

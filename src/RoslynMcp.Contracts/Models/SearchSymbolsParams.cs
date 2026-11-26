@@ -11,7 +11,9 @@ public sealed class SearchSymbolsParams
     public required string Query { get; init; }
 
     /// <summary>
-    /// Optional filter by symbol kind (e.g., "Class", "Method", "Property").
+    /// Optional filter by symbol kind: Class, Struct, Interface, Enum, Record, Delegate, Method,
+    /// Property, Field, Event, Constant or Namespace. Local and Parameter are rejected with
+    /// InvalidSymbolKind, since locals and parameters are never searched.
     /// </summary>
     public string? KindFilter { get; init; }
 
