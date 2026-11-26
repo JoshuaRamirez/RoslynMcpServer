@@ -108,6 +108,9 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         if (AccumulatorDeclaredOutsideEnclosingLoop(foreachStmt))
             throw new RefactoringException(ErrorCodes.CannotConvert, EnclosingLoopAccumulatorMessage);
 
+        if (analyzed != null && ProjectionHasNoNaturalType(analyzed.Projection))
+            throw new RefactoringException(ErrorCodes.CannotConvert, TargetTypedProjectionMessage);
+
         if (!TryConvert(foreachStmt, @params.PreferQuerySyntax, out var conversion, out var assignment))
         {
             throw new RefactoringException(ErrorCodes.CannotConvert,
@@ -313,9 +316,41 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         if (AccumulatorDeclaredOutsideEnclosingLoop(foreachStmt, analyzed.ListName))
             return false;
 
+        // The Add argument may only be typed by Add's parameter (null, default, new(), [..]); an
+        // untyped Select(x => null) cannot infer TResult and would not compile (#3038).
+        if (ProjectionHasNoNaturalType(analyzed.Projection))
+            return false;
+
         conversion = analyzed;
         assignment = BuildLinqAssignment(conversion, preferQuerySyntax);
         return true;
+    }
+
+    internal const string TargetTypedProjectionMessage =
+        "The Add argument has no type of its own (null, default, new(), a collection expression, or a conditional " +
+        "of those); it is typed only by Add's parameter, so Select could not infer the element type and the " +
+        "converted code would not compile.";
+
+    /// <summary>
+    /// True when <paramref name="projection"/> is a target-typed expression with no natural type: the
+    /// <c>null</c> or <c>default</c> literal, a target-typed <c>new()</c>, a collection expression, or a
+    /// conditional whose branches are both such expressions (#3038).
+    /// </summary>
+    internal static bool ProjectionHasNoNaturalType(ExpressionSyntax projection)
+    {
+        while (projection is ParenthesizedExpressionSyntax parenthesized)
+            projection = parenthesized.Expression;
+
+        return projection switch
+        {
+            LiteralExpressionSyntax literal => literal.IsKind(SyntaxKind.NullLiteralExpression) ||
+                                               literal.IsKind(SyntaxKind.DefaultLiteralExpression),
+            ImplicitObjectCreationExpressionSyntax => true,
+            CollectionExpressionSyntax => true,
+            ConditionalExpressionSyntax conditional => ProjectionHasNoNaturalType(conditional.WhenTrue) &&
+                                                       ProjectionHasNoNaturalType(conditional.WhenFalse),
+            _ => false
+        };
     }
 
     internal const string EnclosingLoopAccumulatorMessage =
