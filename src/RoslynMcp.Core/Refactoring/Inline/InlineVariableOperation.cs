@@ -709,7 +709,8 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     /// argument, a <c>ref</c> expression, <c>&amp;</c>, <c>__makeref</c>, a foreach deconstruction
     /// target, or a <c>?.</c> on the chain whose right side writes.</item>
     /// <item><b>Pure read</b>: a by-value or <c>in</c> argument or index, an operand of a built-in
-    /// unary / binary operator, a condition or governing expression, a statement, return, yield,
+    /// unary / binary operator, a condition, exception filter or governing expression, a foreach
+    /// collection (plain or deconstructing), a statement, return, yield,
     /// throw or initializer value, an interpolation, a collection / object initializer element,
     /// <c>await</c>, a pattern-matched expression, a range bound, a <c>with</c> source, a lambda
     /// body or a query clause.</item>
@@ -814,7 +815,9 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         ExpressionStatementSyntax or ReturnStatementSyntax or YieldStatementSyntax or ThrowStatementSyntax
             or ThrowExpressionSyntax or EqualsValueClauseSyntax or ArrowExpressionClauseSyntax => true,
         IfStatementSyntax or WhileStatementSyntax or DoStatementSyntax or ForStatementSyntax
-            or ForEachStatementSyntax or SwitchStatementSyntax or LockStatementSyntax or UsingStatementSyntax => true,
+            or SwitchStatementSyntax or LockStatementSyntax or UsingStatementSyntax or CatchFilterClauseSyntax => true,
+        ForEachStatementSyntax forEach => forEach.Expression == current,
+        ForEachVariableStatementSyntax forEachVariable => forEachVariable.Expression == current,
         InterpolationSyntax or InterpolationAlignmentClauseSyntax => true,
         InitializerExpressionSyntax or AnonymousObjectMemberDeclaratorSyntax or ArrayRankSpecifierSyntax
             or ExpressionElementSyntax or SpreadElementSyntax => true,

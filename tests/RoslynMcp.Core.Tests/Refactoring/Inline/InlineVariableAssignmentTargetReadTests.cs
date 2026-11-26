@@ -1134,6 +1134,87 @@ public class InlineVariableAssignmentTargetReadTests
         Assert.Empty(await workspace.GetDiskErrorsAsync());
     }
 
+    /// <summary>
+    /// Read positions the closed allowlist in ClassifyWrite must keep as reads (#3090 review, round 6):
+    /// local name, declaration, the statements using it, and the statements after inlining.
+    /// </summary>
+    private static readonly Dictionary<string, (string Local, string Declaration, string Before, string After)> ReadPositions = new()
+    {
+        ["foreach-deconstruct-dictionary"] = ("d", "Dictionary<int, int> d = _dict;", "foreach (var (k, v) in d) _i += k + v;\nreturn _i;", "foreach (var (k, v) in _dict) _i += k + v;\nreturn _i;"),
+        ["foreach-deconstruct-array"] = ("pairs", "(int, int)[] pairs = _pairs;", "foreach (var (a, b) in pairs) _i += a + b;\nreturn _i;", "foreach (var (a, b) in _pairs) _i += a + b;\nreturn _i;"),
+        ["foreach-collection"] = ("items", "int[] items = _a;", "foreach (var x in items) _i += x;\nreturn _i;", "foreach (var x in _a) _i += x;\nreturn _i;"),
+        ["catch-filter"] = ("b", "bool b = _flag;", "try { _i++; } catch (Exception) when (b) { _i--; }\nreturn _i;", "try { _i++; } catch (Exception) when (_flag) { _i--; }\nreturn _i;"),
+        ["if-condition"] = ("b", "bool b = _flag;", "if (b) _i++;\nreturn _i;", "if (_flag) _i++;\nreturn _i;"),
+        ["while-condition"] = ("b", "bool b = _flag;", "while (b) { _i++; break; }\nreturn _i;", "while (_flag) { _i++; break; }\nreturn _i;"),
+        ["return-value"] = ("n", "int n = _i;", "return n;", "return _i;"),
+        ["call-argument"] = ("n", "int n = _i;", "return Math.Max(n, 1);", "return Math.Max(_i, 1);"),
+        ["switch-governing"] = ("n", "int n = _i;", "switch (n) { case 1: _i++; break; }\nreturn _i;", "switch (_i) { case 1: _i++; break; }\nreturn _i;"),
+        ["lock"] = ("g", "object g = _gate;", "lock (g) { _i++; }\nreturn _i;", "lock (_gate) { _i++; }\nreturn _i;"),
+        ["await"] = ("t", "Task<int> t = _task;", "return await t;", "return await _task;"),
+        ["interpolation"] = ("n", "int n = _i;", "return $\"{n}\".Length;", "return $\"{_i}\".Length;"),
+        ["spread"] = ("items", "int[] items = _a;", "_a = [..items, 4];\nreturn _a.Length;", "_a = [.._a, 4];\nreturn _a.Length;"),
+        ["query"] = ("items", "int[] items = _a;", "return (from x in items where x > 0 select x).Count();", "return (from x in _a where x > 0 select x).Count();"),
+    };
+
+    public static TheoryData<string, bool> ReadPositionRows()
+    {
+        var rows = new TheoryData<string, bool>();
+        foreach (var kind in ReadPositions.Keys)
+        {
+            rows.Add(kind, false);
+            rows.Add(kind, true);
+        }
+
+        return rows;
+    }
+
+    private static string ReadsProgram(string body) => $$"""
+        using System;
+        using System.Collections.Generic;
+        using System.Linq;
+        using System.Threading.Tasks;
+
+        namespace Demo;
+
+        public class Reads
+        {
+            private int _i = 1;
+            private bool _flag = true;
+            private int[] _a = { 1, 2, 3 };
+            private (int, int)[] _pairs = { (1, 2) };
+            private Dictionary<int, int> _dict = new() { [1] = 2 };
+            private object _gate = new();
+            private Task<int> _task = Task.FromResult(1);
+
+            public async Task<int> Run()
+            {
+        {{body}}
+            }
+        }
+        """;
+
+    private static string Indent(string statements) =>
+        string.Join("\n", statements.Split('\n').Select(line => "        " + line));
+
+    [SkippableTheory]
+    [MemberData(nameof(ReadPositionRows))]
+    public async Task ReadPosition_IsInlined_FullOutput(string kind, bool allFiles)
+    {
+        var (local, declaration, before, after) = ReadPositions[kind];
+        var source = ReadsProgram(Indent(declaration + "\n" + before)).ReplaceLineEndings("\n");
+        // The removed declaration's indentation stays in front of the next line (existing trivia behavior).
+        var expected = ReadsProgram("        " + Indent(after)).ReplaceLineEndings("\n");
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        var result = await new InlineVariableOperation(workspace.Context).ExecuteAsync(allFiles
+            ? new InlineVariableParams { AllFiles = true }
+            : new InlineVariableParams { SourceFile = workspace.SourcePath, VariableName = local });
+
+        Assert.True(result.Success, $"{kind}: {result.Error?.Message}");
+        Assert.Equal(expected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }
