@@ -194,13 +194,16 @@ public sealed class TypeSymbolResolver
                     });
             }
 
-            // Find by line number
+            // Find by line number. Accept the identifier's line (what search_symbols
+            // and go_to_definition report) as well as the declaration's start line,
+            // which sits on the first attribute list or modifier when those precede
+            // the identifier on earlier lines (#3274).
             declaration = matchingDeclarations
                 .FirstOrDefault(t =>
                 {
-                    var lineSpan = t.GetLocation().GetLineSpan();
-                    var declarationLine = lineSpan.StartLinePosition.Line + 1; // Convert to 1-based
-                    return declarationLine == line.Value;
+                    var declarationLine = t.GetLocation().GetLineSpan().StartLinePosition.Line + 1; // Convert to 1-based
+                    var identifierLine = t.Identifier.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+                    return declarationLine == line.Value || identifierLine == line.Value;
                 })
                 ?? throw new RefactoringException(
                     ErrorCodes.SymbolNotFound,

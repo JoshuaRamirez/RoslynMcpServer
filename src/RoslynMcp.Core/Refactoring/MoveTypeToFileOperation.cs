@@ -705,7 +705,8 @@ public sealed class MoveTypeToFileOperation
 
     private Contracts.Models.SymbolInfo CreateSymbolInfo(SymbolResolutionResult resolution, string targetFile)
     {
-        var location = resolution.Declaration.GetLocation().GetLineSpan();
+        // Report the type identifier, not the first attribute list / modifier (#3274).
+        var location = resolution.Declaration.Identifier.GetLocation().GetLineSpan();
 
         return new Contracts.Models.SymbolInfo
         {

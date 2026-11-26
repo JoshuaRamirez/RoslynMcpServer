@@ -1509,7 +1509,8 @@ public sealed class MoveTypeToNamespaceOperation
         string? newFilePath = null)
     {
         var oldNamespace = resolution.Symbol.ContainingNamespace.ToDisplayString();
-        var location = resolution.Declaration.GetLocation().GetLineSpan();
+        // Report the type identifier, not the first attribute list / modifier (#3274).
+        var location = resolution.Declaration.Identifier.GetLocation().GetLineSpan();
         var previousFile = resolution.Document.FilePath!;
         var line = location.StartLinePosition.Line + 1;
         var column = location.StartLinePosition.Character + 1;
