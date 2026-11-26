@@ -363,6 +363,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         var narrowed = projection.DescendantNodesAndSelf()
             .OfType<IdentifierNameSyntax>()
             .Where(id => id.Parent is not PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression })
+            .Where(id => IsValueUse(id, projection, semanticModel))
             .Where(id => SymbolEqualityComparer.Default.Equals(semanticModel.GetSymbolInfo(id).Symbol, iterationVariable))
             .Where(id => semanticModel.GetTypeInfo(id).Nullability.FlowState == NullableFlowState.NotNull)
             .ToList();
@@ -373,6 +374,31 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         return projection.ReplaceNodes(narrowed, (_, rewritten) =>
             SyntaxFactory.PostfixUnaryExpression(SyntaxKind.SuppressNullableWarningExpression, rewritten.WithoutTrivia())
                 .WithTriviaFrom(rewritten));
+    }
+
+    /// <summary>
+    /// True when <paramref name="id"/> is read as a value, so <c>id!</c> is legal there. Not inside a
+    /// <c>nameof(...)</c> argument (<c>nameof(s!)</c> is CS8081), not a <c>ref</c> / <c>out</c> / <c>in</c>
+    /// argument, and not an assignment target (#3361 review).
+    /// </summary>
+    private static bool IsValueUse(IdentifierNameSyntax id, ExpressionSyntax projection, SemanticModel semanticModel)
+    {
+        if (id.Parent is ArgumentSyntax { RefKindKeyword.RawKind: not (int)SyntaxKind.None })
+            return false;
+
+        if (id.Parent is AssignmentExpressionSyntax assignment && assignment.Left == id)
+            return false;
+
+        foreach (var invocation in id.Ancestors().TakeWhile(n => n != projection.Parent).OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" } &&
+                semanticModel.GetOperation(invocation) is Microsoft.CodeAnalysis.Operations.INameOfOperation)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     internal const string TargetTypedProjectionMessage =

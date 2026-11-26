@@ -34,18 +34,36 @@ public class ConvertForeachLinqNullableFilterTests
         }
         """;
 
-    public static TheoryData<string, string, string> NullFilters => new()
+    private static string Converted(string sourceType, string statement) => $$"""
+        using System.Collections.Generic;
+        using System.Linq;
+
+        public static class P
+        {
+            public static List<string> NonNull({{sourceType}} items)
+            {
+                var result = new List<string>();
+                {{statement}}
+                return result;
+            }
+        }
+        """;
+
+    public static TheoryData<string, string, string, string> NullFilters => new()
     {
-        { "string?[]", "s != null", "s" },
-        { "List<string?>", "s is not null", "s" },
-        { "IEnumerable<string?>", "s is { }", "s" },
-        { "string?[]", "s != null", "s.Trim()" },
-        { "string?[]", "s != null && s.Length > 0", "s + \"!\"" },
+        { "string?[]", "s != null", "s", "result=items.Where(s=>s != null).Select(s=>s!).ToList();" },
+        { "List<string?>", "s is not null", "s", "result=items.Where(s=>s is not null).Select(s=>s!).ToList();" },
+        { "IEnumerable<string?>", "s is { }", "s", "result=items.Where(s=>s is { }).Select(s=>s!).ToList();" },
+        { "string?[]", "s != null", "s.Trim()", "result=items.Where(s=>s != null).Select(s=>s!.Trim()).ToList();" },
+        { "string?[]", "s != null && s.Length > 0", "s + \"!\"", "result=items.Where(s=>s != null && s.Length > 0).Select(s=>s! + \"!\").ToList();" },
+        // nameof(s!) is CS8081: identifiers inside nameof are not value uses and keep no '!' (#3361 review).
+        { "string?[]", "s != null", "s + nameof(s)", "result=items.Where(s=>s != null).Select(s=>s! + nameof(s)).ToList();" },
+        { "string?[]", "s != null", "nameof(s) + s.Length", "result=items.Where(s=>s != null).Select(s=>nameof(s) + s!.Length).ToList();" },
     };
 
     [SkippableTheory]
     [MemberData(nameof(NullFilters))]
-    public async Task SingleSite_NullFilter_KeepsBuildClean(string sourceType, string condition, string projection)
+    public async Task SingleSite_NullFilter_KeepsBuildClean(string sourceType, string condition, string projection, string expected)
     {
         await using var workspace = await TempWorkspace.CreateAsync(Source(sourceType, condition, projection), "latest");
         Assert.Empty(await workspace.GetDiskErrorsAsync());
@@ -57,15 +75,13 @@ public class ConvertForeachLinqNullableFilterTests
         });
 
         Assert.True(result.Success, result.Error?.Message);
-        var text = await File.ReadAllTextAsync(workspace.SourcePath);
-        Assert.Contains(".Select(", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("foreach", text, StringComparison.Ordinal);
+        Assert.Equal(Converted(sourceType, expected), await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Empty(await workspace.GetDiskErrorsAsync());
     }
 
     [SkippableTheory]
     [MemberData(nameof(NullFilters))]
-    public async Task AllFiles_NullFilter_KeepsBuildClean(string sourceType, string condition, string projection)
+    public async Task AllFiles_NullFilter_KeepsBuildClean(string sourceType, string condition, string projection, string expected)
     {
         await using var workspace = await TempWorkspace.CreateAsync(Source(sourceType, condition, projection), "latest");
 
@@ -75,8 +91,7 @@ public class ConvertForeachLinqNullableFilterTests
         });
 
         Assert.True(result.Success, result.Error?.Message);
-        var text = await File.ReadAllTextAsync(workspace.SourcePath);
-        Assert.DoesNotContain("foreach", text, StringComparison.Ordinal);
+        Assert.Equal(Converted(sourceType, expected), await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Empty(await workspace.GetDiskErrorsAsync());
     }
 
