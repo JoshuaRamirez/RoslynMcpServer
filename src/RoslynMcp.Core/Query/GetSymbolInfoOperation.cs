@@ -53,8 +53,9 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
         var symbol = resolved.Symbol;
+        var compilation = await resolved.Document.Project.GetCompilationAsync(cancellationToken);
         var info = BuildDetailedInfo(
-            symbol, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter,
+            symbol, compilation, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter,
             @params.NameFilter, @params.NamespaceFilter, @params.StaticFilter, @params.AbstractFilter, @params.SealedFilter);
 
         return QueryResult<DetailedSymbolInfo>.Succeeded(operationId, info);
@@ -62,6 +63,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
 
     private static DetailedSymbolInfo BuildDetailedInfo(
         ISymbol symbol,
+        Compilation? compilation,
         int? maxResults,
         string? kindFilter,
         string? accessibilityFilter,
@@ -169,7 +171,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                 ? null
                 : symbol.ContainingNamespace?.ToDisplayString(),
             Signature = symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            DocumentationSummary = GetDocumentationSummary(symbol),
+            DocumentationSummary = GetInheritedDocumentationSummary(symbol, compilation),
             Location = location,
             BaseType = baseType,
             Interfaces = interfaces,
@@ -179,6 +181,104 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             ReturnType = returnType,
             Parameters = parameters
         };
+    }
+
+    /// <summary>
+    /// The symbol's own summary, or for a <c>/// &lt;inheritdoc/&gt;</c> member the summary of the
+    /// <c>cref</c> target, the overridden member, the implemented interface member, or the base
+    /// type / interface (#3092). <see cref="ISymbol.GetDocumentationCommentXml"/> never expands
+    /// <c>inheritdoc</c>, so these members used to report no summary at all.
+    /// </summary>
+    private static string? GetInheritedDocumentationSummary(ISymbol symbol, Compilation? compilation)
+    {
+        var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        var current = symbol;
+        while (visited.Add(current))
+        {
+            var summary = GetDocumentationSummary(current);
+            if (summary != null)
+                return summary;
+
+            var inheritDoc = GetInheritDocElement(current);
+            if (inheritDoc == null)
+                return null;
+
+            var next = ResolveInheritDocSource(current, (string?)inheritDoc.Attribute("cref"), compilation);
+            if (next == null)
+                return null;
+            current = next;
+        }
+
+        return null;
+    }
+
+    private static System.Xml.Linq.XElement? GetInheritDocElement(ISymbol symbol)
+    {
+        var xml = symbol.GetDocumentationCommentXml();
+        if (string.IsNullOrWhiteSpace(xml) || !xml.Contains("<inheritdoc", StringComparison.Ordinal))
+            return null;
+        try
+        {
+            return System.Xml.Linq.XDocument.Parse(xml).Descendants("inheritdoc").FirstOrDefault();
+        }
+        catch (System.Xml.XmlException)
+        {
+            return null;
+        }
+    }
+
+    private static ISymbol? ResolveInheritDocSource(ISymbol symbol, string? cref, Compilation? compilation)
+    {
+        if (!string.IsNullOrEmpty(cref))
+        {
+            return compilation == null
+                ? null
+                : DocumentationCommentId.GetFirstSymbolForDeclarationId(cref, compilation);
+        }
+
+        ISymbol? overridden = symbol switch
+        {
+            IMethodSymbol m => m.OverriddenMethod,
+            IPropertySymbol p => p.OverriddenProperty,
+            IEventSymbol e => e.OverriddenEvent,
+            _ => null
+        };
+        if (overridden != null)
+            return overridden;
+
+        ISymbol? explicitImplementation = symbol switch
+        {
+            IMethodSymbol m => m.ExplicitInterfaceImplementations.FirstOrDefault(),
+            IPropertySymbol p => p.ExplicitInterfaceImplementations.FirstOrDefault(),
+            IEventSymbol e => e.ExplicitInterfaceImplementations.FirstOrDefault(),
+            _ => null
+        };
+        if (explicitImplementation != null)
+            return explicitImplementation;
+
+        if (symbol is INamedTypeSymbol type)
+        {
+            if (type.BaseType != null && type.BaseType.SpecialType != SpecialType.System_Object)
+                return type.BaseType;
+            return type.Interfaces.FirstOrDefault();
+        }
+
+        if (symbol.ContainingType is { } containingType)
+        {
+            foreach (var @interface in containingType.AllInterfaces)
+            {
+                foreach (var member in @interface.GetMembers(symbol.Name))
+                {
+                    if (SymbolEqualityComparer.Default.Equals(
+                            containingType.FindImplementationForInterfaceMember(member), symbol))
+                    {
+                        return member;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     private static List<string> GetModifiers(ISymbol symbol)
