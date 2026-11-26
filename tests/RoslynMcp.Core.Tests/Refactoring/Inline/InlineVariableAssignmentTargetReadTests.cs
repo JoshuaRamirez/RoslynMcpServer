@@ -103,6 +103,9 @@ public class InlineVariableAssignmentTargetReadTests
     [InlineData("copy.Value = 5;")]
     [InlineData("(copy).Value = 5;")]
     [InlineData("copy.Inner.Value = 5;")]
+    [InlineData("copy!.Value = 5;")]
+    [InlineData("(copy!).Value = 5;")]
+    [InlineData("copy!.Inner.Value = 5;")]
     [InlineData("copy = default;")]
     [InlineData("(copy, other) = (other, copy);")]
     public async Task SingleSite_LocalItselfOrValueTypeReceiverWritten_StillRefused(string write)
@@ -163,6 +166,43 @@ public class InlineVariableAssignmentTargetReadTests
                     IHas v = _s;
                     v.Value = 5;
                     return _s.Value;
+                }
+            }
+            """
+        },
+        {
+            "boxing-suppressed",
+            """
+            namespace Demo;
+
+            public interface IHas { int Value { get; set; } }
+            public struct S : IHas { public int Value { get; set; } }
+
+            public class Box
+            {
+                private S _s;
+
+                public int Touch()
+                {
+                    IHas v = _s;
+                    v!.Value = 5;
+                    return _s.Value;
+                }
+            }
+            """
+        },
+        {
+            "array-creation-suppressed",
+            """
+            namespace Demo;
+
+            public class Arrays
+            {
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    arr![0] = 1;
+                    return arr;
                 }
             }
             """
@@ -264,7 +304,7 @@ public class InlineVariableAssignmentTargetReadTests
         await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
         var variableName = kind switch
         {
-            "boxing" => "v",
+            "boxing" or "boxing-suppressed" => "v",
             "collection-expression" => "list",
             "with-expression" => "r",
             "target-typed-new" => "w",
@@ -347,6 +387,75 @@ public class InlineVariableAssignmentTargetReadTests
             : new InlineVariableParams { SourceFile = workspace.SourcePath, VariableName = "v" });
 
         Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(expected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CastInitializer_IsParenthesizedBeforeMemberAndElementAccess(bool allFiles)
+    {
+        // (Derived)_base.X casts _base.X, and (IList<int>)_a[0] casts _a[0] (#3090 review).
+        // The extra indentation is the existing declaration-removal trivia behavior (one level per removed line).
+        const string source = """
+            using System.Collections.Generic;
+
+            namespace Demo;
+
+            public class Base { }
+            public class Derived : Base { public int X; }
+
+            public class Holder
+            {
+                private Base _base = new Derived();
+                private object _a = new List<int> { 7 };
+
+                public int Read()
+                {
+                    var d = (Derived)_base;
+                    var a = (IList<int>)_a;
+                    return d.X + a[0];
+                }
+            }
+            """;
+        const string expected = """
+            using System.Collections.Generic;
+
+            namespace Demo;
+
+            public class Base { }
+            public class Derived : Base { public int X; }
+
+            public class Holder
+            {
+                private Base _base = new Derived();
+                private object _a = new List<int> { 7 };
+
+                public int Read()
+                {
+                                    return ((Derived)_base).X + ((IList<int>)_a)[0];
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        if (allFiles)
+        {
+            var result = await operation.ExecuteAsync(new InlineVariableParams { AllFiles = true });
+            Assert.True(result.Success, result.Error?.Message);
+        }
+        else
+        {
+            foreach (var name in new[] { "d", "a" })
+            {
+                var result = await new InlineVariableOperation(workspace.Context).ExecuteAsync(
+                    new InlineVariableParams { SourceFile = workspace.SourcePath, VariableName = name });
+                Assert.True(result.Success, result.Error?.Message);
+            }
+        }
+
         Assert.Equal(expected, await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Empty(await workspace.GetDiskErrorsAsync());
     }

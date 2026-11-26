@@ -715,6 +715,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     /// (<c>values[index] = 10</c>) are reads (#3090), and so is a receiver whose
     /// initializer is the same object at every use site
     /// (<see cref="InitializerIsSharedReference"/>, e.g. <c>target.Name = x</c>).
+    /// <c>!</c> is unwrapped like parentheses: <c>local!.X = v</c> writes through the local.
     /// </summary>
     private static bool WritesLocal(
         ExpressionSyntax left,
@@ -724,8 +725,13 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        while (left is ParenthesizedExpressionSyntax parenthesized)
-            left = parenthesized.Expression;
+        // (local) and local! name the same storage as local, so unwrap both before classifying.
+        while (left is ParenthesizedExpressionSyntax or PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression })
+        {
+            left = left is ParenthesizedExpressionSyntax parenthesized
+                ? parenthesized.Expression
+                : ((PostfixUnaryExpressionSyntax)left).Operand;
+        }
 
         switch (left)
         {
@@ -748,6 +754,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                     receiver = receiver switch
                     {
                         ParenthesizedExpressionSyntax p => p.Expression,
+                        PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression } n => n.Operand,
                         MemberAccessExpressionSyntax m => m.Expression,
                         ElementAccessExpressionSyntax e => e.Expression,
                         ConditionalAccessExpressionSyntax c => c.Expression,
@@ -923,6 +930,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             if (mergesWithOperator || conditionalInHole ||
                 (needsParens &&
                  (_replacement is BinaryExpressionSyntax or
+                  CastExpressionSyntax or
                   ConditionalExpressionSyntax or
                   AnonymousFunctionExpressionSyntax)))
             {
