@@ -602,7 +602,15 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             }
         };
 
-        return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        // The single-file preview reports the same count as the allFiles preview and apply (#3088).
+        return new RefactoringResult
+        {
+            Success = true,
+            OperationId = operationId,
+            Preview = true,
+            PendingChanges = pendingChanges,
+            UsingDirectivesAdded = namespacesToAdd.Count
+        };
     }
 
     /// <summary>
