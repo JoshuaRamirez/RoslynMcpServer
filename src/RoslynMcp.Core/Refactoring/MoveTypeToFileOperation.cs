@@ -18,7 +18,7 @@ namespace RoslynMcp.Core.Refactoring;
 /// Handles file creation, using directive updates, and reference preservation.
 /// Honors optional <c>line</c> and <c>column</c> to disambiguate
 /// same-named top-level types in one file. Omitted column keeps today's
-/// symbolName + optional line pick (start-line equality /
+/// symbolName + optional line pick (start or identifier line /
 /// <c>SymbolAmbiguous</c> / single-match ignores line). Column without
 /// line keeps that omitted-line path. When column is set with line, picks
 /// the covering top-level type (identifier preferred, then smallest
@@ -71,7 +71,7 @@ public sealed class MoveTypeToFileOperation
 
             // Resolve symbol. Optional line/column disambiguates
             // same-named top-level types. Omitted column keeps today's
-            // symbolName + optional line pick (start-line equality /
+            // symbolName + optional line pick (start or identifier line /
             // SymbolAmbiguous / single-match ignores line). Column
             // without line keeps that omitted-line path. Column set
             // with line picks the covering top-level type (identifier
@@ -705,7 +705,8 @@ public sealed class MoveTypeToFileOperation
 
     private Contracts.Models.SymbolInfo CreateSymbolInfo(SymbolResolutionResult resolution, string targetFile)
     {
-        var location = resolution.Declaration.GetLocation().GetLineSpan();
+        // Report the type identifier, not the first attribute list / modifier (#3274).
+        var location = resolution.Declaration.Identifier.GetLocation().GetLineSpan();
 
         return new Contracts.Models.SymbolInfo
         {
