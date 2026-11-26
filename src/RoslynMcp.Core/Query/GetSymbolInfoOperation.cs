@@ -248,7 +248,8 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         string summary;
         try
         {
-            var element = XDocument.Parse(xml).Descendants("summary").FirstOrDefault();
+            // PreserveWhitespace keeps the space between adjacent inline elements (<c>x</c> <c>y</c>).
+            var element = XDocument.Parse(xml, LoadOptions.PreserveWhitespace).Descendants("summary").FirstOrDefault();
             if (element == null) return null;
             var builder = new StringBuilder();
             RenderDocumentationNodes(element.Nodes(), builder);

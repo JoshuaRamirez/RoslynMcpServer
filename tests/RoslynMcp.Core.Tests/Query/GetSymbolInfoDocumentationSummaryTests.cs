@@ -32,6 +32,12 @@ public class GetSymbolInfoDocumentationSummaryTests
 
             /// <summary>Returns <see langword="null"/> or <see cref="Widget">a widget</see> of <typeparamref name="T"/>.<para>Second.</para></summary>
             public static T? Pick<T>() where T : class => null;
+
+            /// <summary>Accepts <c>x</c> <c>y</c> as input.</summary>
+            public static void Pair() { }
+
+            /// <summary>See <see cref="Widget"/> <see cref="Ops"/> for details.</summary>
+            public static void Refs() { }
         }
         """;
 
@@ -40,6 +46,9 @@ public class GetSymbolInfoDocumentationSummaryTests
     [InlineData("Build", "Creates a Demo.Widget using Make<T>() & friends.")]
     [InlineData("Plain", "Plain summary text.")]
     [InlineData("Pick", "Returns null or a widget of T. Second.")]
+    // Whitespace-only text between adjacent inline elements was dropped by XDocument.Parse (#3091 review).
+    [InlineData("Pair", "Accepts x y as input.")]
+    [InlineData("Refs", "See Demo.Widget Demo.Ops for details.")]
     public async Task DocumentationSummary_IsRenderedText(string member, string expected)
     {
         await using var workspace = await TempWorkspace.CreateAsync(Source, "latest");
