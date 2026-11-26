@@ -1330,6 +1330,47 @@ public class ConvertExpressionBodyOperationTests
         Assert.NotNull(property.AccessorList);
     }
 
+    // #3110: a struct getter's `readonly` must move onto the expression-bodied property.
+    private const string ReadonlyGetterStructSource = """
+        namespace TestApp;
+
+        public struct Point
+        {
+            private int _x;
+            public Point(int x) { _x = x; }
+            public int X { readonly get { return _x; } }
+            public readonly int Twice() => X * 2;
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Convert_ToExpressionBody_ReadonlyGetter_KeepsReadonlyOnProperty(bool allFiles)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ReadonlyGetterStructSource);
+        var operation = new ConvertExpressionBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(allFiles
+            ? new ConvertExpressionBodyParams { AllFiles = true, Direction = "ToExpressionBody" }
+            : new ConvertExpressionBodyParams { SourceFile = workspace.SourcePath, MemberName = "X", Direction = "ToExpressionBody" });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public readonly int X => _x;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("readonly get", updated, StringComparison.Ordinal);
+
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath);
+        Assert.NotNull(document);
+        var compilation = await document.Project.GetCompilationAsync();
+        Assert.NotNull(compilation);
+        var getter = compilation.GetTypeByMetadataName("TestApp.Point")!.GetMembers("X").OfType<IPropertySymbol>().Single().GetMethod;
+        Assert.True(getter!.IsReadOnly);
+        var cs8656 = compilation.GetDiagnostics().Where(d => d.Id == "CS8656").Select(d => d.ToString()).ToList();
+        Assert.True(cs8656.Count == 0, string.Join(Environment.NewLine, cs8656));
+        await AssertCompilesAsync(workspace);
+    }
+
     private static async Task AssertCompilesAsync(TempWorkspace workspace)
     {
         var document = workspace.Context.GetDocumentByPath(workspace.SourcePath);
