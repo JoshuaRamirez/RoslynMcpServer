@@ -235,19 +235,6 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                 $"Cannot rewrite references to '{hit.Name}': a local, parameter or lambda parameter named '{hit.Name}' is already in scope at {Path.GetFileName(hit.FilePath)}:{hit.Line}, so the use would bind to it instead.");
         }
 
-        // If preview mode, return without applying
-        if (@params.Preview)
-        {
-            return CreatePreviewResult(
-                operationId,
-                @params,
-                fieldSymbol,
-                propertyName,
-                property,
-                externalReferences.Count,
-                fieldRenamed);
-        }
-
         var newSolution = await ApplyEncapsulateToSolutionAsync(
             document,
             root,
@@ -263,6 +250,23 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             fieldRenamed,
             @params.UpdateReferences,
             cancellationToken);
+
+        // If preview mode, return without applying. The snippets come from the source declaration and the
+        // computed result, so they show real modifiers and the renamed backing field (#3066).
+        if (@params.Preview)
+        {
+            return await CreatePreviewResultAsync(
+                operationId,
+                @params,
+                fieldDeclaration,
+                newSolution.GetDocument(document.Id),
+                fieldSymbol.ContainingType.Name,
+                newFieldName,
+                propertyName,
+                externalReferences.Count,
+                fieldRenamed,
+                cancellationToken);
+        }
 
         var referenceReplacement = @params.UpdateReferences
             ? propertyName
@@ -1061,15 +1065,38 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             });
     }
 
-    private static RefactoringResult CreatePreviewResult(
+    private static async Task<RefactoringResult> CreatePreviewResultAsync(
         Guid operationId,
         EncapsulateFieldParams @params,
-        IFieldSymbol field,
+        FieldDeclarationSyntax fieldDeclaration,
+        Document? newDocument,
+        string containingTypeName,
+        string newFieldName,
         string propertyName,
-        PropertyDeclarationSyntax property,
         int externalRefCount,
-        bool fieldRenamed)
+        bool fieldRenamed,
+        CancellationToken cancellationToken)
     {
+        var afterParts = new List<string>();
+        if (newDocument != null && await newDocument.GetSyntaxRootAsync(cancellationToken) is { } newRoot)
+        {
+            var containingType = newRoot.DescendantNodes()
+                .OfType<TypeDeclarationSyntax>()
+                .FirstOrDefault(t => t.Identifier.ValueText == containingTypeName &&
+                                     t.Members.OfType<PropertyDeclarationSyntax>().Any(p => p.Identifier.ValueText == propertyName));
+            if (containingType != null)
+            {
+                afterParts.AddRange(containingType.Members
+                    .OfType<FieldDeclarationSyntax>()
+                    .Where(f => f.Declaration.Variables.Any(v => v.Identifier.ValueText == newFieldName))
+                    .Select(f => f.ToString()));
+                afterParts.AddRange(containingType.Members
+                    .OfType<PropertyDeclarationSyntax>()
+                    .Where(p => p.Identifier.ValueText == propertyName)
+                    .Select(p => p.ToString()));
+            }
+        }
+
         var pendingChanges = new List<PendingChange>
         {
             new()
@@ -1082,8 +1109,8 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                     @params.UpdateReferences,
                     externalRefCount,
                     fieldRenamed),
-                BeforeSnippet = $"{field.DeclaredAccessibility.ToString().ToLower()} {field.Type.ToDisplayString()} {@params.FieldName};",
-                AfterSnippet = $"private {field.Type.ToDisplayString()} {@params.FieldName};\n\n{property.NormalizeWhitespace()}"
+                BeforeSnippet = fieldDeclaration.ToString(),
+                AfterSnippet = string.Join("\n\n", afterParts)
             }
         };
 
