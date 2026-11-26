@@ -121,6 +121,9 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
             @params.StaticFilter,
             abstractFilter: null);
 
+        var candidates = new List<(Location Location, ISymbol CallingSymbol, string File, int Line, int Column,
+            string CallerFullyQualifiedName)>();
+
         foreach (var caller in callerResults)
         {
             // Accessibility / name / kind / static filters run on the calling symbol before location filters /
@@ -179,22 +182,33 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                     continue;
 
                 totalCount++;
-
-                if (callers.Count < maxResults)
-                {
-                    var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(location, cancellationToken);
-
-                    callers.Add(new CallerInfo
-                    {
-                        CallerName = callingSymbol.Name,
-                        CallerFullyQualifiedName = callingSymbol.ToDisplayString(),
-                        File = lineSpan.Path,
-                        Line = lineSpan.StartLinePosition.Line + 1,
-                        Column = lineSpan.StartLinePosition.Character + 1,
-                        Snippet = snippet
-                    });
-                }
+                candidates.Add((location, callingSymbol, lineSpan.Path, lineSpan.StartLinePosition.Line + 1,
+                    lineSpan.StartLinePosition.Character + 1, callingSymbol.ToDisplayString()));
             }
+        }
+
+        // SymbolFinder.FindCallersAsync makes no ordering promise (the order changes from run to run), so
+        // sort every matching call site deterministically before maxResults keeps the first N (#3044):
+        // file path (ordinal), then line, then column, then the caller's fully qualified name. Snippets
+        // are read only for the returned call sites.
+        foreach (var candidate in candidates
+            .OrderBy(c => c.File, StringComparer.Ordinal)
+            .ThenBy(c => c.Line)
+            .ThenBy(c => c.Column)
+            .ThenBy(c => c.CallerFullyQualifiedName, StringComparer.Ordinal)
+            .Take(maxResults))
+        {
+            var snippet = await LocationSnippetHelpers.GetLineSnippetAsync(candidate.Location, cancellationToken);
+
+            callers.Add(new CallerInfo
+            {
+                CallerName = candidate.CallingSymbol.Name,
+                CallerFullyQualifiedName = candidate.CallerFullyQualifiedName,
+                File = candidate.File,
+                Line = candidate.Line,
+                Column = candidate.Column,
+                Snippet = snippet
+            });
         }
 
         var result = new FindCallersResult

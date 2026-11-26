@@ -41,7 +41,7 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
         SymbolTargetValidator.Validate(@params.Line, @params.Column, @params.SymbolName);
 
         if (!string.IsNullOrWhiteSpace(@params.Direction) &&
-            !Enum.TryParse<HierarchyDirection>(@params.Direction, ignoreCase: true, out _))
+            !StrictEnumParser.TryParse<HierarchyDirection>(@params.Direction, out _))
         {
             var valid = string.Join(", ", Enum.GetNames<HierarchyDirection>());
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, $"Invalid direction. Valid values: {valid}");
@@ -206,6 +206,17 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
             interfaces.Add(CreateEntry(iface));
         }
 
+        // SymbolFinder.FindDerivedClassesAsync makes no ordering promise (the order changes from run to
+        // run), so sort DerivedTypes deterministically before maxResults keeps the first N (#3042):
+        // source entries by file path (ordinal), then line, then fully qualified name; entries without
+        // a source location last, by fully qualified name.
+        derivedTypes = derivedTypes
+            .OrderBy(entry => entry.File == null)
+            .ThenBy(entry => entry.File, StringComparer.Ordinal)
+            .ThenBy(entry => entry.Line ?? 0)
+            .ThenBy(entry => entry.FullyQualifiedName, StringComparer.Ordinal)
+            .ToList();
+
         var totalCount = derivedTypes.Count;
         IReadOnlyList<TypeHierarchyEntry> returnedDerived = derivedTypes;
         if (@params.MaxResults.HasValue && derivedTypes.Count > @params.MaxResults.Value)
@@ -233,7 +244,11 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
         if (string.IsNullOrWhiteSpace(direction))
             return HierarchyDirection.Both;
 
-        return Enum.Parse<HierarchyDirection>(direction, ignoreCase: true);
+        // Same strict member-name match as ValidateParams (numerics / comma lists rejected, #3130).
+        return StrictEnumParser.TryParse<HierarchyDirection>(direction, out var parsed)
+            ? parsed
+            : throw new RefactoringException(ErrorCodes.MissingRequiredParam,
+                $"Invalid direction. Valid values: {string.Join(", ", Enum.GetNames<HierarchyDirection>())}");
     }
 
     private static TypeHierarchyEntry CreateEntry(INamedTypeSymbol typeSymbol, Location? preferredLocation = null)

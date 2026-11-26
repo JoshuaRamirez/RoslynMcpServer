@@ -590,5 +590,42 @@ public class CliArgsTests
         Assert.Equal("Warning", result.Options["severity-filter"]);
         Assert.Equal("Handle", result.Options["name-filter"]);
     }
-}
 
+    // #3064: -h / -? / help after <solution-path> <tool> must show tool help, not run the tool.
+    [Theory]
+    [InlineData("-h")]
+    [InlineData("-H")]
+    [InlineData("-?")]
+    [InlineData("help")]
+    [InlineData("--help")]
+    public void SolutionToolAndPositionalHelpFlag_ShowsToolHelp(string flag)
+    {
+        var result = CliArgs.Parse(["App.csproj", "rename-symbol", flag]);
+
+        Assert.True(result.ShowToolHelp);
+        Assert.Equal("rename-symbol", result.ToolName);
+        Assert.Null(result.SolutionPath);
+    }
+
+    [Theory]
+    [InlineData("-h")]
+    [InlineData("-?")]
+    [InlineData("help")]
+    public void SolutionToolHelpFlagBeforeOtherOptions_ShowsToolHelpInsteadOfRunning(string flag)
+    {
+        var result = CliArgs.Parse(["App.csproj", "sort-usings", flag, "--all-files"]);
+
+        Assert.True(result.ShowToolHelp);
+        Assert.Equal("sort-usings", result.ToolName);
+        Assert.Null(result.SolutionPath);
+    }
+
+    [Fact]
+    public void HelpSpellingAsOptionValue_IsNotAHelpRequest()
+    {
+        var result = CliArgs.Parse(["App.csproj", "rename-symbol", "--new-name", "help"]);
+
+        Assert.False(result.ShowToolHelp);
+        Assert.Equal("help", result.Options["new-name"]);
+    }
+}
