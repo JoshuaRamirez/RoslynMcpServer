@@ -148,7 +148,8 @@ public class InlineVariableAssignmentTargetReadTests
     /// also fails to compile: CS0178, CS9176, CS1002). The receiver may sit under parentheses, casts,
     /// <c>as</c> or <c>!</c>, and a user-defined operator / conversion or a property getter counts as a
     /// call that may return a fresh object (third review). checked/unchecked, ?:, ??, switch arms, an
-    /// assignment's value and a call argument inside the target do not hide a write either (fourth review).
+    /// assignment's value and a call argument inside the target do not hide a write either (fourth review),
+    /// nor do ??=, an out argument or __makeref / __refvalue (fifth review: unknown parents refuse).
     /// </summary>
     public static TheoryData<string, string> NotSharedReceiverSources => new()
     {
@@ -645,6 +646,73 @@ public class InlineVariableAssignmentTargetReadTests
             """
         },
         {
+            "array-coalesce-assignment-value",
+            """
+            namespace Demo;
+
+            public static class Ext
+            {
+                public static int[] IdA(int[] a) => a;
+            }
+
+            public class Arrays
+            {
+                private bool _flag = true;
+                private int[] _other = new int[1];
+
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    (_other ??= arr)[0] = 1;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "array-out-argument-escape",
+            """
+            namespace Demo;
+
+            public static class Ext
+            {
+                public static int[] IdA(int[] a) => a;
+            }
+
+            public class Arrays
+            {
+                private bool _flag = true;
+                private int[] _other = new int[1];
+
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    int.TryParse("1", out Ext.IdA(arr)[0]);
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "makeref",
+            """
+            namespace Demo;
+
+            public class Counter
+            {
+                private int _i = 1;
+
+                public int Touch()
+                {
+                    int n = _i;
+                    System.TypedReference tr = __makeref(n);
+                    __refvalue(tr, int) = 4;
+                    return n;
+                }
+            }
+            """
+        },
+        {
             "array-creation",
             """
             namespace Demo;
@@ -742,7 +810,7 @@ public class InlineVariableAssignmentTargetReadTests
         var variableName = kind switch
         {
             _ when kind.StartsWith("boxing", StringComparison.Ordinal) => "v",
-            _ when kind.StartsWith("checked", StringComparison.Ordinal) || kind.StartsWith("unchecked", StringComparison.Ordinal) => "n",
+            _ when kind.StartsWith("checked", StringComparison.Ordinal) || kind.StartsWith("unchecked", StringComparison.Ordinal) || kind == "makeref" => "n",
             _ when kind.StartsWith("operator", StringComparison.Ordinal) || kind == "property-getter" => "w",
             "collection-expression" => "list",
             "with-expression" => "r",
@@ -1013,6 +1081,53 @@ public class InlineVariableAssignmentTargetReadTests
         var result = await new InlineVariableOperation(workspace.Context).ExecuteAsync(allFiles
             ? new InlineVariableParams { AllFiles = true }
             : new InlineVariableParams { SourceFile = workspace.SourcePath, VariableName = "target" });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(expected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ValueTypeLocalPassedToCallInsideIndex_IsInlined_FullOutput(bool allFiles)
+    {
+        // An int argument carries no reference, so the call-argument escape rule must not refuse it (#3090).
+        // The extra indentation is the existing declaration-removal trivia behavior.
+        const string source = """
+            namespace Demo;
+
+            public class Slots
+            {
+                private static int Compute(int i) => i + 1;
+
+                public int[] Fill(int[] values)
+                {
+                    int index = 2;
+                    values[Compute(index)] = 10;
+                    return values;
+                }
+            }
+            """;
+        const string expected = """
+            namespace Demo;
+
+            public class Slots
+            {
+                private static int Compute(int i) => i + 1;
+
+                public int[] Fill(int[] values)
+                {
+                            values[Compute(2)] = 10;
+                    return values;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        var result = await new InlineVariableOperation(workspace.Context).ExecuteAsync(allFiles
+            ? new InlineVariableParams { AllFiles = true }
+            : new InlineVariableParams { SourceFile = workspace.SourcePath, VariableName = "index" });
 
         Assert.True(result.Success, result.Error?.Message);
         Assert.Equal(expected, await File.ReadAllTextAsync(workspace.SourcePath));
