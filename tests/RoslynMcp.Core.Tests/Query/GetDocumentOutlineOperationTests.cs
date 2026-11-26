@@ -395,7 +395,7 @@ public class GetDocumentOutlineOperationTests
         }
         """;
 
-    // Full DFS pre-order: N, A, Inner, InnerM, A (ctor), M, P, B, F, K, E, One, Two, I, IM => 15 nodes.
+    // Full DFS pre-order (source order): N, A, A (ctor), P, M, Inner, InnerM, B, F, K, E, One, Two, I, IM => 15 nodes.
     private const int KindSourceTotal = 15;
 
     [Fact]
@@ -460,10 +460,10 @@ public class GetDocumentOutlineOperationTests
             {
                 ("N", "Namespace", 1),
                 ("A", "Class", 2),
-                ("Inner", "Class", 3),
-                ("InnerM", "Method", 4),
                 ("A", "Constructor", 3),
                 ("M", "Method", 3),
+                ("Inner", "Class", 3),
+                ("InnerM", "Method", 4),
                 ("I", "Interface", 2),
                 ("IM", "Method", 3)
             },
@@ -647,7 +647,7 @@ public class GetDocumentOutlineOperationTests
 
         Assert.True(capped.Success);
         Assert.NotNull(capped.Data);
-        Assert.Equal(new[] { "N", "A", "Inner", "InnerM", "A" }, Flatten(capped.Data.Entries).Select(e => e.Name));
+        Assert.Equal(new[] { "N", "A", "A", "M", "Inner" }, Flatten(capped.Data.Entries).Select(e => e.Name));
         Assert.Equal(8, capped.Data.TotalCount);
         Assert.True(capped.Data.Truncated);
 
@@ -748,12 +748,12 @@ public class GetDocumentOutlineOperationTests
         }
         """;
 
-    // Full DFS pre-order: App, ClickHandler, KeyRouter, HandleKey, Route, ClickHandler (ctor), HandleClick,
-    // Render, HandledCount, Renderer, Draw, Handles, Mode, Handled, Ignored => 15 nodes.
+    // Full DFS pre-order (source order): App, ClickHandler, ClickHandler (ctor), HandleClick, Render, HandledCount,
+    // KeyRouter, HandleKey, Route, Renderer, Draw, Handles, Mode, Handled, Ignored => 15 nodes.
     private const int NameSourceTotal = 15;
 
-    // nameFilter "handle" tree: App > [ClickHandler > [KeyRouter > [HandleKey], ClickHandler (ctor), HandleClick,
-    // HandledCount], Renderer > [Handles], Mode > [Handled]] => 11 nodes.
+    // nameFilter "handle" tree: App > [ClickHandler > [ClickHandler (ctor), HandleClick, HandledCount,
+    // KeyRouter > [HandleKey]], Renderer > [Handles], Mode > [Handled]] => 11 nodes.
     private const int HandleFilteredTotal = 11;
 
     [Fact]
@@ -854,11 +854,11 @@ public class GetDocumentOutlineOperationTests
             {
                 ("App", "Namespace", 1),
                 ("ClickHandler", "Class", 2),
-                ("KeyRouter", "Class", 3),
-                ("HandleKey", "Method", 4),
                 ("ClickHandler", "Constructor", 3),
                 ("HandleClick", "Method", 3),
                 ("HandledCount", "Property", 3),
+                ("KeyRouter", "Class", 3),
+                ("HandleKey", "Method", 4),
                 ("Renderer", "Class", 2),
                 ("Handles", "Constant", 3),
                 ("Mode", "Enum", 2),
@@ -970,10 +970,10 @@ public class GetDocumentOutlineOperationTests
             {
                 ("App", "Namespace", 1),
                 ("ClickHandler", "Class", 2),
-                ("KeyRouter", "Class", 3),
-                ("HandleKey", "Method", 4),
                 ("ClickHandler", "Constructor", 3),
-                ("HandleClick", "Method", 3)
+                ("HandleClick", "Method", 3),
+                ("KeyRouter", "Class", 3),
+                ("HandleKey", "Method", 4)
             },
             Flatten(methods.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
         Assert.Equal(6, methods.Data.TotalCount);
@@ -1054,7 +1054,7 @@ public class GetDocumentOutlineOperationTests
         Assert.True(capped.Success);
         Assert.NotNull(capped.Data);
         Assert.Equal(
-            new[] { "App", "ClickHandler", "KeyRouter", "HandleKey", "ClickHandler" },
+            new[] { "App", "ClickHandler", "ClickHandler", "HandleClick", "HandledCount" },
             Flatten(capped.Data.Entries).Select(e => e.Name));
         Assert.Equal(HandleFilteredTotal, capped.Data.TotalCount);
         Assert.True(capped.Data.Truncated);
@@ -1144,8 +1144,8 @@ public class GetDocumentOutlineOperationTests
         }
         """;
 
-    // Full DFS pre-order: App, Implicit, Nested, Inner, Implicit (ctor), Helper, Run, Shared, Hook, Size, _count,
-    // Changed, IService, Execute, Split, Split, Tail, Mode, On, Off, Callback => 21 nodes.
+    // Full DFS pre-order (source order): App, Implicit, _count, Helper, Run, Shared, Hook, Size, Changed,
+    // Implicit (ctor), Nested, Inner, IService, Execute, Split, Split, Tail, Mode, On, Off, Callback => 21 nodes.
     private const int AccessSourceTotal = 21;
 
     // accessibilityFilter "public" tree: App > [Implicit > [Nested, Implicit (ctor), Run], IService > [Execute],
@@ -1218,9 +1218,9 @@ public class GetDocumentOutlineOperationTests
             {
                 ("App", "Namespace", 1),
                 ("Implicit", "Class", 2),
-                ("Nested", "Class", 3),
-                ("Implicit", "Constructor", 3),
                 ("Run", "Method", 3),
+                ("Implicit", "Constructor", 3),
+                ("Nested", "Class", 3),
                 ("IService", "Interface", 2),
                 ("Execute", "Method", 3),
                 ("Split", "Class", 2),
@@ -1266,10 +1266,10 @@ public class GetDocumentOutlineOperationTests
             {
                 ("App", "Namespace", 1),
                 ("Implicit", "Class", 2),
+                ("_count", "Field", 3),
+                ("Helper", "Method", 3),
                 ("Nested", "Class", 3),
                 ("Inner", "Method", 4),
-                ("Helper", "Method", 3),
-                ("_count", "Field", 3),
                 ("Split", "Class", 2),
                 ("Tail", "Method", 3)
             },
@@ -1355,8 +1355,8 @@ public class GetDocumentOutlineOperationTests
             {
                 ("App", "Namespace", 1),
                 ("Implicit", "Class", 2),
-                ("Implicit", "Constructor", 3),
                 ("Run", "Method", 3),
+                ("Implicit", "Constructor", 3),
                 ("IService", "Interface", 2),
                 ("Execute", "Method", 3)
             },
@@ -1440,7 +1440,7 @@ public class GetDocumentOutlineOperationTests
         Assert.True(capped.Success);
         Assert.NotNull(capped.Data);
         Assert.Equal(
-            new[] { "App", "Implicit", "Nested", "Implicit" },
+            new[] { "App", "Implicit", "Run", "Implicit" },
             Flatten(capped.Data.Entries).Select(e => e.Name));
         Assert.Equal(PublicFilteredTotal, capped.Data.TotalCount);
         Assert.True(capped.Data.Truncated);
@@ -2116,8 +2116,8 @@ public class GetDocumentOutlineOperationTests
             new[]
             {
                 ("App", "Namespace"), ("Util", "Class"), ("Help", "Method"), ("Max", "Constant"),
-                ("Mixer", "Class"), ("Mixer", "Constructor"), ("Create", "Method"), ("Name", "Property"),
-                ("Counter", "Field"), ("Changed", "Event"), ("Mode", "Enum"), ("A", "EnumMember")
+                ("Mixer", "Class"), ("Mixer", "Constructor"), ("Counter", "Field"), ("Name", "Property"),
+                ("Create", "Method"), ("Changed", "Event"), ("Mode", "Enum"), ("A", "EnumMember")
             },
             Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
         Assert.Equal(12, result.Data.TotalCount);
@@ -2142,8 +2142,8 @@ public class GetDocumentOutlineOperationTests
         Assert.Equal(
             new[]
             {
-                ("App", "Namespace"), ("Mixer", "Class"), ("Mixer", "Constructor"), ("Run", "Method"),
-                ("Label", "Property"), ("Instance", "Field"), ("Mode", "Enum"), ("Handler", "Delegate")
+                ("App", "Namespace"), ("Mixer", "Class"), ("Mixer", "Constructor"), ("Instance", "Field"),
+                ("Label", "Property"), ("Run", "Method"), ("Mode", "Enum"), ("Handler", "Delegate")
             },
             Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
         Assert.Equal(8, result.Data.TotalCount);
@@ -2331,7 +2331,7 @@ public class GetDocumentOutlineOperationTests
             {
                 ("App", "Namespace"), ("IShape", "Interface"), ("Draw", "Method"), ("Area", "Property"),
                 ("IFactory", "Interface"), ("Create", "Method"),
-                ("Vec", "Class"), ("Draw", "Method"), ("Create", "Method"), ("Area", "Property"),
+                ("Vec", "Class"), ("Draw", "Method"), ("Area", "Property"), ("Create", "Method"),
                 ("Value", "Property"), ("Count", "Field")
             }
         },
@@ -2469,8 +2469,8 @@ public class GetDocumentOutlineOperationTests
         Assert.Equal(
             new[]
             {
-                ("App", "Namespace"), ("Shape", "Class"), ("Part", "Class"), ("Area", "Method"),
-                ("Name", "Property"), ("Changed", "Event"),
+                ("App", "Namespace"), ("Shape", "Class"), ("Area", "Method"),
+                ("Name", "Property"), ("Changed", "Event"), ("Part", "Class"),
                 ("IRender", "Interface"), ("Render", "Method"), ("Make", "Method")
             },
             Flatten(result.Data!.Entries).Select(e => (e.Name, e.Kind)));
@@ -2568,7 +2568,7 @@ public class GetDocumentOutlineOperationTests
         });
 
         Assert.True(result.Success);
-        Assert.Equal(new[] { "App", "Shape", "Part" }, Flatten(result.Data!.Entries).Select(e => e.Name));
+        Assert.Equal(new[] { "App", "Shape", "Area" }, Flatten(result.Data!.Entries).Select(e => e.Name));
         Assert.Equal(9, result.Data.TotalCount);
         Assert.True(result.Data.Truncated);
     }
@@ -2898,6 +2898,73 @@ public class GetDocumentOutlineOperationTests
         }
 
         return list;
+    }
+
+    // #3050: children used to be grouped by syntax kind (types, ctors, methods, properties, fields,
+    // events, enums / types, enums, delegates) instead of source order.
+    private const string MixedOrderSource = """
+        namespace App;
+
+        public delegate void Notify(string message);
+
+        public enum Level { Low, High }
+
+        public class Order
+        {
+            public enum Status { New, Shipped }
+
+            public event Notify? Shipped;
+
+            private int _count;
+
+            public Order() { }
+
+            public string Name { get; set; } = "";
+
+            public void Ship() { _count++; Shipped?.Invoke(Name); }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_ReturnsChildrenInSourceOrder()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedOrderSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams { SourceFile = workspace.SourcePath });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var ns = Assert.Single(result.Data!.Entries);
+        Assert.Equal(new[] { "Notify:3", "Level:5", "Order:7" }, ns.Children!.Select(e => $"{e.Name}:{e.Line}"));
+        var order = ns.Children!.Single(e => e.Name == "Order");
+        Assert.Equal(
+            new[] { "Status:9", "Shipped:11", "_count:13", "Order:15", "Name:17", "Ship:19" },
+            order.Children!.Select(e => $"{e.Name}:{e.Line}"));
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_MaxResults_KeepsFirstDeclarationsInSourceOrder()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedOrderSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams { SourceFile = workspace.SourcePath, MaxResults = 5 });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.True(result.Data!.Truncated);
+        var lines = new List<string>();
+        void Walk(IReadOnlyList<OutlineEntry> entries)
+        {
+            foreach (var entry in entries)
+            {
+                lines.Add($"{entry.Kind} {entry.Name}:{entry.Line}");
+                if (entry.Children != null)
+                    Walk(entry.Children);
+            }
+        }
+
+        Walk(result.Data.Entries);
+        Assert.Equal(new[] { "Namespace App:1", "Delegate Notify:3", "Enum Level:5", "EnumMember Low:5", "EnumMember High:5" }, lines);
     }
 
     private static int CountNodes(IReadOnlyList<OutlineEntry> entries)
