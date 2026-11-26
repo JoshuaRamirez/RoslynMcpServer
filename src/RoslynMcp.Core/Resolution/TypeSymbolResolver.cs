@@ -77,7 +77,7 @@ public sealed class TypeSymbolResolver
     /// Finds a type symbol in a specific file, optionally at a specific line
     /// and column. Omitted <paramref name="column"/> keeps today's
     /// <paramref name="symbolName"/> + optional <paramref name="line"/>
-    /// pick (start-line equality when several top-level types share the
+    /// pick (start-line or identifier-line equality when several top-level types share the
     /// name; <c>SymbolAmbiguous</c> when line is omitted and several
     /// types share the name; a single match ignores line). Column without
     /// line keeps that omitted-line path. When column is set with line,
@@ -194,14 +194,34 @@ public sealed class TypeSymbolResolver
                     });
             }
 
-            // Find by line number
-            declaration = matchingDeclarations
-                .FirstOrDefault(t =>
+            // Find by line number. Accept the identifier's line (what search_symbols
+            // and go_to_definition report) as well as the declaration's start line,
+            // which sits on the first attribute list or modifier when those precede
+            // the identifier on earlier lines (#3274).
+            var onLine = matchingDeclarations
+                .Where(t =>
                 {
-                    var lineSpan = t.GetLocation().GetLineSpan();
-                    var declarationLine = lineSpan.StartLinePosition.Line + 1; // Convert to 1-based
-                    return declarationLine == line.Value;
+                    var declarationLine = t.GetLocation().GetLineSpan().StartLinePosition.Line + 1; // Convert to 1-based
+                    var identifierLine = t.Identifier.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+                    return declarationLine == line.Value || identifierLine == line.Value;
                 })
+                .ToList();
+
+            // One type's identifier line can be another's start line (or two types can share a line);
+            // refuse rather than silently pick the first (#3274 review).
+            if (onLine.Count > 1)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.SymbolAmbiguous,
+                    $"Multiple types named '{symbolName}' match line {line}. Provide column to disambiguate.",
+                    new Dictionary<string, object>
+                    {
+                        ["matches"] = onLine.Select(t =>
+                            t.GetLocation().GetLineSpan().StartLinePosition.Line + 1).ToList()
+                    });
+            }
+
+            declaration = onLine.FirstOrDefault()
                 ?? throw new RefactoringException(
                     ErrorCodes.SymbolNotFound,
                     $"No type named '{symbolName}' found at line {line}.");
