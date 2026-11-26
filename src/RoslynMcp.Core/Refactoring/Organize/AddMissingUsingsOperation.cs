@@ -527,6 +527,18 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             }
         }
 
+        // The project's own type wins over a same-named referenced type: the System-first tie-break
+        // picked static System.IO.Path over App.Geometry.Path, leaving CS0712 behind (#3117).
+        var sourceNamespaces = localTypes
+            .Where(t => !t.IsFileLocal && t.Locations.Any(l => l.IsInSource))
+            .Select(t => t.ContainingNamespace)
+            .Where(ns => !ns.IsGlobalNamespace)
+            .Select(ns => ns.ToDisplayString())
+            .Distinct()
+            .ToList();
+        if (sourceNamespaces.Count > 0)
+            return sourceNamespaces;
+
         return namespaces.Distinct().ToList();
     }
 
