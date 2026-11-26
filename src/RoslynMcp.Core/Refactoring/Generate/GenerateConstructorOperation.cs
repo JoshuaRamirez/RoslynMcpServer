@@ -756,7 +756,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         var hasRequestedMembers = requestedMembers != null && requestedMembers.Count > 0;
 
         CollectDeclaredMembers(
-            typeSymbol, typeSymbol, allMembers, includeProperties, hasRequestedMembers, requireAccessible: false);
+            typeSymbol, typeSymbol, allMembers, includeProperties, hasRequestedMembers, requireAccessible: false,
+            includeGetOnlyAutoProperties: copyConstructor);
 
         if (includeInheritedMembers)
         {
@@ -851,7 +852,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         List<ISymbol> members,
         bool includeProperties,
         bool hasRequestedMembers,
-        bool requireAccessible)
+        bool requireAccessible,
+        bool includeGetOnlyAutoProperties = false)
     {
         foreach (var field in declaringType.GetMembers().OfType<IFieldSymbol>())
         {
@@ -874,7 +876,13 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         {
             foreach (var prop in declaringType.GetMembers().OfType<IPropertySymbol>())
             {
-                if (prop.IsStatic || prop.IsReadOnly || prop.SetMethod == null || prop.IsImplicitlyDeclared || prop.IsIndexer)
+                // A copy constructor of the declaring type can assign its own get-only auto-properties
+                // (this.Id = other.Id); skipping them silently lost their state in every copy (#3170).
+                var isOwnGetOnlyAutoProperty = includeGetOnlyAutoProperties && !requireAccessible &&
+                    !prop.IsStatic && !prop.IsIndexer && !prop.IsImplicitlyDeclared && prop.SetMethod == null &&
+                    IsAutoProperty(prop, declaringType);
+                if (!isOwnGetOnlyAutoProperty &&
+                    (prop.IsStatic || prop.IsReadOnly || prop.SetMethod == null || prop.IsImplicitlyDeclared || prop.IsIndexer))
                     continue;
                 if (requireAccessible && !IsAccessibleFrom(prop, fromType))
                     continue;
@@ -884,6 +892,11 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             }
         }
     }
+
+    private static bool IsAutoProperty(IPropertySymbol property, INamedTypeSymbol declaringType) =>
+        declaringType.GetMembers()
+            .OfType<IFieldSymbol>()
+            .Any(f => SymbolEqualityComparer.Default.Equals(f.AssociatedSymbol, property));
 
     /// <summary>
     /// True when <paramref name="member"/> can be assigned as <c>this.Name</c> from
