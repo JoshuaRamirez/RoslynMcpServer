@@ -827,7 +827,12 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             var mergesWithOperator = _replacement is PrefixUnaryExpressionSyntax &&
                                      node.Parent is PrefixUnaryExpressionSyntax or BinaryExpressionSyntax;
 
-            if (mergesWithOperator ||
+            // In an interpolation hole a bare ?: ends the expression at its ':', which starts the
+            // format clause ({count == 1 ? "item" : "items"} → CS8361), so parenthesize it (#3040).
+            var conditionalInHole = node.Parent is InterpolationSyntax &&
+                                    _replacement is ConditionalExpressionSyntax;
+
+            if (mergesWithOperator || conditionalInHole ||
                 (needsParens &&
                  (_replacement is BinaryExpressionSyntax or
                   ConditionalExpressionSyntax or
