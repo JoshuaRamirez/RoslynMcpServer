@@ -571,6 +571,26 @@ public sealed class MoveTypeToNamespaceOperation
                 $"Type is already in namespace '{@params.TargetNamespace}'.");
         }
 
+        // The target namespace, or one of its parent segments, must not be an existing type's full name:
+        // namespace App.Widget next to class App.Widget gives CS0101 / CS0426 in every consumer (#3034).
+        var segments = @params.TargetNamespace!.Split('.');
+        for (var count = segments.Length; count >= 1; count--)
+        {
+            var prefix = string.Join(".", segments, 0, count);
+            foreach (var project in _context.Solution.Projects)
+            {
+                var compilation = await project.GetCompilationAsync(cancellationToken);
+                var clashing = compilation?.GetTypeByMetadataName(prefix);
+                if (clashing != null && !SymbolEqualityComparer.Default.Equals(clashing, resolution.Symbol))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.NameCollision,
+                        $"Target namespace '{@params.TargetNamespace}' conflicts with existing type '{prefix}'.",
+                        suggestions: ["Choose a target namespace that is not a type name", "Rename the existing type first"]);
+                }
+            }
+        }
+
         // Check for name collision in target namespace
         var targetType = await _symbolResolver.FindTypeByNameAsync(
             $"{@params.TargetNamespace}.{resolution.Symbol.Name}",
