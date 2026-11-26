@@ -327,7 +327,77 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             return false;
 
         conversion = analyzed;
+        if (!(preferQuerySyntax && HasQuerySyntaxForm(conversion.Kind)))
+            conversion = conversion with { Projection = KeepFilterNarrowing(foreachStmt, conversion, semanticModel) };
+
         assignment = BuildLinqAssignment(conversion, preferQuerySyntax);
+        return true;
+    }
+
+    /// <summary>
+    /// Inside the loop, the <c>if</c> filter can narrow a nullable iteration variable to not-null at the
+    /// <c>Add</c> site. Method syntax moves the projection into its own <c>Select</c> lambda, where that
+    /// narrowing is lost: <c>Where(s =&gt; s != null).Select(s =&gt; s)</c> is <c>List&lt;string?&gt;</c>, so
+    /// assigning it to <c>List&lt;string&gt;</c> raises CS8619 (#3361). Each reference to the iteration
+    /// variable that the compiler saw as not-null at the <c>Add</c> site is marked with <c>!</c> so the
+    /// <c>Select</c> lambda keeps the same null-state. No-op without a semantic model, without a filter,
+    /// or when nullable analysis is off.
+    /// </summary>
+    private static ExpressionSyntax KeepFilterNarrowing(
+        ForEachStatementSyntax foreachStmt,
+        ForeachLinqConversion conversion,
+        SemanticModel? semanticModel)
+    {
+        var projection = conversion.Projection;
+        if (conversion.Filter == null || semanticModel == null || projection.SyntaxTree != semanticModel.SyntaxTree)
+            return projection;
+
+        // The Select lambda's parameter gets the source's element type (a 'var' loop variable is always
+        // annotated, so the local's own type cannot tell whether the source is nullable).
+        if (semanticModel.GetDeclaredSymbol(foreachStmt) is not ILocalSymbol iterationVariable ||
+            semanticModel.GetForEachStatementInfo(foreachStmt).ElementType?.NullableAnnotation != NullableAnnotation.Annotated)
+        {
+            return projection;
+        }
+
+        var narrowed = projection.DescendantNodesAndSelf()
+            .OfType<IdentifierNameSyntax>()
+            .Where(id => id.Parent is not PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression })
+            .Where(id => IsValueUse(id, projection, semanticModel))
+            .Where(id => SymbolEqualityComparer.Default.Equals(semanticModel.GetSymbolInfo(id).Symbol, iterationVariable))
+            .Where(id => semanticModel.GetTypeInfo(id).Nullability.FlowState == NullableFlowState.NotNull)
+            .ToList();
+
+        if (narrowed.Count == 0)
+            return projection;
+
+        return projection.ReplaceNodes(narrowed, (_, rewritten) =>
+            SyntaxFactory.PostfixUnaryExpression(SyntaxKind.SuppressNullableWarningExpression, rewritten.WithoutTrivia())
+                .WithTriviaFrom(rewritten));
+    }
+
+    /// <summary>
+    /// True when <paramref name="id"/> is read as a value, so <c>id!</c> is legal there. Not inside a
+    /// <c>nameof(...)</c> argument (<c>nameof(s!)</c> is CS8081), not a <c>ref</c> / <c>out</c> / <c>in</c>
+    /// argument, and not an assignment target (#3361 review).
+    /// </summary>
+    private static bool IsValueUse(IdentifierNameSyntax id, ExpressionSyntax projection, SemanticModel semanticModel)
+    {
+        if (id.Parent is ArgumentSyntax { RefKindKeyword.RawKind: not (int)SyntaxKind.None })
+            return false;
+
+        if (id.Parent is AssignmentExpressionSyntax assignment && assignment.Left == id)
+            return false;
+
+        foreach (var invocation in id.Ancestors().TakeWhile(n => n != projection.Parent).OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" } &&
+                semanticModel.GetOperation(invocation) is Microsoft.CodeAnalysis.Operations.INameOfOperation)
+            {
+                return false;
+            }
+        }
+
         return true;
     }
 

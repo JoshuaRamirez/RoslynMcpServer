@@ -18,6 +18,16 @@ namespace RoslynMcp.Core.Query;
 /// </summary>
 public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsParams, SearchSymbolsResult>
 {
+    /// <summary>
+    /// Kinds <c>search_symbols</c> can return. <c>Compilation.GetSymbolsWithName</c>
+    /// never yields locals or parameters, so <c>Local</c> / <c>Parameter</c> are rejected instead of
+    /// silently matching nothing (#3195).
+    /// </summary>
+    private static readonly Contracts.Enums.SymbolKind[] SearchableKinds = System.Enum
+        .GetValues<Contracts.Enums.SymbolKind>()
+        .Where(k => k is not (Contracts.Enums.SymbolKind.Local or Contracts.Enums.SymbolKind.Parameter))
+        .ToArray();
+
     /// <inheritdoc />
     public SearchSymbolsOperation(WorkspaceContext context) : base(context)
     {
@@ -43,6 +53,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
         ProjectPathFilter.Validate(@params.ProjectPath);
 
         AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+        SymbolKindFilterParser.ParseAllowed(@params.KindFilter, SearchableKinds);
     }
 
     /// <inheritdoc />
@@ -53,7 +64,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
     {
         var query = @params.Query;
         var maxResults = @params.MaxResults ?? 50;
-        var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
+        var kindFilter = SymbolKindFilterParser.ParseAllowed(@params.KindFilter, SearchableKinds);
         var nameComparison = @params.CaseSensitive == true
             ? StringComparison.Ordinal
             : StringComparison.OrdinalIgnoreCase;
