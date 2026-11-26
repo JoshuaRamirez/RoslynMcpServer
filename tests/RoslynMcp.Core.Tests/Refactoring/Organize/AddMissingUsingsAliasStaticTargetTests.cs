@@ -84,6 +84,68 @@ public class AddMissingUsingsAliasStaticTargetTests
         Assert.Contains("using App.Models;", await File.ReadAllTextAsync(workspace.SourcePath), StringComparison.Ordinal);
     }
 
+    [SkippableTheory]
+    [InlineData("""
+        namespace App
+        {
+            using W = Widget;
+
+            public static class Program
+            {
+                public static string Run() => new W().Name;
+            }
+        }
+        """, false)]
+    [InlineData("""
+        namespace App
+        {
+            using static Helpers;
+
+            public static class Program
+            {
+                public static int Run() => Twice(21);
+            }
+        }
+        """, true)]
+    [InlineData("""
+        namespace App;
+
+        using W = Widget;
+
+        public static class Program
+        {
+            public static string Run() => new W().Name;
+        }
+        """, false)]
+    [InlineData("""
+        namespace App;
+
+        using static Helpers;
+
+        public static class Program
+        {
+            public static int Run() => Twice(21);
+        }
+        """, true)]
+    public async Task NameInsideUsingDirectiveWithinNamespace_IsStillFixed(string program, bool allFiles)
+    {
+        // A using directive inside a namespace (block or after a file-scoped namespace) binds in the
+        // namespace's scope, which sees the compilation unit's usings, so adding one fixes it (#3093 review).
+        await using var workspace = await TempWorkspace.CreateAsync(program, "latest", ("Widget.cs", WidgetSource));
+        Assert.NotEmpty(await workspace.GetDiskErrorsAsync());
+
+        var result = await new AddMissingUsingsOperation(workspace.Context).ExecuteAsync(new AddMissingUsingsParams
+        {
+            SourceFile = workspace.SourcePath,
+            AllFiles = allFiles
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(1, result.UsingDirectivesAdded);
+        Assert.Contains("using App.Models;", await File.ReadAllTextAsync(workspace.SourcePath), StringComparison.Ordinal);
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }

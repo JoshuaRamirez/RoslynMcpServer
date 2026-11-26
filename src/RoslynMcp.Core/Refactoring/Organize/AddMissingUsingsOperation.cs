@@ -113,9 +113,11 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             // right/middle segments (e.g. Task in App.Task.Widget).
             if (IsQualifiedRightHandSegment(node))
                 continue;
-            // Alias and using-static targets bind without the sibling usings, so adding a
-            // namespace using can never resolve a name inside a using directive (#3093).
-            if (node.FirstAncestorOrSelf<UsingDirectiveSyntax>() != null)
+            // Alias and using-static targets at the top of the file bind without the sibling
+            // usings, so adding a namespace using cannot resolve them (#3093). A using inside a
+            // namespace (block or file-scoped) does see the compilation unit's usings, so it is
+            // still fixed.
+            if (node.FirstAncestorOrSelf<UsingDirectiveSyntax>() is { Parent: CompilationUnitSyntax })
                 continue;
 
             var typeName = GetTypeName(node);
@@ -403,9 +405,11 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             // right/middle segments (e.g. Task in App.Task.Widget).
             if (IsQualifiedRightHandSegment(node))
                 continue;
-            // Alias and using-static targets bind without the sibling usings, so adding a
-            // namespace using can never resolve a name inside a using directive (#3093).
-            if (node.FirstAncestorOrSelf<UsingDirectiveSyntax>() != null)
+            // Alias and using-static targets at the top of the file bind without the sibling
+            // usings, so adding a namespace using cannot resolve them (#3093). A using inside a
+            // namespace (block or file-scoped) does see the compilation unit's usings, so it is
+            // still fixed.
+            if (node.FirstAncestorOrSelf<UsingDirectiveSyntax>() is { Parent: CompilationUnitSyntax })
                 continue;
 
             var typeName = GetTypeName(node);
