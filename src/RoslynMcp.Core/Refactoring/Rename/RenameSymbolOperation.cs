@@ -955,26 +955,31 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         if (@params.Line.HasValue)
         {
             var position = SymbolResolver.GetPosition(root, @params.Line.Value, @params.Column ?? 1);
-            var token = root.FindToken(position);
-
-            // Walk up to find the symbol declaration or reference
-            var node = token.Parent;
-            while (node != null)
+            // Look inside structured trivia first so a caret on a doc-comment cref binds the cref target
+            // rather than the member the comment documents (#3105); then fall back to the next real token.
+            var triviaToken = root.FindToken(position, findInsideTrivia: true);
+            var tokens = new[] { triviaToken, root.FindToken(position) }.Distinct();
+            foreach (var token in tokens)
             {
-                var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
-                if (symbol != null && symbol.Name == @params.SymbolName)
+                // Walk up to find the symbol declaration or reference
+                var node = token.Parent;
+                while (node != null)
                 {
-                    return (symbol, document);
-                }
+                    var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+                    if (symbol != null && symbol.Name == @params.SymbolName)
+                    {
+                        return (symbol, document);
+                    }
 
-                // Check for symbol info (reference)
-                var symbolInfo = semanticModel.GetSymbolInfo(node, cancellationToken);
-                if (symbolInfo.Symbol != null && symbolInfo.Symbol.Name == @params.SymbolName)
-                {
-                    return (symbolInfo.Symbol, document);
-                }
+                    // Check for symbol info (reference)
+                    var symbolInfo = semanticModel.GetSymbolInfo(node, cancellationToken);
+                    if (symbolInfo.Symbol != null && symbolInfo.Symbol.Name == @params.SymbolName)
+                    {
+                        return (symbolInfo.Symbol, document);
+                    }
 
-                node = node.Parent;
+                    node = node.Parent;
+                }
             }
 
             throw new RefactoringException(

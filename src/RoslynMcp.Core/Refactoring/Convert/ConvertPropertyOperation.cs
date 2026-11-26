@@ -115,6 +115,15 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
         }
         else
         {
+            // In an interface, bodiless accessors declare an abstract member, not an auto-property, so
+            // the default implementation would vanish and every implementer would fail with CS0535 (#3197).
+            if (property.Parent is InterfaceDeclarationSyntax && !property.Modifiers.Any(SyntaxKind.StaticKeyword))
+            {
+                throw new RefactoringException(ErrorCodes.CannotConvert,
+                    $"Cannot convert '{property.Identifier.ValueText}' to an auto-property: in an interface, " +
+                    "accessors without bodies declare an abstract member and would drop the default implementation.");
+            }
+
             (newRoot, beforeSnippet, afterSnippet) = ConvertToAutoProperty(root, property, semanticModel);
         }
 
