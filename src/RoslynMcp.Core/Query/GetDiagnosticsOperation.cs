@@ -41,7 +41,7 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         }
 
         if (!string.IsNullOrWhiteSpace(@params.SeverityFilter) &&
-            !Enum.TryParse<DiagnosticSeverityFilter>(@params.SeverityFilter, ignoreCase: true, out _))
+            !StrictEnumParser.TryParse<DiagnosticSeverityFilter>(@params.SeverityFilter, out _))
         {
             var valid = string.Join(", ", Enum.GetNames<DiagnosticSeverityFilter>());
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, $"Invalid severityFilter. Valid values: {valid}");
@@ -251,7 +251,11 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         if (string.IsNullOrWhiteSpace(filter))
             return DiagnosticSeverityFilter.Warning;
 
-        return Enum.Parse<DiagnosticSeverityFilter>(filter, ignoreCase: true);
+        // Same strict member-name match as ValidateParams (numerics / comma lists rejected, #3130).
+        return StrictEnumParser.TryParse<DiagnosticSeverityFilter>(filter, out var parsed)
+            ? parsed
+            : throw new RefactoringException(ErrorCodes.MissingRequiredParam,
+                $"Invalid severityFilter. Valid values: {string.Join(", ", Enum.GetNames<DiagnosticSeverityFilter>())}");
     }
 
     private static bool PassesSeverityFilter(DiagnosticSeverity severity, DiagnosticSeverityFilter filter)

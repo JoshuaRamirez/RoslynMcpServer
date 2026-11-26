@@ -1029,6 +1029,41 @@ public class AddMissingUsingsOperationTests
         return new string(chars);
     }
 
+    // #3087: added usings used hard-coded CRLF, leaving LF-only files with mixed line endings.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AddMissingUsings_LfOnlyFile_AddsUsingWithLf(bool allFiles)
+    {
+        var source = "using System;\n\nnamespace Demo;\n\npublic class Foo\n{\n    public List<int> Items { get; } = new();\n}\n";
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(allFiles
+            ? new AddMissingUsingsParams { AllFiles = true }
+            : new AddMissingUsingsParams { SourceFile = workspace.SourcePath });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("using System.Collections.Generic;\n", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("\r", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_CrlfFile_StillAddsUsingWithCrlf()
+    {
+        var source = "using System;\r\n\r\nnamespace Demo;\r\n\r\npublic class Foo\r\n{\r\n    public List<int> Items { get; } = new();\r\n}\r\n";
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams { SourceFile = workspace.SourcePath });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("using System.Collections.Generic;\r\n", updated, StringComparison.Ordinal);
+        Assert.DoesNotMatch("(?<!\r)\n", updated);
+    }
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }

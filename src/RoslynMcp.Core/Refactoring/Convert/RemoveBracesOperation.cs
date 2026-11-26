@@ -101,6 +101,13 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
                     "Removing these braces would produce a statement that cannot be embedded (CS1023).");
             }
 
+            if (WouldCreateMistakenEmptyStatement(block.Statements[0]))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CompilationError,
+                    "Removing these braces would produce a possibly mistaken empty statement (CS0642).");
+            }
+
             if (WouldCreateDanglingElse(target.Value.Owner, block.Statements[0]))
             {
                 throw new RefactoringException(
@@ -352,6 +359,14 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
             or LabeledStatementSyntax;
 
     /// <summary>
+    /// True when <paramref name="statement"/> is an empty statement (<c>{ ; }</c>):
+    /// unwrapping it leaves <c>if (c) ;</c> / <c>while (c) ;</c>, which raises
+    /// warning CS0642 "Possible mistaken empty statement" (#3115).
+    /// </summary>
+    internal static bool WouldCreateMistakenEmptyStatement(StatementSyntax statement) =>
+        statement is EmptyStatementSyntax;
+
+    /// <summary>
     /// True when unwrapping a block whose single statement is
     /// <paramref name="inner"/> would let a following <c>else</c> bind to a
     /// nested <c>if</c> (dangling else) or produce a second <c>else</c>.
@@ -598,6 +613,9 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
             var inner = block.Statements[0];
 
             if (CannotBeEmbeddedStatement(inner))
+                return false;
+
+            if (WouldCreateMistakenEmptyStatement(inner))
                 return false;
 
             if (!_unwrapElseIf && owner is ElseClauseSyntax && inner is IfStatementSyntax)
