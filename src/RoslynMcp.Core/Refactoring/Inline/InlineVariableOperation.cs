@@ -225,7 +225,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             }
         }
 
-        if (IsReassigned(containingMethod, variableName, variableSymbol, semanticModel, cancellationToken))
+        if (IsReassigned(containingMethod, variableName, variableSymbol, initializerExpression, semanticModel, cancellationToken))
         {
             throw new RefactoringException(
                 ErrorCodes.MultipleAssignments,
@@ -544,7 +544,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             }
         }
 
-        if (IsReassigned(containingMethod, variableName, variableSymbol, semanticModel, cancellationToken))
+        if (IsReassigned(containingMethod, variableName, variableSymbol, initializerExpression, semanticModel, cancellationToken))
             return null;
 
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
@@ -660,12 +660,13 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         BaseMethodDeclarationSyntax containingMethod,
         string variableName,
         ILocalSymbol variableSymbol,
+        ExpressionSyntax initializer,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
         foreach (var assignment in containingMethod.DescendantNodes().OfType<AssignmentExpressionSyntax>())
         {
-            if (WritesLocal(assignment.Left, variableName, variableSymbol, semanticModel, cancellationToken))
+            if (WritesLocal(assignment.Left, variableName, variableSymbol, initializer, semanticModel, cancellationToken))
                 return true;
         }
 
@@ -709,15 +710,17 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     /// <summary>
     /// True when the assignment target <paramref name="left"/> stores into the local:
     /// the target itself (parenthesized or not), an element of a deconstruction tuple,
-    /// or the root receiver of a member / element access chain when the local is not a
-    /// reference type (writing a field of a struct copy must stay refused, #2462).
-    /// Identifiers in index or argument lists (<c>values[index] = 10</c>) and
-    /// reference-type receivers (<c>target.Name = x</c>) are reads (#3090).
+    /// or the root receiver of a member / element access chain (writing a field of a
+    /// struct copy must stay refused, #2462). Identifiers in index or argument lists
+    /// (<c>values[index] = 10</c>) are reads (#3090), and so is a receiver whose
+    /// initializer is the same object at every use site
+    /// (<see cref="InitializerIsSharedReference"/>, e.g. <c>target.Name = x</c>).
     /// </summary>
     private static bool WritesLocal(
         ExpressionSyntax left,
         string variableName,
         ILocalSymbol variableSymbol,
+        ExpressionSyntax initializer,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
@@ -734,10 +737,10 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
             case TupleExpressionSyntax tuple:
                 return tuple.Arguments.Any(a =>
-                    WritesLocal(a.Expression, variableName, variableSymbol, semanticModel, cancellationToken));
+                    WritesLocal(a.Expression, variableName, variableSymbol, initializer, semanticModel, cancellationToken));
 
             case MemberAccessExpressionSyntax or ElementAccessExpressionSyntax or ConditionalAccessExpressionSyntax:
-                if (variableSymbol.Type.IsReferenceType)
+                if (InitializerIsSharedReference(initializer, variableSymbol, semanticModel))
                     return false;
                 ExpressionSyntax? receiver = left;
                 while (receiver is not null)
@@ -751,7 +754,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                         _ => null
                     };
                     if (receiver is IdentifierNameSyntax)
-                        return WritesLocal(receiver, variableName, variableSymbol, semanticModel, cancellationToken);
+                        return WritesLocal(receiver, variableName, variableSymbol, initializer, semanticModel, cancellationToken);
                 }
 
                 return false;
@@ -760,6 +763,44 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                 return false;
         }
     }
+
+    /// <summary>
+    /// True when writing through the local (<c>local.X = v</c>, <c>local[i] = v</c>) and through the inlined
+    /// initializer hit the same object: the local is a reference type, the initializer converts to it by an
+    /// identity or implicit reference conversion (not boxing, which writes a copy of a struct, nor a
+    /// user-defined conversion), and the initializer creates no fresh instance (object / array / collection
+    /// creation, array initializer, <c>with</c>, <c>stackalloc</c>, <c>new()</c>, anonymous object or
+    /// function), which each use site would re-create, losing the write or not compiling (#3090 review).
+    /// </summary>
+    private static bool InitializerIsSharedReference(
+        ExpressionSyntax initializer,
+        ILocalSymbol variableSymbol,
+        SemanticModel semanticModel)
+    {
+        if (!variableSymbol.Type.IsReferenceType)
+            return false;
+
+        if (initializer.DescendantNodesAndSelf().Any(IsFreshInstanceExpression))
+            return false;
+
+        var conversion = semanticModel.ClassifyConversion(initializer, variableSymbol.Type);
+        return conversion.Exists &&
+               (conversion.IsIdentity || (conversion.IsImplicit && conversion.IsReference)) &&
+               !conversion.IsBoxing &&
+               !conversion.IsUserDefined;
+    }
+
+    private static bool IsFreshInstanceExpression(SyntaxNode node) =>
+        node is BaseObjectCreationExpressionSyntax
+            or ArrayCreationExpressionSyntax
+            or ImplicitArrayCreationExpressionSyntax
+            or CollectionExpressionSyntax
+            or InitializerExpressionSyntax
+            or WithExpressionSyntax
+            or StackAllocArrayCreationExpressionSyntax
+            or ImplicitStackAllocArrayCreationExpressionSyntax
+            or AnonymousObjectCreationExpressionSyntax
+            or AnonymousFunctionExpressionSyntax;
 
     /// <summary>
     /// Resolves the variable declarator. Omitted <paramref name="column"/>

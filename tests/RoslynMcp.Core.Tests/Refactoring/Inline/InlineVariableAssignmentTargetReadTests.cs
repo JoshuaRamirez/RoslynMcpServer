@@ -139,6 +139,218 @@ public class InlineVariableAssignmentTargetReadTests
         Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    /// <summary>
+    /// Sources where writing through the local and through the inlined initializer would not hit the same
+    /// object (#3090 review): a boxed struct copy, or a fresh instance re-created at every use site (which
+    /// also fails to compile: CS0178, CS9176, CS1002).
+    /// </summary>
+    public static TheoryData<string, string> NotSharedReceiverSources => new()
+    {
+        {
+            "boxing",
+            """
+            namespace Demo;
+
+            public interface IHas { int Value { get; set; } }
+            public struct S : IHas { public int Value { get; set; } }
+
+            public class Box
+            {
+                private S _s;
+
+                public int Touch()
+                {
+                    IHas v = _s;
+                    v.Value = 5;
+                    return _s.Value;
+                }
+            }
+            """
+        },
+        {
+            "array-creation",
+            """
+            namespace Demo;
+
+            public class Arrays
+            {
+                public int[] Make()
+                {
+                    int[] arr = new int[3];
+                    arr[0] = 1;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "array-initializer",
+            """
+            namespace Demo;
+
+            public class Arrays
+            {
+                public int[] Make()
+                {
+                    int[] arr = { 1, 2 };
+                    arr[0] = 5;
+                    return arr;
+                }
+            }
+            """
+        },
+        {
+            "collection-expression",
+            """
+            using System.Collections.Generic;
+
+            namespace Demo;
+
+            public class Lists
+            {
+                public List<int> Make()
+                {
+                    List<int> list = [1, 2];
+                    list[0] = 5;
+                    return list;
+                }
+            }
+            """
+        },
+        {
+            "with-expression",
+            """
+            namespace Demo;
+
+            public record R(int[] A);
+
+            public class Records
+            {
+                private R _r = new R(new int[1]);
+
+                public R Make()
+                {
+                    R r = _r with { };
+                    r.A[0] = 1;
+                    return r;
+                }
+            }
+            """
+        },
+        {
+            "target-typed-new",
+            """
+            namespace Demo;
+
+            public class Widget { public string Name = ""; }
+
+            public class Factory
+            {
+                public Widget Make()
+                {
+                    Widget w = new();
+                    w.Name = "made";
+                    return w;
+                }
+            }
+            """
+        },
+    };
+
+    [SkippableTheory]
+    [MemberData(nameof(NotSharedReceiverSources))]
+    public async Task SingleSite_ReceiverNotSharedWithInitializer_IsRefused(string kind, string source)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+        var variableName = kind switch
+        {
+            "boxing" => "v",
+            "collection-expression" => "list",
+            "with-expression" => "r",
+            "target-typed-new" => "w",
+            _ => "arr"
+        };
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            new InlineVariableOperation(workspace.Context).ExecuteAsync(new InlineVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                VariableName = variableName
+            }));
+
+        Assert.Equal(ErrorCodes.MultipleAssignments, ex.ErrorCode);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(NotSharedReceiverSources))]
+    public async Task AllFiles_ReceiverNotSharedWithInitializer_IsLeftAlone(string kind, string source)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        var result = await new InlineVariableOperation(workspace.Context).ExecuteAsync(new InlineVariableParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success, $"{kind}: {result.Error?.Message}");
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ImplicitReferenceConversionReceiver_IsInlined_FullOutput(bool allFiles)
+    {
+        // Class -> interface is an implicit reference conversion: the local and the field are the same object.
+        // The doubled indentation is the existing declaration-removal trivia behavior, not part of #3090.
+        const string source = """
+            namespace Demo;
+
+            public interface IHas { int Value { get; set; } }
+            public class C : IHas { public int Value { get; set; } }
+
+            public class Holder
+            {
+                private C _c = new C();
+
+                public int Touch()
+                {
+                    IHas v = _c;
+                    v.Value = 5;
+                    return _c.Value;
+                }
+            }
+            """;
+        const string expected = """
+            namespace Demo;
+
+            public interface IHas { int Value { get; set; } }
+            public class C : IHas { public int Value { get; set; } }
+
+            public class Holder
+            {
+                private C _c = new C();
+
+                public int Touch()
+                {
+                            _c.Value = 5;
+                    return _c.Value;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "latest");
+
+        var result = await new InlineVariableOperation(workspace.Context).ExecuteAsync(allFiles
+            ? new InlineVariableParams { AllFiles = true }
+            : new InlineVariableParams { SourceFile = workspace.SourcePath, VariableName = "v" });
+
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(expected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }
