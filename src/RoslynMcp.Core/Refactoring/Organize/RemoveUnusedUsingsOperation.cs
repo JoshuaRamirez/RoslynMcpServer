@@ -314,6 +314,9 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
 
         foreach (var usingDirective in root.Usings)
         {
+            if (IsUnresolvedUsing(usingDirective, semanticModel, cancellationToken))
+                continue;
+
             var namespaceName = GetCanonicalUsingNamespaceName(
                 usingDirective, semanticModel, cancellationToken);
             if (namespaceName == null) continue;
@@ -352,7 +355,8 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
             var node = root.FindNode(diagnostic.Location.SourceSpan);
             if (node is UsingDirectiveSyntax usingNode &&
                 usingNode.Parent is CompilationUnitSyntax &&
-                !unusedUsings.Contains(usingNode))
+                !unusedUsings.Contains(usingNode) &&
+                !IsUnresolvedUsing(usingNode, semanticModel, cancellationToken))
             {
                 unusedUsings.Add(usingNode);
             }
@@ -371,6 +375,17 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
         return (root, newRoot, unusedUsings);
     }
 
+
+    /// <summary>
+    /// A using whose name does not bind (CS0246: an unrestored package, a missing reference) cannot be
+    /// judged unused: the code that uses it does not bind either, so it is kept rather than deleted (#3330).
+    /// </summary>
+    private static bool IsUnresolvedUsing(
+        UsingDirectiveSyntax usingDirective,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        usingDirective.Name is { } name &&
+        semanticModel.GetSymbolInfo(name, cancellationToken).Symbol == null;
 
     /// <summary>
     /// Canonical namespace name for comparing a using against used namespaces.
@@ -533,6 +548,14 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
             }
         };
 
-        return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        // The single-file preview reports the same count as the allFiles preview and apply (#3088).
+        return new RefactoringResult
+        {
+            Success = true,
+            OperationId = operationId,
+            Preview = true,
+            PendingChanges = pendingChanges,
+            UsingDirectivesRemoved = unusedUsings.Count
+        };
     }
 }

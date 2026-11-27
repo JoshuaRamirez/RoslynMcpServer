@@ -387,7 +387,16 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
                     throw new RefactoringException(ErrorCodes.CannotConvert, "Cannot extract expression from getter.");
 
                 var propBefore = prop.AccessorList.ToString().Trim();
+
+                // A struct getter's `readonly` (int X { readonly get { ... } }) has to move onto the
+                // property, the only legal place for it on an expression-bodied property; dropping it
+                // makes the getter non-readonly (new CS8656 implicit-copy warnings, #3110).
+                var propModifiers = prop.Modifiers;
+                if (getter.Modifiers.Any(SyntaxKind.ReadOnlyKeyword) && !propModifiers.Any(SyntaxKind.ReadOnlyKeyword))
+                    propModifiers = propModifiers.Add(SyntaxFactory.Token(SyntaxKind.ReadOnlyKeyword));
+
                 var newProp = prop
+                    .WithModifiers(propModifiers)
                     .WithAccessorList(null)
                     .WithExpressionBody(SyntaxFactory.ArrowExpressionClause(propExpr))
                     .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
@@ -462,10 +471,21 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     private static ExpressionSyntax? ExtractExpression(StatementSyntax statement) => statement switch
     {
         ReturnStatementSyntax returnStmt => returnStmt.Expression,
+        // A deconstruction declaration (var (a, b) = pair; / (var c, var d) = pair;) is not allowed
+        // in an arrow body (CS8185) (#3188).
+        ExpressionStatementSyntax { Expression: AssignmentExpressionSyntax assignment }
+            when DeclaresDeconstructionVariables(assignment.Left) => null,
         ExpressionStatementSyntax exprStmt => exprStmt.Expression,
         ThrowStatementSyntax throwStmt => throwStmt.Expression != null
             ? SyntaxFactory.ThrowExpression(throwStmt.Expression)
             : null,
         _ => null
+    };
+
+    private static bool DeclaresDeconstructionVariables(ExpressionSyntax left) => left switch
+    {
+        DeclarationExpressionSyntax => true,
+        TupleExpressionSyntax tuple => tuple.Arguments.Any(a => DeclaresDeconstructionVariables(a.Expression)),
+        _ => false
     };
 }

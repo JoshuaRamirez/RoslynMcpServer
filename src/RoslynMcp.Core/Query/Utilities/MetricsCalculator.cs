@@ -62,16 +62,31 @@ public static class MetricsCalculator
 
         foreach (var line in text.Lines)
         {
-            var lineText = line.ToString().Trim();
-            if (string.IsNullOrEmpty(lineText))
+            var lineText = line.ToString();
+            var trimmed = lineText.TrimStart();
+            if (trimmed.Length == 0)
                 continue;
-            if (lineText.StartsWith("//"))
+            if (trimmed.StartsWith("//", StringComparison.Ordinal) &&
+                StartsInTrivia(node, line.Start + (lineText.Length - trimmed.Length)))
+            {
                 continue;
+            }
 
             loc++;
         }
 
         return loc;
+    }
+
+    /// <summary>
+    /// True when the text at <paramref name="offset"/> (relative to <paramref name="node"/>'s full span)
+    /// is comment / disabled-code trivia rather than a token. A <c>//</c> line inside a raw, verbatim
+    /// or interpolated string literal is code, not a comment (#3056).
+    /// </summary>
+    private static bool StartsInTrivia(SyntaxNode node, int offset)
+    {
+        var position = node.FullSpan.Start + offset;
+        return node.FindTrivia(position).RawKind != 0;
     }
 
     /// <summary>
@@ -115,6 +130,13 @@ public static class MetricsCalculator
                 IParameterSymbol par => par.Type,
                 _ => null
             };
+
+            // dynamic, anonymous types and function pointers are not named types the code depends on, and
+            // a data pointer couples to its pointed-at type (int* → int), matching Roslyn's metrics (#3101).
+            while (typeSymbol is IPointerTypeSymbol pointer)
+                typeSymbol = pointer.PointedAtType;
+            if (typeSymbol is { TypeKind: TypeKind.Dynamic or TypeKind.FunctionPointer } or INamedTypeSymbol { IsAnonymousType: true })
+                continue;
 
             if (typeSymbol != null &&
                 typeSymbol.SpecialType == SpecialType.None &&

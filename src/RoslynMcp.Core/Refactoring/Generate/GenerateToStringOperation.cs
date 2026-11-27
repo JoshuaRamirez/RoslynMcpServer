@@ -144,6 +144,14 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (!@params.ReplaceExisting && HasExistingToStringOverride(typeSymbol))
             throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has a ToString override.");
 
+        if (!IsStringBuilderFormat(@params.Format) && !SupportsInterpolatedStrings(typeDecl.SyntaxTree))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidToStringFormat,
+                "format \"interpolated\" requires C# 6 or later (interpolated strings are not available in this " +
+                "project's language version, CS8026). Use format \"stringbuilder\" instead.");
+        }
+
         var members = CollectToStringMembers(typeSymbol, @params);
         if (members.Count == 0 && !@params.CallSuper)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for ToString generation.");
@@ -385,6 +393,10 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (typeSymbol.TypeKind == TypeKind.Interface || typeDecl is InterfaceDeclarationSyntax)
             return null;
 
+        // Interpolated format on a pre-C# 6 project would emit $"..." (CS8026): skip the type.
+        if (!IsStringBuilderFormat(@params.Format) && !SupportsInterpolatedStrings(typeDecl.SyntaxTree))
+            return null;
+
         if (@params.CallSuper && NamedTypeHelpers.IsObjectOrValueTypeBase(typeSymbol))
             return null;
 
@@ -510,6 +522,15 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
             ErrorCodes.InvalidToStringFormat,
             $"Invalid format: '{format}'. Expected \"interpolated\" or \"stringbuilder\".");
     }
+
+    /// <summary>
+    /// True when <paramref name="tree"/>'s effective language version has interpolated strings
+    /// (C# 6+). The default "interpolated" format emits <c>$"..."</c>, which is CS8026 on
+    /// LangVersion 5 and earlier, so that format is refused there (#2881).
+    /// </summary>
+    internal static bool SupportsInterpolatedStrings(SyntaxTree tree) =>
+        tree.Options is not CSharpParseOptions parseOptions
+        || parseOptions.LanguageVersion.MapSpecifiedToEffectiveVersion() >= LanguageVersion.CSharp6;
 
     internal static bool IsStringBuilderFormat(string? format) =>
         !string.IsNullOrWhiteSpace(format)

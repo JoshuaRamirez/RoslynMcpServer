@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Operations;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -225,7 +226,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             }
         }
 
-        if (IsReassigned(containingMethod, variableName, variableSymbol, semanticModel, cancellationToken))
+        if (IsReassigned(containingMethod, variableName, variableSymbol, initializerExpression, semanticModel, cancellationToken))
         {
             throw new RefactoringException(
                 ErrorCodes.MultipleAssignments,
@@ -544,7 +545,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             }
         }
 
-        if (IsReassigned(containingMethod, variableName, variableSymbol, semanticModel, cancellationToken))
+        if (IsReassigned(containingMethod, variableName, variableSymbol, initializerExpression, semanticModel, cancellationToken))
             return null;
 
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
@@ -653,66 +654,251 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         member.NameEquals == null;
 
     /// <summary>
-    /// True when the local is written after initialization via assignment or
-    /// pre/post increment/decrement.
+    /// True when the local is written after initialization, either directly or through
+    /// a receiver chain (see <see cref="ClassifyWrite"/>). A direct write (assignment,
+    /// deconstruction element, <c>++</c>/<c>--</c>) always refuses. A write through the local
+    /// as a receiver (<c>local.X = v</c>, <c>((T)local)[i] = v</c>, <c>local.M().X++</c>)
+    /// refuses unless the initializer is the same object at every use site
+    /// (<see cref="InitializerIsSharedReference"/>): writing a field of a struct copy must stay
+    /// refused (#2462), and so must a write that would land on a re-created object (#3090 review).
+    /// A local read inside an index or argument (<c>values[index] = 10</c>) is not a write (#3090).
     /// </summary>
     private static bool IsReassigned(
         BaseMethodDeclarationSyntax containingMethod,
         string variableName,
         ILocalSymbol variableSymbol,
+        ExpressionSyntax initializer,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        foreach (var assignment in containingMethod.DescendantNodes().OfType<AssignmentExpressionSyntax>())
+        bool? shared = null;
+        foreach (var id in containingMethod.DescendantNodes().OfType<IdentifierNameSyntax>())
         {
-            // Cover simple, parenthesized, and deconstruction lefts:
-            // (x, y) = ... still writes x.
-            foreach (var id in assignment.Left.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+            if (id.Identifier.Text != variableName)
+                continue;
+            if (!SymbolEqualityComparer.Default.Equals(semanticModel.GetSymbolInfo(id, cancellationToken).Symbol, variableSymbol))
+                continue;
+
+            switch (ClassifyWrite(id, semanticModel, cancellationToken))
             {
-                if (id.Identifier.Text != variableName)
-                    continue;
-                var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
-                if (SymbolEqualityComparer.Default.Equals(symbol, variableSymbol))
+                case WriteKind.Direct:
                     return true;
+                case WriteKind.ThroughReceiver:
+                    shared ??= InitializerIsSharedReference(initializer, variableSymbol, semanticModel, cancellationToken);
+                    if (!shared.Value)
+                        return true;
+                    break;
             }
         }
 
-        foreach (var prefix in containingMethod.DescendantNodes().OfType<PrefixUnaryExpressionSyntax>())
+        return false;
+    }
+
+    private enum WriteKind { None, Direct, ThroughReceiver }
+
+    /// <summary>
+    /// Classifies one use of the local with a closed allowlist over the parent of each node on
+    /// the way up (#3090 review, round 5). Every parent kind is one of three things:
+    /// <list type="bullet">
+    /// <item><b>Transparent</b>: the node still denotes the local's storage or its value flows
+    /// on, so the walk continues. These are parentheses, <c>!</c>, <c>checked</c>/<c>unchecked</c>,
+    /// casts, <c>as</c>, <c>?:</c> branches, <c>??</c> operands, switch-expression arms, the right
+    /// side of any assignment (<c>=</c>, <c>??=</c>, <c>+=</c>, ...), deconstruction tuples, and as
+    /// a receiver: member / element / <c>?.</c> access, invocation and pointer indirection.</item>
+    /// <item><b>Write</b>: an assignment target, a <c>++</c>/<c>--</c> operand, a <c>ref</c>/<c>out</c>
+    /// argument, a <c>ref</c> expression, <c>&amp;</c>, <c>__makeref</c>, a foreach deconstruction
+    /// target, or a <c>?.</c> on the chain whose right side writes.</item>
+    /// <item><b>Pure read</b>: a by-value or <c>in</c> argument or index, an operand of a built-in
+    /// unary / binary operator, a condition, exception filter or governing expression, a foreach
+    /// collection (plain or deconstructing), a statement, return, yield,
+    /// throw or initializer value, an interpolation, a collection / object initializer element,
+    /// <c>await</c>, a pattern-matched expression, a range bound, a <c>with</c> source, a lambda
+    /// body or a query clause.</item>
+    /// </list>
+    /// Any other parent is unknown and counts as a direct write, so a syntax kind nobody listed
+    /// refuses rather than silently becoming a read. Direct by-reference uses are refused earlier
+    /// with UsedInRefContext. A call argument that can hold a reference (judged by the argument
+    /// expression's type) inside an assignment target or by-reference argument may be the object
+    /// written (<c>Ext.IdA(arr)[0] = 1</c>), so it counts as a receiver write.
+    /// </summary>
+    private static WriteKind ClassifyWrite(IdentifierNameSyntax id, SemanticModel semanticModel, CancellationToken cancellationToken)
+    {
+        SyntaxNode current = id;
+        var throughReceiver = false;
+        while (true)
         {
-            if (!prefix.IsKind(SyntaxKind.PreIncrementExpression) &&
-                !prefix.IsKind(SyntaxKind.PreDecrementExpression))
+            var parent = current.Parent;
+            switch (parent)
             {
-                continue;
+                // Transparent: same storage, or the value flows on.
+                case ParenthesizedExpressionSyntax:
+                case CheckedExpressionSyntax:
+                case PostfixUnaryExpressionSyntax suppress when suppress.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                case CastExpressionSyntax cast when cast.Expression == current:
+                case BinaryExpressionSyntax asExpression when asExpression.IsKind(SyntaxKind.AsExpression) && asExpression.Left == current:
+                case BinaryExpressionSyntax coalesce when coalesce.IsKind(SyntaxKind.CoalesceExpression):
+                case ConditionalExpressionSyntax conditional when conditional.Condition != current:
+                case AssignmentExpressionSyntax assignedValue when assignedValue.Right == current:
+                    current = parent;
+                    continue;
+                case SwitchExpressionArmSyntax arm when arm.Expression == current && arm.Parent is SwitchExpressionSyntax switchExpression:
+                    current = switchExpression;
+                    continue;
+                case ArgumentSyntax { Parent: TupleExpressionSyntax tuple } tupleArgument when tupleArgument.Expression == current:
+                    current = tuple;
+                    continue;
+
+                // Transparent as a receiver.
+                case MemberAccessExpressionSyntax member when member.Expression == current:
+                case ElementAccessExpressionSyntax element when element.Expression == current:
+                case InvocationExpressionSyntax invocation when invocation.Expression == current:
+                case PrefixUnaryExpressionSyntax indirection when indirection.IsKind(SyntaxKind.PointerIndirectionExpression):
+                    throughReceiver = true;
+                    current = parent;
+                    continue;
+                case ConditionalAccessExpressionSyntax conditionalAccess when conditionalAccess.Expression == current:
+                    if (conditionalAccess.WhenNotNull.DescendantNodesAndSelf().Any(IsWriteExpression))
+                        return WriteKind.ThroughReceiver;
+                    throughReceiver = true;
+                    current = parent;
+                    continue;
             }
 
-            if (prefix.Operand is not IdentifierNameSyntax id)
-                continue;
-            if (id.Identifier.Text != variableName)
-                continue;
-            var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
-            if (SymbolEqualityComparer.Default.Equals(symbol, variableSymbol))
-                return true;
+            break;
         }
 
-        foreach (var postfix in containingMethod.DescendantNodes().OfType<PostfixUnaryExpressionSyntax>())
-        {
-            if (!postfix.IsKind(SyntaxKind.PostIncrementExpression) &&
-                !postfix.IsKind(SyntaxKind.PostDecrementExpression))
-            {
-                continue;
-            }
+        var parentNode = current.Parent;
+        if (IsWriteParent(parentNode, current))
+            return throughReceiver ? WriteKind.ThroughReceiver : WriteKind.Direct;
 
-            if (postfix.Operand is not IdentifierNameSyntax id)
-                continue;
-            if (id.Identifier.Text != variableName)
-                continue;
-            var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
-            if (SymbolEqualityComparer.Default.Equals(symbol, variableSymbol))
+        if (!IsPureReadParent(parentNode, current))
+            return WriteKind.Direct;
+
+        if (parentNode is ArgumentSyntax { Parent: ArgumentListSyntax } escape &&
+            current is ExpressionSyntax argumentExpression &&
+            semanticModel.GetTypeInfo(argumentExpression, cancellationToken).Type is not { IsUnmanagedType: true } &&
+            IsInsideWriteTarget(escape))
+        {
+            return WriteKind.ThroughReceiver;
+        }
+
+        return WriteKind.None;
+    }
+
+    private static bool IsWriteParent(SyntaxNode? parent, SyntaxNode current) => parent switch
+    {
+        AssignmentExpressionSyntax assignment => assignment.Left == current,
+        PrefixUnaryExpressionSyntax prefix => prefix.Operand == current &&
+            (IsIncrementOrDecrement(prefix) || prefix.IsKind(SyntaxKind.AddressOfExpression)),
+        PostfixUnaryExpressionSyntax postfix => postfix.Operand == current && IsIncrementOrDecrement(postfix),
+        ArgumentSyntax argument => IsByReferenceArgument(argument),
+        RefExpressionSyntax => true,
+        MakeRefExpressionSyntax => true,
+        ForEachVariableStatementSyntax forEach => forEach.Variable == current,
+        _ => false
+    };
+
+    private static bool IsByReferenceArgument(ArgumentSyntax argument) =>
+        argument.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword);
+
+    private static bool IsPureReadParent(SyntaxNode? parent, SyntaxNode current) => parent switch
+    {
+        ArgumentSyntax { Parent: ArgumentListSyntax or BracketedArgumentListSyntax } argument => !IsByReferenceArgument(argument),
+        PrefixUnaryExpressionSyntax prefix => prefix.Kind() is SyntaxKind.UnaryMinusExpression or SyntaxKind.UnaryPlusExpression
+            or SyntaxKind.LogicalNotExpression or SyntaxKind.BitwiseNotExpression or SyntaxKind.IndexExpression,
+        BinaryExpressionSyntax binary => !binary.IsKind(SyntaxKind.AsExpression) && !binary.IsKind(SyntaxKind.CoalesceExpression),
+        ConditionalExpressionSyntax conditional => conditional.Condition == current,
+        SwitchExpressionSyntax switchExpression => switchExpression.GoverningExpression == current,
+        IsPatternExpressionSyntax isPattern => isPattern.Expression == current,
+        RangeExpressionSyntax or AwaitExpressionSyntax or WhenClauseSyntax => true,
+        WithExpressionSyntax with => with.Expression == current,
+        ExpressionStatementSyntax or ReturnStatementSyntax or YieldStatementSyntax or ThrowStatementSyntax
+            or ThrowExpressionSyntax or EqualsValueClauseSyntax or ArrowExpressionClauseSyntax => true,
+        IfStatementSyntax or WhileStatementSyntax or DoStatementSyntax or ForStatementSyntax
+            or SwitchStatementSyntax or LockStatementSyntax or UsingStatementSyntax or CatchFilterClauseSyntax => true,
+        ForEachStatementSyntax forEach => forEach.Expression == current,
+        ForEachVariableStatementSyntax forEachVariable => forEachVariable.Expression == current,
+        InterpolationSyntax or InterpolationAlignmentClauseSyntax => true,
+        InitializerExpressionSyntax or AnonymousObjectMemberDeclaratorSyntax or ArrayRankSpecifierSyntax
+            or ExpressionElementSyntax or SpreadElementSyntax => true,
+        AnonymousFunctionExpressionSyntax lambda => lambda.ExpressionBody == current,
+        FromClauseSyntax or LetClauseSyntax or WhereClauseSyntax or SelectClauseSyntax or JoinClauseSyntax
+            or OrderingSyntax or GroupClauseSyntax => true,
+        _ => false
+    };
+
+    /// <summary>
+    /// True when <paramref name="node"/> sits inside an assignment target, a <c>++</c>/<c>--</c>
+    /// operand or a <c>ref</c>/<c>out</c> argument within its own statement.
+    /// </summary>
+    private static bool IsInsideWriteTarget(SyntaxNode node)
+    {
+        for (var current = node; current.Parent is { } parent; current = parent)
+        {
+            if (parent is StatementSyntax or AnonymousFunctionExpressionSyntax or MemberDeclarationSyntax)
+                return false;
+            if (IsWriteParent(parent, current))
                 return true;
         }
 
         return false;
     }
+
+    private static bool IsWriteExpression(SyntaxNode node) =>
+        node is AssignmentExpressionSyntax ||
+        (node is PrefixUnaryExpressionSyntax prefix && IsIncrementOrDecrement(prefix)) ||
+        (node is PostfixUnaryExpressionSyntax postfix && IsIncrementOrDecrement(postfix));
+
+    private static bool IsIncrementOrDecrement(ExpressionSyntax node) =>
+        node.Kind() is SyntaxKind.PreIncrementExpression or SyntaxKind.PreDecrementExpression
+            or SyntaxKind.PostIncrementExpression or SyntaxKind.PostDecrementExpression;
+
+    /// <summary>
+    /// True when writing through the local and through the inlined initializer at every use site
+    /// is certain to hit the same object. This is an allowlist over the initializer's
+    /// <see cref="IOperation"/>: the local is a reference type, the initializer converts to it by
+    /// identity or an implicit reference conversion, and the initializer is only locals,
+    /// parameters, <c>this</c>/<c>base</c>, fields, array elements at constant indices, and
+    /// built-in reference conversions (casts, <c>as</c>) of those. Everything else is refused as
+    /// possibly fresh: object / array / collection creation, <c>with</c>, user-defined operators
+    /// and conversions (a call, e.g. <c>-_w</c>, <c>_w + _w</c>), property or indexer getters,
+    /// method calls, conditionals and <c>??</c> (#3090 review).
+    /// </summary>
+    private static bool InitializerIsSharedReference(
+        ExpressionSyntax initializer,
+        ILocalSymbol variableSymbol,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (!variableSymbol.Type.IsReferenceType)
+            return false;
+
+        var conversion = semanticModel.ClassifyConversion(initializer, variableSymbol.Type);
+        if (!conversion.Exists ||
+            !(conversion.IsIdentity || (conversion.IsImplicit && conversion.IsReference)) ||
+            conversion.IsBoxing ||
+            conversion.IsUserDefined)
+        {
+            return false;
+        }
+
+        var operation = semanticModel.GetOperation(initializer, cancellationToken);
+        return operation != null && IsSharedReferenceOperation(operation);
+    }
+
+    private static bool IsSharedReferenceOperation(IOperation operation) => operation switch
+    {
+        ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation => true,
+        IFieldReferenceOperation field => field.Instance == null || IsSharedReferenceOperation(field.Instance),
+        IArrayElementReferenceOperation element =>
+            IsSharedReferenceOperation(element.ArrayReference) &&
+            element.Indices.All(i => i.ConstantValue.HasValue),
+        IConversionOperation conversion => conversion.OperatorMethod == null &&
+            conversion.GetConversion() is { IsUserDefined: false, IsBoxing: false, IsUnboxing: false } csharpConversion &&
+            (csharpConversion.IsIdentity || csharpConversion.IsReference) &&
+            IsSharedReferenceOperation(conversion.Operand),
+        _ => false
+    };
 
     /// <summary>
     /// Resolves the variable declarator. Omitted <paramref name="column"/>
@@ -815,15 +1001,39 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             // Wrap in parentheses if needed for precedence / call/member syntax.
             // Anonymous functions especially need parens when used as f() / f.M.
             var needsParens = node.Parent is BinaryExpressionSyntax ||
-                              node.Parent is MemberAccessExpressionSyntax ||
-                              node.Parent is ConditionalExpressionSyntax ||
-                              node.Parent is InvocationExpressionSyntax ||
-                              node.Parent is ElementAccessExpressionSyntax;
+                              node.Parent is ConditionalExpressionSyntax;
 
-            if (needsParens &&
-                (_replacement is BinaryExpressionSyntax or
-                 ConditionalExpressionSyntax or
-                 AnonymousFunctionExpressionSyntax))
+            // As the receiver of .M, [i], (), ?. or a postfix operator, anything but a primary
+            // expression would bind wrongly: (Derived)_base.X, -_i.ToString(), new int[3][0],
+            // a ?? b! (#3090 review). Parenthesize every non-primary initializer there.
+            var isReceiver = node.Parent switch
+            {
+                MemberAccessExpressionSyntax member => member.Expression == node,
+                ElementAccessExpressionSyntax element => element.Expression == node,
+                InvocationExpressionSyntax invocation => invocation.Expression == node,
+                ConditionalAccessExpressionSyntax conditional => conditional.Expression == node,
+                PostfixUnaryExpressionSyntax => true,
+                _ => false
+            };
+
+            // A prefix-unary initializer pasted right after a prefix-unary or binary operator would
+            // merge with it (var neg = -a; return -neg; → return --a;, a-neg → a--a), silently
+            // turning a negation into a decrement or breaking the build, so parenthesize it:
+            // -(-a), a-(-a) (#3121).
+            var mergesWithOperator = _replacement is PrefixUnaryExpressionSyntax &&
+                                     node.Parent is PrefixUnaryExpressionSyntax or BinaryExpressionSyntax;
+
+            // In an interpolation hole a bare ?: ends the expression at its ':', which starts the
+            // format clause ({count == 1 ? "item" : "items"} → CS8361), so parenthesize it (#3040).
+            var conditionalInHole = node.Parent is InterpolationSyntax &&
+                                    _replacement is ConditionalExpressionSyntax;
+
+            if (mergesWithOperator || conditionalInHole ||
+                (isReceiver && !IsPrimaryExpression(_replacement)) ||
+                (needsParens &&
+                 (_replacement is BinaryExpressionSyntax or
+                  ConditionalExpressionSyntax or
+                  AnonymousFunctionExpressionSyntax)))
             {
                 return SyntaxFactory.ParenthesizedExpression(_replacement)
                     .WithTriviaFrom(node);
@@ -831,5 +1041,25 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
             return _replacement.WithTriviaFrom(node);
         }
+
+        private static bool IsPrimaryExpression(ExpressionSyntax expression) =>
+            expression is SimpleNameSyntax
+                or QualifiedNameSyntax
+                or AliasQualifiedNameSyntax
+                or MemberAccessExpressionSyntax
+                or ElementAccessExpressionSyntax
+                or InvocationExpressionSyntax
+                or LiteralExpressionSyntax
+                or ThisExpressionSyntax
+                or BaseExpressionSyntax
+                or ParenthesizedExpressionSyntax
+                or TupleExpressionSyntax
+                or ObjectCreationExpressionSyntax
+                or AnonymousObjectCreationExpressionSyntax
+                or TypeOfExpressionSyntax
+                or DefaultExpressionSyntax
+                or SizeOfExpressionSyntax
+                or CheckedExpressionSyntax
+                or InterpolatedStringExpressionSyntax;
     }
 }

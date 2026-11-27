@@ -113,12 +113,18 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             // right/middle segments (e.g. Task in App.Task.Widget).
             if (IsQualifiedRightHandSegment(node))
                 continue;
+            // Alias and using-static targets at the top of the file bind without the sibling
+            // usings, so adding a namespace using cannot resolve them (#3093). A using inside a
+            // namespace (block or file-scoped) does see the compilation unit's usings, so it is
+            // still fixed.
+            if (node.FirstAncestorOrSelf<UsingDirectiveSyntax>() is { Parent: CompilationUnitSyntax })
+                continue;
 
             var typeName = GetTypeName(node);
             if (string.IsNullOrEmpty(typeName)) continue;
 
             // Search all assemblies for matching types
-            var candidateNamespaces = FindNamespacesForType(compilation, typeName);
+            var candidateNamespaces = FindNamespacesForType(compilation, typeName, semanticModel.SyntaxTree);
             if (candidateNamespaces.Count == 1)
             {
                 namespacesToAdd.Add(candidateNamespaces[0]);
@@ -178,7 +184,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         var newUsingDirectives = newUsings
             .Select(n => SyntaxFactory.UsingDirective(
                     SyntaxFactory.ParseName(n).WithLeadingTrivia(SyntaxFactory.Space))
-                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed))
+                .WithTrailingTrivia(DetectEndOfLine(root)))
             .ToList();
 
         var allUsings = root.Usings.AddRange(newUsingDirectives);
@@ -399,11 +405,17 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             // right/middle segments (e.g. Task in App.Task.Widget).
             if (IsQualifiedRightHandSegment(node))
                 continue;
+            // Alias and using-static targets at the top of the file bind without the sibling
+            // usings, so adding a namespace using cannot resolve them (#3093). A using inside a
+            // namespace (block or file-scoped) does see the compilation unit's usings, so it is
+            // still fixed.
+            if (node.FirstAncestorOrSelf<UsingDirectiveSyntax>() is { Parent: CompilationUnitSyntax })
+                continue;
 
             var typeName = GetTypeName(node);
             if (string.IsNullOrEmpty(typeName)) continue;
 
-            var candidateNamespaces = FindNamespacesForType(compilation, typeName);
+            var candidateNamespaces = FindNamespacesForType(compilation, typeName, semanticModel.SyntaxTree);
             if (candidateNamespaces.Count == 1)
             {
                 namespacesToAdd.Add(candidateNamespaces[0]);
@@ -429,7 +441,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         var newUsingDirectives = newUsings
             .Select(n => SyntaxFactory.UsingDirective(
                     SyntaxFactory.ParseName(n).WithLeadingTrivia(SyntaxFactory.Space))
-                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed))
+                .WithTrailingTrivia(DetectEndOfLine(root)))
             .ToList();
 
         var allUsingsForFile = root.Usings.AddRange(newUsingDirectives);
@@ -489,7 +501,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         };
     }
 
-    private static List<string> FindNamespacesForType(Compilation compilation, string typeName)
+    private static List<string> FindNamespacesForType(Compilation compilation, string typeName, SyntaxTree documentTree)
     {
         var namespaces = new List<string>();
 
@@ -513,9 +525,11 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             }
         }
 
-        // Search in current compilation
+        // Search in current compilation. A file-local type (file class Widget) is visible only in
+        // its own file, so a using for its namespace helps only the document that declares it:
+        // one declared elsewhere can never resolve the name (#3094), one declared here can.
         var localTypes = GetAllTypes(compilation.GlobalNamespace)
-            .Where(t => t.Name == typeName)
+            .Where(t => t.Name == typeName && IsVisibleFrom(t, documentTree))
             .ToList();
 
         foreach (var type in localTypes)
@@ -527,8 +541,23 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             }
         }
 
+        // The project's own type wins over a same-named referenced type: the System-first tie-break
+        // picked static System.IO.Path over App.Geometry.Path, leaving CS0712 behind (#3117).
+        var sourceNamespaces = localTypes
+            .Where(t => t.Locations.Any(l => l.IsInSource))
+            .Select(t => t.ContainingNamespace)
+            .Where(ns => !ns.IsGlobalNamespace)
+            .Select(ns => ns.ToDisplayString())
+            .Distinct()
+            .ToList();
+        if (sourceNamespaces.Count > 0)
+            return sourceNamespaces;
+
         return namespaces.Distinct().ToList();
     }
+
+    private static bool IsVisibleFrom(INamedTypeSymbol type, SyntaxTree documentTree) =>
+        !type.IsFileLocal || type.DeclaringSyntaxReferences.Any(r => r.SyntaxTree == documentTree);
 
     private static IEnumerable<INamedTypeSymbol> GetAllTypes(INamespaceSymbol ns)
     {
@@ -578,6 +607,30 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             }
         };
 
-        return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        // The single-file preview reports the same count as the allFiles preview and apply (#3088).
+        return new RefactoringResult
+        {
+            Success = true,
+            OperationId = operationId,
+            Preview = true,
+            PendingChanges = pendingChanges,
+            UsingDirectivesAdded = namespacesToAdd.Count
+        };
+    }
+
+    /// <summary>
+    /// The end-of-line trivia to put after each added using: the file's own line ending (its first
+    /// end-of-line trivia), so an LF-only file does not gain CRLF lines and end up with mixed line
+    /// endings (#3087). CRLF only when the file has no line break at all.
+    /// </summary>
+    private static SyntaxTrivia DetectEndOfLine(SyntaxNode root)
+    {
+        foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
+        {
+            if (trivia.IsKind(SyntaxKind.EndOfLineTrivia))
+                return SyntaxFactory.EndOfLine(trivia.ToString());
+        }
+
+        return SyntaxFactory.CarriageReturnLineFeed;
     }
 }

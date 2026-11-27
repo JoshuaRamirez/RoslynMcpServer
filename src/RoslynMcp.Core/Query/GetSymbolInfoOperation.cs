@@ -1,3 +1,6 @@
+using System.Text;
+using System.Xml;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -53,8 +56,9 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
         var symbol = resolved.Symbol;
+        var compilation = await resolved.Document.Project.GetCompilationAsync(cancellationToken);
         var info = BuildDetailedInfo(
-            symbol, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter,
+            symbol, compilation, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter,
             @params.NameFilter, @params.NamespaceFilter, @params.StaticFilter, @params.AbstractFilter, @params.SealedFilter);
 
         return QueryResult<DetailedSymbolInfo>.Succeeded(operationId, info);
@@ -62,6 +66,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
 
     private static DetailedSymbolInfo BuildDetailedInfo(
         ISymbol symbol,
+        Compilation? compilation,
         int? maxResults,
         string? kindFilter,
         string? accessibilityFilter,
@@ -106,7 +111,13 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                 ? null
                 : namedType.BaseType?.ToDisplayString();
             interfaces = namedType.Interfaces.Select(i => i.ToDisplayString()).ToList();
+            // A C# 14 extension block is a nameless nested type (TypeKind.Extension) that
+            // CanBeReferencedByName drops; list its members in its place, so Shout / IsBlank inside
+            // extension(string tag) { … } are members of the static class like classic extensions (#3046).
             var memberSymbols = namedType.GetMembers()
+                .SelectMany(m => m is INamedTypeSymbol { TypeKind: TypeKind.Extension } extensionBlock
+                    ? extensionBlock.GetMembers()
+                    : [m])
                 .Where(m => !m.IsImplicitlyDeclared && m.CanBeReferencedByName)
                 .Where(memberFilter.Matches);
 
@@ -163,7 +174,7 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                 ? null
                 : symbol.ContainingNamespace?.ToDisplayString(),
             Signature = symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            DocumentationSummary = GetDocumentationSummary(symbol),
+            DocumentationSummary = GetInheritedDocumentationSummary(symbol, compilation),
             Location = location,
             BaseType = baseType,
             Interfaces = interfaces,
@@ -173,6 +184,112 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             ReturnType = returnType,
             Parameters = parameters
         };
+    }
+
+    /// <summary>
+    /// The symbol's own summary, or for a <c>/// &lt;inheritdoc/&gt;</c> member the summary of the
+    /// <c>cref</c> target, the overridden member, the implemented interface member, or the base
+    /// type / interface (#3092). <see cref="ISymbol.GetDocumentationCommentXml"/> never expands
+    /// <c>inheritdoc</c>, so these members used to report no summary at all.
+    /// </summary>
+    private static string? GetInheritedDocumentationSummary(ISymbol symbol, Compilation? compilation)
+    {
+        var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        var current = symbol;
+        while (visited.Add(current))
+        {
+            var summary = GetDocumentationSummary(current);
+            if (summary != null)
+                return summary;
+
+            var inheritDoc = GetInheritDocElement(current);
+            if (inheritDoc == null)
+                return null;
+
+            var next = ResolveInheritDocSource(current, (string?)inheritDoc.Attribute("cref"), compilation);
+            if (next == null)
+                return null;
+            current = next;
+        }
+
+        return null;
+    }
+
+    private static System.Xml.Linq.XElement? GetInheritDocElement(ISymbol symbol)
+    {
+        var xml = symbol.GetDocumentationCommentXml();
+        if (string.IsNullOrWhiteSpace(xml) || !xml.Contains("<inheritdoc", StringComparison.Ordinal))
+            return null;
+        try
+        {
+            return System.Xml.Linq.XDocument.Parse(xml).Descendants("inheritdoc").FirstOrDefault();
+        }
+        catch (System.Xml.XmlException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsEquatableOfSelf(INamedTypeSymbol @interface, INamedTypeSymbol type) =>
+        @interface is { Name: "IEquatable", Arity: 1, ContainingNamespace: { Name: "System", ContainingNamespace.IsGlobalNamespace: true } } &&
+        SymbolEqualityComparer.Default.Equals(@interface.TypeArguments[0], type);
+
+    private static ISymbol? ResolveInheritDocSource(ISymbol symbol, string? cref, Compilation? compilation)
+    {
+        if (!string.IsNullOrEmpty(cref))
+        {
+            return compilation == null
+                ? null
+                : DocumentationCommentId.GetFirstSymbolForDeclarationId(cref, compilation);
+        }
+
+        ISymbol? overridden = symbol switch
+        {
+            IMethodSymbol m => m.OverriddenMethod,
+            IPropertySymbol p => p.OverriddenProperty,
+            IEventSymbol e => e.OverriddenEvent,
+            _ => null
+        };
+        if (overridden != null)
+            return overridden;
+
+        ISymbol? explicitImplementation = symbol switch
+        {
+            IMethodSymbol m => m.ExplicitInterfaceImplementations.FirstOrDefault(),
+            IPropertySymbol p => p.ExplicitInterfaceImplementations.FirstOrDefault(),
+            IEventSymbol e => e.ExplicitInterfaceImplementations.FirstOrDefault(),
+            _ => null
+        };
+        if (explicitImplementation != null)
+            return explicitImplementation;
+
+        if (symbol is INamedTypeSymbol type)
+        {
+            // Only a class inherits its base type's docs: a struct's or enum's BaseType is
+            // System.ValueType / System.Enum, whose summary is not the type's (#3092 review).
+            if (type.TypeKind == TypeKind.Class && type.BaseType != null && type.BaseType.SpecialType != SpecialType.System_Object)
+                return type.BaseType;
+            // A record's compiler-synthesized IEquatable<Self> is not a declared contract, and its
+            // BCL summary is not the record's (#3092 review), so skip it.
+            return type.Interfaces.FirstOrDefault(i => !(type.IsRecord && IsEquatableOfSelf(i, type)));
+        }
+
+        if (symbol.ContainingType is { } containingType)
+        {
+            foreach (var @interface in containingType.AllInterfaces)
+            {
+                foreach (var member in @interface.GetMembers(symbol.Name))
+                {
+                    if (SymbolEqualityComparer.Default.Equals(
+                            containingType.FindImplementationForInterfaceMember(member), symbol))
+                    {
+                        return member;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     private static List<string> GetModifiers(ISymbol symbol)
@@ -233,19 +350,73 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         var xml = symbol.GetDocumentationCommentXml();
         if (string.IsNullOrWhiteSpace(xml)) return null;
 
-        // Extract the <summary> content
-        var startTag = "<summary>";
-        var endTag = "</summary>";
-        var startIndex = xml.IndexOf(startTag, StringComparison.Ordinal);
-        var endIndex = xml.IndexOf(endTag, StringComparison.Ordinal);
-
-        if (startIndex < 0 || endIndex < 0) return null;
-
-        startIndex += startTag.Length;
-        var summary = xml[startIndex..endIndex].Trim();
+        // Render the <summary> element as text instead of slicing raw XML: inner tags
+        // (<paramref/>, <see cref/>, <c>) leaked as markup, crefs kept their T:/M: doc-ID
+        // prefix, and entities such as &lt; stayed encoded (#3091).
+        string summary;
+        try
+        {
+            // PreserveWhitespace keeps the space between adjacent inline elements (<c>x</c> <c>y</c>).
+            var element = XDocument.Parse(xml, LoadOptions.PreserveWhitespace).Descendants("summary").FirstOrDefault();
+            if (element == null) return null;
+            var builder = new StringBuilder();
+            RenderDocumentationNodes(element.Nodes(), builder);
+            summary = builder.ToString();
+        }
+        catch (XmlException)
+        {
+            return null;
+        }
 
         // Clean up whitespace
         summary = string.Join(" ", summary.Split(default(char[]), StringSplitOptions.RemoveEmptyEntries));
         return string.IsNullOrWhiteSpace(summary) ? null : summary;
     }
+
+    private static void RenderDocumentationNodes(IEnumerable<XNode> nodes, StringBuilder builder)
+    {
+        foreach (var node in nodes)
+        {
+            switch (node)
+            {
+                case XText text:
+                    builder.Append(text.Value);
+                    break;
+                case XElement element:
+                    RenderDocumentationElement(element, builder);
+                    break;
+            }
+        }
+    }
+
+    private static void RenderDocumentationElement(XElement element, StringBuilder builder)
+    {
+        switch (element.Name.LocalName)
+        {
+            case "see" or "seealso" when !element.Nodes().Any():
+                var reference = (string?)element.Attribute("cref") ?? (string?)element.Attribute("langword") ?? (string?)element.Attribute("href");
+                if (reference != null)
+                    builder.Append(StripDocumentationIdPrefix(reference));
+                break;
+            case "paramref" or "typeparamref":
+                builder.Append((string?)element.Attribute("name"));
+                break;
+            case "para" or "br":
+                builder.Append(' ');
+                RenderDocumentationNodes(element.Nodes(), builder);
+                builder.Append(' ');
+                break;
+            default:
+                RenderDocumentationNodes(element.Nodes(), builder);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Drops the compiler's doc-ID kind prefix (<c>T:</c>, <c>M:</c>, …) from a cref.
+    /// </summary>
+    private static string StripDocumentationIdPrefix(string reference) =>
+        reference.Length > 2 && reference[1] == ':' && (char.IsUpper(reference[0]) || reference[0] == '!')
+            ? reference[2..]
+            : reference;
 }

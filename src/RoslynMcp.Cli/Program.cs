@@ -72,6 +72,29 @@ if (tool.RequiresWorkspace && string.IsNullOrEmpty(parsed.SolutionPath))
     return ExitCliError;
 }
 
+// A non-boolean option with no value is a usage error, not the literal "true" (#3288)
+var missingValue = ArgsToJsonConverter.FindOptionMissingValue(parsed.ValuelessOptions, tool.ParamsType);
+if (missingValue is not null)
+{
+    Console.Error.WriteLine($"Option --{missingValue} requires a value.");
+    Console.Error.WriteLine($"Run 'roslyn-cli {parsed.ToolName} --help' to see its options.");
+    return ExitCliError;
+}
+
+// Resolve a relative solution path and path-typed options against the working directory (#3061)
+parsed = new ParsedArgs
+{
+    SolutionPath = CliPathResolver.ResolvePath(parsed.SolutionPath),
+    ToolName = parsed.ToolName,
+    Options = parsed.Options,
+    ShowHelp = parsed.ShowHelp,
+    ShowToolHelp = parsed.ShowToolHelp,
+    Format = parsed.Format,
+    Verbose = parsed.Verbose,
+    ValuelessOptions = parsed.ValuelessOptions
+};
+CliPathResolver.ResolvePathOptions(parsed.Options, tool.ParamsType);
+
 // Set up cancellation
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
@@ -126,7 +149,7 @@ catch (Exception ex)
     Console.Error.WriteLine($"Error: {ex.Message}");
     if (parsed.Verbose)
         Console.Error.WriteLine(ex.ToString());
-    return IsEnvironmentError(ex) ? ExitEnvironmentError : ExitToolError;
+    return ExitCodeClassifier.IsEnvironmentError(ex) ? ExitEnvironmentError : ExitToolError;
 }
 
 // ── Helper methods ───────────────────────────────────────────────
@@ -149,17 +172,6 @@ int GetExitCode(object result)
         return success ? ExitSuccess : ExitToolError;
     }
     return ExitSuccess;
-}
-
-bool IsEnvironmentError(Exception ex)
-{
-    // Check exception types first for reliable detection
-    if (ex is FileNotFoundException or DirectoryNotFoundException)
-        return true;
-
-    // Fallback to message matching for MSBuild/SDK loading failures
-    return ex.Message.Contains("MSBuild", StringComparison.OrdinalIgnoreCase) ||
-           ex.Message.Contains("SDK", StringComparison.OrdinalIgnoreCase);
 }
 
 async Task<DiagnoseResult> ExecuteDiagnoseAsync(

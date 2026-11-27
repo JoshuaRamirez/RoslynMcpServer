@@ -26,7 +26,7 @@ namespace RoslynMcp.Core.Refactoring.Rename;
 public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbolParams>
 {
     private static readonly Regex IdentifierPattern = new(
-        @"^@?[A-Za-z_][A-Za-z0-9_]*$",
+        @"^@?[A-Za-z_][A-Za-z0-9_]*\z",
         RegexOptions.Compiled);
 
     /// <summary>
@@ -60,6 +60,15 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
             && SyntaxFacts.GetKeywordKind(@params.NewName) != SyntaxKind.None)
         {
             throw new RefactoringException(ErrorCodes.ReservedKeyword, $"'{@params.NewName}' is a C# reserved keyword.");
+        }
+
+        // A symbol named '_' captures every discard in its scope ('_ = Log(x)', 'out _'), silently turning them
+        // into writes to the renamed symbol, and the renamer sees no conflict because discards are not symbols (#3296).
+        if (@params.NewName is "_" or "@_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidNewName,
+                "'_' cannot be used as newName: a symbol named '_' would capture existing discards ('_ = ...', 'out _') in its scope.");
         }
 
         if (@params.SymbolName == @params.NewName)
@@ -946,26 +955,31 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         if (@params.Line.HasValue)
         {
             var position = SymbolResolver.GetPosition(root, @params.Line.Value, @params.Column ?? 1);
-            var token = root.FindToken(position);
-
-            // Walk up to find the symbol declaration or reference
-            var node = token.Parent;
-            while (node != null)
+            // Look inside structured trivia first so a caret on a doc-comment cref binds the cref target
+            // rather than the member the comment documents (#3105); then fall back to the next real token.
+            var triviaToken = root.FindToken(position, findInsideTrivia: true);
+            var tokens = new[] { triviaToken, root.FindToken(position) }.Distinct();
+            foreach (var token in tokens)
             {
-                var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
-                if (symbol != null && symbol.Name == @params.SymbolName)
+                // Walk up to find the symbol declaration or reference
+                var node = token.Parent;
+                while (node != null)
                 {
-                    return (symbol, document);
-                }
+                    var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+                    if (symbol != null && symbol.Name == @params.SymbolName)
+                    {
+                        return (symbol, document);
+                    }
 
-                // Check for symbol info (reference)
-                var symbolInfo = semanticModel.GetSymbolInfo(node, cancellationToken);
-                if (symbolInfo.Symbol != null && symbolInfo.Symbol.Name == @params.SymbolName)
-                {
-                    return (symbolInfo.Symbol, document);
-                }
+                    // Check for symbol info (reference)
+                    var symbolInfo = semanticModel.GetSymbolInfo(node, cancellationToken);
+                    if (symbolInfo.Symbol != null && symbolInfo.Symbol.Name == @params.SymbolName)
+                    {
+                        return (symbolInfo.Symbol, document);
+                    }
 
-                node = node.Parent;
+                    node = node.Parent;
+                }
             }
 
             throw new RefactoringException(
@@ -1101,11 +1115,40 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         return new Contracts.Models.SymbolInfo
         {
             Name = newName,
-            FullyQualifiedName = symbol.ToDisplayString().Replace(symbol.Name, newName),
+            FullyQualifiedName = BuildRenamedDisplayString(symbol, newName),
             Kind = MapSymbolKind(symbol),
             PreviousLocation = prevLocation,
             NewLocation = newLocation
         };
+    }
+
+    /// <summary>
+    /// Builds the renamed symbol's display string by replacing only the display part that names the symbol
+    /// itself. A plain string replace of the old name also rewrote namespaces, containing types and parameter
+    /// types that merely contain it (Widgets.WidgetCore.Widget → Gadgets.GadgetCore.Gadget, #3289).
+    /// </summary>
+    internal static string BuildRenamedDisplayString(ISymbol symbol, string newName)
+    {
+        var builder = new System.Text.StringBuilder();
+        var replaced = false;
+        foreach (var part in symbol.ToDisplayParts())
+        {
+            var text = part.ToString();
+            if (!replaced
+                && part.Symbol != null
+                && SymbolEqualityComparer.Default.Equals(part.Symbol, symbol)
+                && text == symbol.Name)
+            {
+                builder.Append(newName);
+                replaced = true;
+            }
+            else
+            {
+                builder.Append(text);
+            }
+        }
+
+        return replaced ? builder.ToString() : symbol.ToDisplayString();
     }
 
     private static Contracts.Enums.SymbolKind MapSymbolKind(ISymbol symbol)

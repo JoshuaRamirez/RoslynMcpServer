@@ -18,6 +18,16 @@ namespace RoslynMcp.Core.Query;
 /// </summary>
 public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsParams, SearchSymbolsResult>
 {
+    /// <summary>
+    /// Kinds <c>search_symbols</c> can return. <c>Compilation.GetSymbolsWithName</c>
+    /// never yields locals or parameters, so <c>Local</c> / <c>Parameter</c> are rejected instead of
+    /// silently matching nothing (#3195).
+    /// </summary>
+    private static readonly Contracts.Enums.SymbolKind[] SearchableKinds = System.Enum
+        .GetValues<Contracts.Enums.SymbolKind>()
+        .Where(k => k is not (Contracts.Enums.SymbolKind.Local or Contracts.Enums.SymbolKind.Parameter))
+        .ToArray();
+
     /// <inheritdoc />
     public SearchSymbolsOperation(WorkspaceContext context) : base(context)
     {
@@ -43,6 +53,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
         ProjectPathFilter.Validate(@params.ProjectPath);
 
         AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
+        SymbolKindFilterParser.ParseAllowed(@params.KindFilter, SearchableKinds);
     }
 
     /// <inheritdoc />
@@ -53,7 +64,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
     {
         var query = @params.Query;
         var maxResults = @params.MaxResults ?? 50;
-        var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
+        var kindFilter = SymbolKindFilterParser.ParseAllowed(@params.KindFilter, SearchableKinds);
         var nameComparison = @params.CaseSensitive == true
             ? StringComparison.Ordinal
             : StringComparison.OrdinalIgnoreCase;
@@ -160,7 +171,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                         File = lineSpan.Path,
                         Line = lineSpan.StartLinePosition.Line + 1,
                         Column = lineSpan.StartLinePosition.Character + 1,
-                        ContainerName = symbol.ContainingType?.Name ?? symbol.ContainingNamespace?.ToDisplayString()
+                        ContainerName = GetContainerName(symbol)
                     });
                 }
             }
@@ -190,5 +201,20 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             Contracts.Enums.SymbolKind.Namespace => SymbolFilter.Namespace,
             _ => SymbolFilter.Member
         };
+    }
+
+    /// <summary>
+    /// The containing type's name, or the containing namespace when there is no containing type.
+    /// A member of a C# 14 <c>extension(...)</c> block is contained by the compiler's nameless
+    /// extension grouping type (Name ""), so the declaring static class is reported instead; an empty
+    /// name used to be returned for every extension-block member (#3047).
+    /// </summary>
+    private static string? GetContainerName(ISymbol symbol)
+    {
+        var containingType = symbol.ContainingType;
+        while (containingType is { Name.Length: 0, ContainingType: not null })
+            containingType = containingType.ContainingType;
+
+        return containingType?.Name ?? symbol.ContainingNamespace?.ToDisplayString();
     }
 }

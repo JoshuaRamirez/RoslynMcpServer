@@ -77,6 +77,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
 
         var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
+        var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
         if (root == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
@@ -96,7 +97,22 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
                 "foreach body contains preprocessor directives and cannot be safely converted to LINQ.");
         }
 
-        if (!TryConvert(foreachStmt, @params.PreferQuerySyntax, out var conversion, out var assignment))
+        if (TryAnalyzePattern(foreachStmt, out var analyzed) &&
+            AccumulatorHasDirectiveGuardedCodeBeforeLoop(foreachStmt, analyzed!.ListName))
+        {
+            throw new RefactoringException(ErrorCodes.CannotConvert,
+                "Preprocessor directives (#if / #elif / #else / #endif) guard code between the accumulator's " +
+                "declaration and the foreach; the LINQ assignment would discard writes made there in some " +
+                "build configuration, so the loop cannot be safely converted.");
+        }
+
+        if (AccumulatorDeclaredOutsideEnclosingLoop(foreachStmt))
+            throw new RefactoringException(ErrorCodes.CannotConvert, EnclosingLoopAccumulatorMessage);
+
+        if (analyzed != null && ProjectionHasNoNaturalType(analyzed.Projection, semanticModel))
+            throw new RefactoringException(ErrorCodes.CannotConvert, TargetTypedProjectionMessage);
+
+        if (!TryConvert(foreachStmt, @params.PreferQuerySyntax, out var conversion, out var assignment, semanticModel))
         {
             throw new RefactoringException(ErrorCodes.CannotConvert,
                 "Could not identify a convertible foreach pattern. Supported: foreach+Add, foreach+if+Add.");
@@ -173,7 +189,8 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             if (root == null)
                 continue;
 
-            var replacements = CollectConvertibleReplacements(root, @params.PreferQuerySyntax);
+            var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+            var replacements = CollectConvertibleReplacements(root, @params.PreferQuerySyntax, semanticModel);
 
             if (replacements.Count == 0)
                 continue;
@@ -249,12 +266,13 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     /// </summary>
     internal static IReadOnlyDictionary<ForEachStatementSyntax, SyntaxNode> CollectConvertibleReplacements(
         SyntaxNode root,
-        bool preferQuerySyntax)
+        bool preferQuerySyntax,
+        SemanticModel? semanticModel = null)
     {
         var replacements = new Dictionary<ForEachStatementSyntax, SyntaxNode>();
         foreach (var statement in root.DescendantNodes().OfType<ForEachStatementSyntax>())
         {
-            if (TryConvert(statement, preferQuerySyntax, out _, out var assignment))
+            if (TryConvert(statement, preferQuerySyntax, out _, out var assignment, semanticModel))
                 replacements[statement] = ReplaceForeachWithLinqStatement(statement, assignment);
         }
 
@@ -265,13 +283,15 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
 
     /// <summary>
     /// Attempts a conversion without throwing. Used by allFiles so foreach
-    /// that cannot convert stay no-ops.
+    /// that cannot convert stay no-ops. <paramref name="semanticModel"/>, when
+    /// given, lets the natural-type check ask the compiler (#3038).
     /// </summary>
     internal static bool TryConvert(
         ForEachStatementSyntax foreachStmt,
         bool preferQuerySyntax,
         out ForeachLinqConversion conversion,
-        out ExpressionSyntax assignment)
+        out ExpressionSyntax assignment,
+        SemanticModel? semanticModel = null)
     {
         conversion = null!;
         assignment = null!;
@@ -284,19 +304,523 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         if (StatementContainsPreprocessorDirectives(foreachStmt))
             return false;
 
-        var body = foreachStmt.Statement;
-        var statements = body is BlockSyntax block ? block.Statements.ToList() : new List<StatementSyntax> { body };
-
-        if (!TryAnalyzeAddPattern(foreachStmt, statements, out var analyzed) &&
-            !TryAnalyzeFilterPattern(foreachStmt, statements, out analyzed))
-        {
+        if (!TryAnalyzePattern(foreachStmt, out var analyzed))
             return false;
-        }
 
-        conversion = analyzed!;
+        // The rewrite assigns over the accumulator, so writes between its
+        // declaration and the loop are lost. Directive-guarded code there
+        // (inactive text or an active #if branch) may write to it in some
+        // build configuration, so refuse rather than discard it (#3476).
+        if (AccumulatorHasDirectiveGuardedCodeBeforeLoop(foreachStmt, analyzed!.ListName))
+            return false;
+
+        // The rewrite also assigns over the accumulator on every run of the
+        // foreach, so an enclosing loop between the accumulator's
+        // declaration and the foreach would wipe earlier iterations' elements
+        // (#3402).
+        if (AccumulatorDeclaredOutsideEnclosingLoop(foreachStmt, analyzed.ListName))
+            return false;
+
+        // The Add argument may only be typed by Add's parameter (null, default, new(), [..]); an
+        // untyped Select(x => null) cannot infer TResult and would not compile (#3038).
+        if (ProjectionHasNoNaturalType(analyzed.Projection, semanticModel))
+            return false;
+
+        conversion = analyzed;
+        if (!(preferQuerySyntax && HasQuerySyntaxForm(conversion.Kind)))
+            conversion = conversion with { Projection = KeepFilterNarrowing(foreachStmt, conversion, semanticModel) };
+
         assignment = BuildLinqAssignment(conversion, preferQuerySyntax);
         return true;
     }
+
+    /// <summary>
+    /// Inside the loop, the <c>if</c> filter can narrow a nullable iteration variable to not-null at the
+    /// <c>Add</c> site. Method syntax moves the projection into its own <c>Select</c> lambda, where that
+    /// narrowing is lost: <c>Where(s =&gt; s != null).Select(s =&gt; s)</c> is <c>List&lt;string?&gt;</c>, so
+    /// assigning it to <c>List&lt;string&gt;</c> raises CS8619 (#3361). Each reference to the iteration
+    /// variable that the compiler saw as not-null at the <c>Add</c> site is marked with <c>!</c> so the
+    /// <c>Select</c> lambda keeps the same null-state. No-op without a semantic model, without a filter,
+    /// or when nullable analysis is off.
+    /// </summary>
+    private static ExpressionSyntax KeepFilterNarrowing(
+        ForEachStatementSyntax foreachStmt,
+        ForeachLinqConversion conversion,
+        SemanticModel? semanticModel)
+    {
+        var projection = conversion.Projection;
+        if (conversion.Filter == null || semanticModel == null || projection.SyntaxTree != semanticModel.SyntaxTree)
+            return projection;
+
+        // The Select lambda's parameter gets the source's element type (a 'var' loop variable is always
+        // annotated, so the local's own type cannot tell whether the source is nullable).
+        if (semanticModel.GetDeclaredSymbol(foreachStmt) is not ILocalSymbol iterationVariable ||
+            semanticModel.GetForEachStatementInfo(foreachStmt).ElementType?.NullableAnnotation != NullableAnnotation.Annotated)
+        {
+            return projection;
+        }
+
+        var narrowed = projection.DescendantNodesAndSelf()
+            .OfType<IdentifierNameSyntax>()
+            .Where(id => id.Parent is not PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression })
+            .Where(id => IsValueUse(id, projection, semanticModel))
+            .Where(id => SymbolEqualityComparer.Default.Equals(semanticModel.GetSymbolInfo(id).Symbol, iterationVariable))
+            .Where(id => semanticModel.GetTypeInfo(id).Nullability.FlowState == NullableFlowState.NotNull)
+            .ToList();
+
+        if (narrowed.Count == 0)
+            return projection;
+
+        return projection.ReplaceNodes(narrowed, (_, rewritten) =>
+            SyntaxFactory.PostfixUnaryExpression(SyntaxKind.SuppressNullableWarningExpression, rewritten.WithoutTrivia())
+                .WithTriviaFrom(rewritten));
+    }
+
+    /// <summary>
+    /// True when <paramref name="id"/> is read as a value, so <c>id!</c> is legal there. Not inside a
+    /// <c>nameof(...)</c> argument (<c>nameof(s!)</c> is CS8081), not a <c>ref</c> / <c>out</c> / <c>in</c>
+    /// argument, and not an assignment target (#3361 review).
+    /// </summary>
+    private static bool IsValueUse(IdentifierNameSyntax id, ExpressionSyntax projection, SemanticModel semanticModel)
+    {
+        if (id.Parent is ArgumentSyntax { RefKindKeyword.RawKind: not (int)SyntaxKind.None })
+            return false;
+
+        if (id.Parent is AssignmentExpressionSyntax assignment && assignment.Left == id)
+            return false;
+
+        foreach (var invocation in id.Ancestors().TakeWhile(n => n != projection.Parent).OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" } &&
+                semanticModel.GetOperation(invocation) is Microsoft.CodeAnalysis.Operations.INameOfOperation)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    internal const string TargetTypedProjectionMessage =
+        "The Add argument has no type of its own (null, default, new(), a collection expression, or a conditional " +
+        "or switch expression of those, with or without '!'); it is typed only by Add's parameter, so Select could " +
+        "not infer the element type and the converted code would not compile.";
+
+    /// <summary>
+    /// True when <paramref name="projection"/> has no natural type of its own, so <c>Select(x =&gt; projection)</c>
+    /// cannot infer its result type (#3038). With a <paramref name="semanticModel"/>, the compiler is asked
+    /// first: no type or an error type refuses. The syntactic check always runs too (the compiler reports
+    /// the target type for <c>new()</c>, and callers without a model rely on it).
+    /// </summary>
+    internal static bool ProjectionHasNoNaturalType(ExpressionSyntax projection, SemanticModel? semanticModel = null)
+    {
+        if (semanticModel != null && projection.SyntaxTree == semanticModel.SyntaxTree)
+        {
+            var type = semanticModel.GetTypeInfo(projection).Type;
+            if (type is null or IErrorTypeSymbol)
+                return true;
+        }
+
+        return IsSyntacticallyTypeless(projection);
+    }
+
+    /// <summary>
+    /// Syntactic fallback: after unwrapping parentheses and the null-forgiving <c>!</c>, the <c>null</c> or
+    /// <c>default</c> literal, a target-typed <c>new()</c>, a collection expression, a conditional whose
+    /// branches are both typeless, or a switch expression whose arms are all typeless.
+    /// </summary>
+    private static bool IsSyntacticallyTypeless(ExpressionSyntax expression)
+    {
+        while (true)
+        {
+            if (expression is ParenthesizedExpressionSyntax parenthesized)
+                expression = parenthesized.Expression;
+            else if (expression is PostfixUnaryExpressionSyntax postfix &&
+                     postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression))
+                expression = postfix.Operand;
+            else
+                break;
+        }
+
+        return expression switch
+        {
+            LiteralExpressionSyntax literal => literal.IsKind(SyntaxKind.NullLiteralExpression) ||
+                                               literal.IsKind(SyntaxKind.DefaultLiteralExpression),
+            ImplicitObjectCreationExpressionSyntax => true,
+            CollectionExpressionSyntax => true,
+            ConditionalExpressionSyntax conditional => IsSyntacticallyTypeless(conditional.WhenTrue) &&
+                                                       IsSyntacticallyTypeless(conditional.WhenFalse),
+            SwitchExpressionSyntax switchExpression => switchExpression.Arms.Count > 0 &&
+                                                       switchExpression.Arms.All(arm => IsSyntacticallyTypeless(arm.Expression)),
+            _ => false
+        };
+    }
+
+    internal const string EnclosingLoopAccumulatorMessage =
+        "The foreach is nested inside an enclosing loop (for / foreach / while / do) and the accumulator is " +
+        "declared outside that loop; the LINQ assignment would discard elements added by earlier iterations " +
+        "of the enclosing loop, so the loop cannot be safely converted.";
+
+    /// <summary>
+    /// True when the foreach's accumulator keeps its contents across runs
+    /// of the foreach because an enclosing <c>for</c> / <c>foreach</c> /
+    /// <c>while</c> / <c>do</c> loop sits between the foreach and the
+    /// accumulator's declaration (#3402). The original loop appends on
+    /// every outer iteration; the LINQ assignment would replace the list
+    /// each time, keeping only the last iteration's elements. Loops are
+    /// collected from the foreach outward up to the function body that
+    /// declares the accumulator, so a captured local declared outside a loop
+    /// that encloses the lambda, anonymous method or local function holding
+    /// the foreach counts too; the walk never leaves the member. A loop
+    /// whose body contains the accumulator's declaration re-creates it on
+    /// every iteration and is fine; a local declared in a <c>for</c>
+    /// initializer is created once and still counts as outside. A field,
+    /// parameter or member-access accumulator is declared outside every
+    /// such loop. A parenthesized receiver is
+    /// unwrapped first. Returns false for foreach that do not match a
+    /// convertible pattern.
+    /// </summary>
+    internal static bool AccumulatorDeclaredOutsideEnclosingLoop(ForEachStatementSyntax foreachStmt)
+    {
+        if (!TryAnalyzePattern(foreachStmt, out var analyzed))
+            return false;
+
+        return AccumulatorDeclaredOutsideEnclosingLoop(foreachStmt, analyzed!.ListName);
+    }
+
+    private static bool AccumulatorDeclaredOutsideEnclosingLoop(
+        ForEachStatementSyntax foreachStmt,
+        ExpressionSyntax accumulator)
+    {
+        // TryMatchAdd accepts any receiver, so a parenthesized local such as
+        // (all).Add(x) must resolve to the same declaration as all.Add(x).
+        while (accumulator is ParenthesizedExpressionSyntax parenthesized)
+            accumulator = parenthesized.Expression;
+
+        var name = accumulator is IdentifierNameSyntax identifier ? identifier.Identifier.ValueText : null;
+        var resolving = name != null;
+        SyntaxNode? declaration = null;
+        var enclosingLoopBodies = new List<StatementSyntax>();
+
+        // Walk out one function body at a time. A captured local is declared
+        // in an outer body, so loops between the lambda / anonymous method /
+        // local function and that declaration also run the foreach more than
+        // once. Stop at the body that declares the accumulator, or at the
+        // member body for a field / member-access accumulator.
+        SyntaxNode node = foreachStmt;
+        while (true)
+        {
+            SyntaxNode? current = node.Parent;
+            for (; current != null && !IsBodyBoundary(current); current = current.Parent)
+            {
+                var loopBody = current switch
+                {
+                    ForStatementSyntax loop => loop.Statement,
+                    CommonForEachStatementSyntax loop => loop.Statement,
+                    WhileStatementSyntax loop => loop.Statement,
+                    DoStatementSyntax loop => loop.Statement,
+                    _ => null
+                };
+
+                if (loopBody != null)
+                    enclosingLoopBodies.Add(loopBody);
+            }
+
+            if (current == null || current is BaseTypeDeclarationSyntax or BaseNamespaceDeclarationSyntax)
+                break;
+
+            if (resolving)
+            {
+                // A parameter is declared outside every loop collected so far.
+                if (DeclaresParameter(current, name!))
+                    break;
+
+                declaration = FindLocalDeclaringSyntax(current, name!, foreachStmt, out var skippedOutOfScope);
+                if (declaration != null)
+                    break;
+
+                // A same-named local was set aside as out of scope; keep
+                // collecting loops but treat the accumulator as unresolved,
+                // which can only over-refuse.
+                if (skippedOutOfScope)
+                    resolving = false;
+            }
+
+            if (current is MemberDeclarationSyntax or AccessorDeclarationSyntax or CompilationUnitSyntax)
+                break;
+
+            node = current;
+        }
+
+        if (enclosingLoopBodies.Count == 0)
+            return false;
+
+        // Not a local of any enclosing body (field, parameter or member
+        // access): every collected loop is between it and the foreach.
+        if (declaration == null)
+            return true;
+
+        var declaredAt = DeclaredTokenStart(declaration);
+        return enclosingLoopBodies.Any(loopBody => !loopBody.FullSpan.Contains(declaredAt));
+    }
+
+    private static bool TryAnalyzePattern(ForEachStatementSyntax foreachStmt, out ForeachLinqConversion? analyzed)
+    {
+        var body = foreachStmt.Statement;
+        var statements = body is BlockSyntax block ? block.Statements.ToList() : new List<StatementSyntax> { body };
+
+        return TryAnalyzeAddPattern(foreachStmt, statements, out analyzed) ||
+               TryAnalyzeFilterPattern(foreachStmt, statements, out analyzed);
+    }
+
+    /// <summary>
+    /// True when the accumulator is a local and the text between the end of
+    /// its declaration and the <c>foreach</c> keyword contains disabled text
+    /// (an inactive <c>#if</c> branch) or a conditional directive other than
+    /// an <c>#if</c> that opens in the foreach's own leading trivia (a loop
+    /// wrapped as a whole in <c>#if</c> still converts). Such code can write
+    /// to the accumulator in some build configuration, and the LINQ
+    /// assignment would silently discard those writes (#3476).
+    /// </summary>
+    internal static bool AccumulatorHasDirectiveGuardedCodeBeforeLoop(
+        ForEachStatementSyntax foreachStmt,
+        ExpressionSyntax accumulator)
+    {
+        var scanStart = FindAccumulatorScanStart(foreachStmt, accumulator);
+        if (scanStart == null)
+            return false;
+
+        var start = scanStart.Value;
+        var end = foreachStmt.SpanStart;
+        if (end <= start)
+            return false;
+
+        var foreachLeading = foreachStmt.GetLeadingTrivia();
+        var root = foreachStmt.SyntaxTree.GetRoot();
+        foreach (var trivia in root.DescendantTrivia(TextSpan.FromBounds(start, end), descendIntoTrivia: true))
+        {
+            if (trivia.SpanStart < start || trivia.Span.End > end)
+                continue;
+
+            if (trivia.IsKind(SyntaxKind.DisabledTextTrivia))
+                return true;
+
+            if (trivia.IsKind(SyntaxKind.ElifDirectiveTrivia) ||
+                trivia.IsKind(SyntaxKind.ElseDirectiveTrivia) ||
+                trivia.IsKind(SyntaxKind.EndIfDirectiveTrivia))
+            {
+                return true;
+            }
+
+            if (trivia.IsKind(SyntaxKind.IfDirectiveTrivia) && !foreachLeading.Contains(trivia))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Position from which to scan for directive-guarded code when the
+    /// simple-name accumulator is a local, or null when it is not a local
+    /// (field, parameter, member access). The local is resolved to its
+    /// declaring syntax in the nearest enclosing body (method, accessor,
+    /// local function, lambda or top-level statements): a local declaration
+    /// statement, <c>using</c> / <c>for</c> / <c>fixed</c> declarator,
+    /// <c>out var</c> or pattern / deconstruction designation, enclosing
+    /// <c>foreach</c> variable or <c>catch</c> variable. The scan starts at
+    /// the end of the statement containing that declaration, or at the end
+    /// of the declaration itself when that statement also contains the loop
+    /// (<c>if (Make(out var r)) { … foreach … }</c>). A local declared in an
+    /// outer body and captured by the loop's lambda / local function has no
+    /// anchor statement there, so the scan starts at the start of the
+    /// loop's enclosing body.
+    /// </summary>
+    private static int? FindAccumulatorScanStart(
+        ForEachStatementSyntax foreachStmt,
+        ExpressionSyntax accumulator)
+    {
+        if (accumulator is not IdentifierNameSyntax identifier)
+            return null;
+
+        var name = identifier.Identifier.ValueText;
+        var nearestBody = EnclosingBody(foreachStmt);
+        if (nearestBody == null)
+            return null;
+
+        for (var body = nearestBody; body != null; body = EnclosingBody(body))
+        {
+            if (DeclaresParameter(body, name))
+                return null;
+
+            var declaration = FindLocalDeclaringSyntax(body, name, foreachStmt, out var skippedOutOfScope);
+            if (declaration == null)
+            {
+                // A same-named local was set aside as out of scope. If that
+                // scope estimate is wrong the real declaration is gone, so
+                // scan from the body start: this can only over-refuse.
+                if (skippedOutOfScope)
+                    return BodyStart(nearestBody);
+                if (body is MemberDeclarationSyntax or AccessorDeclarationSyntax or CompilationUnitSyntax)
+                    return null;
+                continue;
+            }
+
+            if (body != nearestBody)
+                return BodyStart(nearestBody);
+
+            var statement = declaration.FirstAncestorOrSelf<StatementSyntax>();
+            return statement != null && !statement.Span.Contains(foreachStmt.Span)
+                ? statement.Span.End
+                : declaration.Span.End;
+        }
+
+        return null;
+    }
+
+    private static bool IsBodyBoundary(SyntaxNode node) =>
+        node is (MemberDeclarationSyntax and not GlobalStatementSyntax) or LocalFunctionStatementSyntax or
+            AnonymousFunctionExpressionSyntax or AccessorDeclarationSyntax or CompilationUnitSyntax;
+
+    private static SyntaxNode? EnclosingBody(SyntaxNode node)
+    {
+        for (var current = node.Parent; current != null; current = current.Parent)
+        {
+            if (IsBodyBoundary(current))
+                return current is BaseTypeDeclarationSyntax or BaseNamespaceDeclarationSyntax ? null : current;
+        }
+
+        return null;
+    }
+
+    private static bool DeclaresParameter(SyntaxNode body, string name)
+    {
+        var parameters = body switch
+        {
+            BaseMethodDeclarationSyntax method => method.ParameterList.Parameters,
+            LocalFunctionStatementSyntax localFunction => localFunction.ParameterList.Parameters,
+            ParenthesizedLambdaExpressionSyntax lambda => lambda.ParameterList.Parameters,
+            SimpleLambdaExpressionSyntax lambda => SyntaxFactory.SingletonSeparatedList(lambda.Parameter),
+            AnonymousMethodExpressionSyntax { ParameterList: { } list } => list.Parameters,
+            IndexerDeclarationSyntax indexer => indexer.ParameterList.Parameters,
+            _ => default
+        };
+
+        if (parameters.Any(parameter => parameter.Identifier.ValueText == name))
+            return true;
+
+        // Accessors see the indexer's parameters and set / init / add /
+        // remove accessors see the implicit 'value' parameter.
+        if (body is AccessorDeclarationSyntax accessor)
+        {
+            if (name == "value" && !accessor.IsKind(SyntaxKind.GetAccessorDeclaration))
+                return true;
+            if (accessor.Parent?.Parent is IndexerDeclarationSyntax indexer)
+                return indexer.ParameterList.Parameters.Any(parameter => parameter.Identifier.ValueText == name);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Nearest local-declaring syntax named <paramref name="name"/> that
+    /// ends before <paramref name="target"/> in <paramref name="body"/> and
+    /// whose scope contains <paramref name="target"/>, not descending into
+    /// nested bodies. Sibling-scope locals with the same name are ignored,
+    /// so a shadowing local in an earlier block can't move the scan start
+    /// past a guarded write to the outer accumulator.
+    /// </summary>
+    private static SyntaxNode? FindLocalDeclaringSyntax(SyntaxNode body, string name, SyntaxNode target, out bool skippedOutOfScope)
+    {
+        skippedOutOfScope = false;
+        var before = target.SpanStart;
+        SyntaxNode? match = null;
+        foreach (var node in body.DescendantNodes(child => child == body || !IsBodyBoundary(child)))
+        {
+            if (node == body || node.SpanStart >= before)
+                continue;
+
+            var declared = node switch
+            {
+                VariableDeclaratorSyntax declarator => declarator.Identifier,
+                SingleVariableDesignationSyntax designation => designation.Identifier,
+                ForEachStatementSyntax loop => loop.Identifier,
+                CatchDeclarationSyntax catchDeclaration => catchDeclaration.Identifier,
+                _ => default
+            };
+
+            if (declared.ValueText != name || declared.Span.End > before)
+                continue;
+
+            if (!DeclarationScope(node, body).Span.Contains(target.Span))
+            {
+                skippedOutOfScope = true;
+                continue;
+            }
+
+            if (match == null || declared.SpanStart > DeclaredTokenStart(match))
+                match = node;
+        }
+
+        return match;
+    }
+
+    /// <summary>
+    /// Innermost node that bounds the scope of the local declared by
+    /// <paramref name="declaring"/>: its block, the whole switch block for
+    /// a local declared in a case section's statements (a case-label pattern
+    /// designation stays section-scoped), a switch-expression arm or query
+    /// clause for a designation inside it, owning for / foreach / using /
+    /// fixed / while / do / catch, or an embedded statement. This may
+    /// under-estimate a scope (e.g. a pattern variable in a while
+    /// condition); the caller then scans from the body start, so a wrong
+    /// estimate can only over-refuse, never under-refuse.
+    /// </summary>
+    private static SyntaxNode DeclarationScope(SyntaxNode declaring, SyntaxNode body)
+    {
+        SyntaxNode? previous = null;
+        for (var current = declaring; current != null && current != body; previous = current, current = current.Parent)
+        {
+            switch (current)
+            {
+                case SwitchSectionSyntax section:
+                    return previous is SwitchLabelSyntax || section.Parent == null ? section : section.Parent;
+                case SwitchExpressionArmSyntax or QueryClauseSyntax or SelectOrGroupClauseSyntax or QueryContinuationSyntax:
+                    // Pattern variables here are scoped to the arm or clause.
+                    return current;
+                case BlockSyntax or CatchClauseSyntax or
+                    ForStatementSyntax or CommonForEachStatementSyntax or UsingStatementSyntax or
+                    FixedStatementSyntax or WhileStatementSyntax or DoStatementSyntax:
+                    return current;
+                case StatementSyntax statement when statement.Parent is not (BlockSyntax or SwitchSectionSyntax or GlobalStatementSyntax):
+                    return current;
+            }
+        }
+
+        return body;
+    }
+
+    private static int DeclaredTokenStart(SyntaxNode node) => node switch
+    {
+        VariableDeclaratorSyntax declarator => declarator.Identifier.SpanStart,
+        SingleVariableDesignationSyntax designation => designation.Identifier.SpanStart,
+        ForEachStatementSyntax loop => loop.Identifier.SpanStart,
+        CatchDeclarationSyntax catchDeclaration => catchDeclaration.Identifier.SpanStart,
+        _ => node.SpanStart
+    };
+
+    private static int BodyStart(SyntaxNode body) => body switch
+    {
+        BaseMethodDeclarationSyntax { Body: { } block } => block.SpanStart,
+        BaseMethodDeclarationSyntax { ExpressionBody: { } arrow } => arrow.SpanStart,
+        LocalFunctionStatementSyntax { Body: { } block } => block.SpanStart,
+        LocalFunctionStatementSyntax { ExpressionBody: { } arrow } => arrow.SpanStart,
+        AccessorDeclarationSyntax { Body: { } block } => block.SpanStart,
+        AccessorDeclarationSyntax { ExpressionBody: { } arrow } => arrow.SpanStart,
+        AnonymousFunctionExpressionSyntax lambda => lambda.Body.SpanStart,
+        CompilationUnitSyntax unit when unit.Members.OfType<GlobalStatementSyntax>().FirstOrDefault() is { } first =>
+            first.SpanStart,
+        _ => body.SpanStart
+    };
 
     /// <summary>
     /// Finds the foreach on <paramref name="line"/>. When

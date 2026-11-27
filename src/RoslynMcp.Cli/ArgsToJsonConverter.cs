@@ -31,8 +31,9 @@ public static class ArgsToJsonConverter
     /// <paramref name="paramsType"/> has a public property matching the camelCase key whose type is a
     /// string collection (<c>IReadOnlyList&lt;string&gt;</c>, <c>List&lt;string&gt;</c>, <c>string[]</c>, …),
     /// the value is emitted as a JSON array of strings. A value that is a JSON array literal
-    /// (e.g. <c>["CS1591","CS8019"]</c>) is used as-is; otherwise it is split on commas and each
-    /// entry trimmed (e.g. <c>CS1591, CS8019</c>). A blank value becomes an empty array. When the matching
+    /// (e.g. <c>["CS1591","CS8019"]</c>) is used as-is; otherwise it is split on commas outside
+    /// <c>[]</c> / <c>&lt;&gt;</c> / <c>()</c> and each entry trimmed (e.g. <c>CS1591, CS8019</c>, or
+    /// <c>this[int row, int col], Clear</c> as two entries). A blank value becomes an empty array. When the matching
     /// property is a <see cref="string"/>, the value is always emitted as a JSON string (no boolean or
     /// numeric inference), so values such as <c>true</c> or <c>123</c> still bind to string parameters.
     /// </remarks>
@@ -75,6 +76,26 @@ public static class ArgsToJsonConverter
         writer.Flush();
 
         return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    /// <summary>
+    /// Returns the first option in <paramref name="valuelessOptions"/> (kebab-case keys given with no value)
+    /// that binds to a non-boolean property of <paramref name="paramsType"/>, or <c>null</c> when every
+    /// such option is a boolean flag (#3288). Options with no matching property are not judged here.
+    /// </summary>
+    public static string? FindOptionMissingValue(IEnumerable<string> valuelessOptions, Type? paramsType)
+    {
+        if (paramsType is null)
+            return null;
+
+        foreach (var kebabKey in valuelessOptions)
+        {
+            var prop = FindProperty(paramsType, KebabToCamel(kebabKey));
+            if (prop is not null && prop.PropertyType != typeof(bool) && prop.PropertyType != typeof(bool?))
+                return kebabKey;
+        }
+
+        return null;
     }
 
     private static bool IsStringProperty(Type paramsType, string camelKey) =>
@@ -136,10 +157,56 @@ public static class ArgsToJsonConverter
         writer.WriteStartArray(key);
         if (trimmed.Length > 0)
         {
-            foreach (var item in trimmed.Split(','))
+            foreach (var item in SplitTopLevelCommas(trimmed))
                 writer.WriteStringValue(item.Trim());
         }
         writer.WriteEndArray();
+    }
+
+    /// <summary>
+    /// Splits on commas outside <c>[]</c>, <c>&lt;&gt;</c> and <c>()</c>, so an indexer identity such as
+    /// <c>this[int row, int col]</c> or <c>this[Dictionary&lt;string, int&gt; map]</c> stays one entry (#3073).
+    /// </summary>
+    private static List<string> SplitTopLevelCommas(string value)
+    {
+        var items = new List<string>();
+        var closers = new Stack<char>();
+        var start = 0;
+        for (var i = 0; i < value.Length; i++)
+        {
+            var c = value[i];
+            switch (c)
+            {
+                case '[':
+                    closers.Push(']');
+                    break;
+                case '(':
+                    closers.Push(')');
+                    break;
+                case '<' when IsGenericOpen(value, i):
+                    closers.Push('>');
+                    break;
+                case ']' or ')' or '>' when closers.Count > 0 && closers.Peek() == c:
+                    closers.Pop();
+                    break;
+                case ',' when closers.Count == 0:
+                    items.Add(value[start..i]);
+                    start = i + 1;
+                    break;
+            }
+        }
+
+        items.Add(value[start..]);
+        return items;
+    }
+
+    // A '<' right after a type name opens a type argument list; "operator <" / "operator<" does not.
+    private static bool IsGenericOpen(string value, int index)
+    {
+        if (index == 0 || !(char.IsLetterOrDigit(value[index - 1]) || value[index - 1] == '_'))
+            return false;
+        var head = value[..index].TrimEnd();
+        return !head.EndsWith("operator", StringComparison.Ordinal);
     }
 
     /// <summary>

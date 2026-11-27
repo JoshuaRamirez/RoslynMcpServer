@@ -21,7 +21,7 @@ namespace RoslynMcp.Core.Refactoring;
 /// Changes the namespace of a type, updating all references across the solution.
 /// Honors optional <c>line</c> and <c>column</c> to disambiguate
 /// same-named top-level types in one file. Omitted column keeps today's
-/// symbolName + optional line pick (start-line equality /
+/// symbolName + optional line pick (start or identifier line /
 /// <c>SymbolAmbiguous</c> / single-match ignores line). Column without
 /// line keeps that omitted-line path. When column is set with line, picks
 /// the covering top-level type (identifier preferred, then smallest
@@ -82,7 +82,7 @@ public sealed class MoveTypeToNamespaceOperation
 
             // Resolve symbol. Optional line/column disambiguates
             // same-named top-level types. Omitted column keeps today's
-            // symbolName + optional line pick (start-line equality /
+            // symbolName + optional line pick (start or identifier line /
             // SymbolAmbiguous / single-match ignores line). Column
             // without line keeps that omitted-line path. Column set
             // with line picks the covering top-level type (identifier
@@ -116,7 +116,7 @@ public sealed class MoveTypeToNamespaceOperation
             // If preview mode, return without applying (including folders)
             if (@params.Preview)
             {
-                return CreatePreviewResult(operationId, @params, resolution, changeStats, filePlan);
+                return CreatePreviewResult(operationId, @params, resolution, changeStats, filePlan, newSolution, references.TotalReferenceCount);
             }
 
             // Commit text changes at the current document path first
@@ -355,7 +355,7 @@ public sealed class MoveTypeToNamespaceOperation
                     }
 
                     pendingChanges.AddRange(CreateAllFilesPendingChanges(
-                        moveParams, resolution, changeStats, filePlan));
+                        moveParams, resolution, filePlan, newSolution));
                     totalReferences += references.TotalReferenceCount;
                     totalUsingsAdded += changeStats.UsingsAdded;
                     totalUsingsRemoved += changeStats.UsingsRemoved;
@@ -372,7 +372,17 @@ public sealed class MoveTypeToNamespaceOperation
         if (@params.Preview)
         {
             _context.UpdateSolution(originalSolution);
-            return RefactoringResult.PreviewResult(operationId, pendingChanges);
+            // Report the totals apply would report (they were dropped, #3089).
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Preview = true,
+                PendingChanges = pendingChanges,
+                ReferencesUpdated = totalReferences,
+                UsingDirectivesAdded = totalUsingsAdded,
+                UsingDirectivesRemoved = totalUsingsRemoved
+            };
         }
 
         var finalSolution = _context.Solution;
@@ -504,8 +514,8 @@ public sealed class MoveTypeToNamespaceOperation
     private List<PendingChange> CreateAllFilesPendingChanges(
         MoveTypeToNamespaceParams @params,
         SymbolResolutionResult resolution,
-        ChangeStats stats,
-        FileLocationPlan? filePlan)
+        FileLocationPlan? filePlan,
+        Solution newSolution)
     {
         var pending = new List<PendingChange>
         {
@@ -518,15 +528,7 @@ public sealed class MoveTypeToNamespaceOperation
             }
         };
 
-        if (stats.UsingsAdded > 0)
-        {
-            pending.Add(new PendingChange
-            {
-                File = "(multiple files)",
-                ChangeType = ChangeKind.Modify,
-                Description = $"Add using directive for {@params.TargetNamespace} in {stats.UsingsAdded} file(s)"
-            });
-        }
+        pending.AddRange(CreateConsumerPendingChanges(@params, resolution, newSolution));
 
         if (filePlan != null)
         {
@@ -569,6 +571,26 @@ public sealed class MoveTypeToNamespaceOperation
             throw new RefactoringException(
                 ErrorCodes.SameLocation,
                 $"Type is already in namespace '{@params.TargetNamespace}'.");
+        }
+
+        // The target namespace, or one of its parent segments, must not be an existing type's full name:
+        // namespace App.Widget next to class App.Widget gives CS0101 / CS0426 in every consumer (#3034).
+        var segments = @params.TargetNamespace!.Split('.');
+        for (var count = segments.Length; count >= 1; count--)
+        {
+            var prefix = string.Join(".", segments, 0, count);
+            foreach (var project in _context.Solution.Projects)
+            {
+                var compilation = await project.GetCompilationAsync(cancellationToken);
+                var clashing = compilation?.GetTypeByMetadataName(prefix);
+                if (clashing != null && !SymbolEqualityComparer.Default.Equals(clashing, resolution.Symbol))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.NameCollision,
+                        $"Target namespace '{@params.TargetNamespace}' conflicts with existing type '{prefix}'.",
+                        suggestions: ["Choose a target namespace that is not a type name", "Rename the existing type first"]);
+                }
+            }
         }
 
         // Check for name collision in target namespace
@@ -1489,7 +1511,8 @@ public sealed class MoveTypeToNamespaceOperation
         string? newFilePath = null)
     {
         var oldNamespace = resolution.Symbol.ContainingNamespace.ToDisplayString();
-        var location = resolution.Declaration.GetLocation().GetLineSpan();
+        // Report the type identifier, not the first attribute list / modifier (#3274).
+        var location = resolution.Declaration.Identifier.GetLocation().GetLineSpan();
         var previousFile = resolution.Document.FilePath!;
         var line = location.StartLinePosition.Line + 1;
         var column = location.StartLinePosition.Character + 1;
@@ -1524,7 +1547,9 @@ public sealed class MoveTypeToNamespaceOperation
         MoveTypeToNamespaceParams @params,
         SymbolResolutionResult resolution,
         ChangeStats stats,
-        FileLocationPlan? filePlan)
+        FileLocationPlan? filePlan,
+        Solution newSolution,
+        int referencesUpdated)
     {
         var pendingChanges = new List<PendingChange>
         {
@@ -1536,15 +1561,7 @@ public sealed class MoveTypeToNamespaceOperation
             }
         };
 
-        if (stats.UsingsAdded > 0)
-        {
-            pendingChanges.Add(new PendingChange
-            {
-                File = "(multiple files)",
-                ChangeType = ChangeKind.Modify,
-                Description = $"Add using directive for {@params.TargetNamespace} in {stats.UsingsAdded} file(s)"
-            });
-        }
+        pendingChanges.AddRange(CreateConsumerPendingChanges(@params, resolution, newSolution));
 
         if (filePlan != null)
         {
@@ -1572,7 +1589,45 @@ public sealed class MoveTypeToNamespaceOperation
             }
         }
 
-        return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        // Report the counts apply would report (they were dropped, #3089).
+        return new RefactoringResult
+        {
+            Success = true,
+            OperationId = operationId,
+            Preview = true,
+            PendingChanges = pendingChanges,
+            ReferencesUpdated = referencesUpdated,
+            UsingDirectivesAdded = stats.UsingsAdded,
+            UsingDirectivesRemoved = stats.UsingsRemoved
+        };
+    }
+
+    /// <summary>
+    /// One Modify entry per consumer file the move edits (usings added / removed, references
+    /// requalified), with its real path instead of a "(multiple files)" pseudo-path (#3089).
+    /// </summary>
+    private List<PendingChange> CreateConsumerPendingChanges(
+        MoveTypeToNamespaceParams @params,
+        SymbolResolutionResult resolution,
+        Solution newSolution)
+    {
+        var sourceFile = resolution.Document.FilePath;
+        var description =
+            $"Update using directives and references for {resolution.Symbol.Name} moved to {@params.TargetNamespace}";
+        return newSolution.GetChanges(_context.Solution)
+            .GetProjectChanges()
+            .SelectMany(project => project.GetChangedDocuments())
+            .Select(id => newSolution.GetDocument(id)?.FilePath)
+            .Where(path => path != null && !string.Equals(path, sourceFile, StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .Select(path => new PendingChange
+            {
+                File = path!,
+                ChangeType = ChangeKind.Modify,
+                Description = description
+            })
+            .ToList();
     }
 
     private sealed class ChangeStats

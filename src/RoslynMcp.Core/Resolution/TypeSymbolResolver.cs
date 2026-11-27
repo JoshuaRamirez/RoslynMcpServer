@@ -77,7 +77,7 @@ public sealed class TypeSymbolResolver
     /// Finds a type symbol in a specific file, optionally at a specific line
     /// and column. Omitted <paramref name="column"/> keeps today's
     /// <paramref name="symbolName"/> + optional <paramref name="line"/>
-    /// pick (start-line equality when several top-level types share the
+    /// pick (start-line or identifier-line equality when several top-level types share the
     /// name; <c>SymbolAmbiguous</c> when line is omitted and several
     /// types share the name; a single match ignores line). Column without
     /// line keeps that omitted-line path. When column is set with line,
@@ -124,11 +124,26 @@ public sealed class TypeSymbolResolver
             .Where(t => t.Parent is CompilationUnitSyntax or BaseNamespaceDeclarationSyntax) // Top-level only
             .ToList();
 
-        // Filter by name
-        var simpleName = symbolName.Contains('.') ? symbolName.Split('.').Last() : symbolName;
+        // Filter by name. A leading "global::" anchors the name at the global namespace, so it must
+        // equal the candidate's full namespace-qualified name rather than end with it (#3273).
+        const string globalPrefix = "global::";
+        var isGlobalQualified = symbolName.StartsWith(globalPrefix, StringComparison.Ordinal);
+        var qualifiedName = isGlobalQualified ? symbolName[globalPrefix.Length..] : symbolName;
+        var simpleName = qualifiedName.Contains('.') ? qualifiedName.Split('.').Last() : qualifiedName;
         var matchingDeclarations = typeDeclarations
             .Where(t => t.Identifier.Text == simpleName)
             .ToList();
+
+        // A qualified symbolName ("Shipping.Widget") must match the candidate's namespace too, either the
+        // full name or a trailing run of its segments; the qualifier used to be dropped, so a wrong one
+        // moved another type and the right one could not disambiguate (#3273). With "global::" only the
+        // exact full name matches, so "global::Shipping.Widget" never resolves to Co.Shipping.Widget.
+        if (isGlobalQualified || qualifiedName.Contains('.'))
+        {
+            matchingDeclarations = matchingDeclarations
+                .Where(t => MatchesQualifiedName(t, qualifiedName, exact: isGlobalQualified))
+                .ToList();
+        }
 
         if (matchingDeclarations.Count == 0)
         {
@@ -172,19 +187,41 @@ public sealed class TypeSymbolResolver
                     $"Multiple types named '{symbolName}' found. Provide line number to disambiguate.",
                     new Dictionary<string, object>
                     {
+                        // Report each candidate's own start line (the value `line` is matched against below);
+                        // this used to read the compilation unit's location, so every entry was 1 (#3272).
                         ["matches"] = matchingDeclarations.Select(t =>
-                            root.GetLocation().GetLineSpan().StartLinePosition.Line + 1).ToList()
+                            t.GetLocation().GetLineSpan().StartLinePosition.Line + 1).ToList()
                     });
             }
 
-            // Find by line number
-            declaration = matchingDeclarations
-                .FirstOrDefault(t =>
+            // Find by line number. Accept the identifier's line (what search_symbols
+            // and go_to_definition report) as well as the declaration's start line,
+            // which sits on the first attribute list or modifier when those precede
+            // the identifier on earlier lines (#3274).
+            var onLine = matchingDeclarations
+                .Where(t =>
                 {
-                    var lineSpan = t.GetLocation().GetLineSpan();
-                    var declarationLine = lineSpan.StartLinePosition.Line + 1; // Convert to 1-based
-                    return declarationLine == line.Value;
+                    var declarationLine = t.GetLocation().GetLineSpan().StartLinePosition.Line + 1; // Convert to 1-based
+                    var identifierLine = t.Identifier.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+                    return declarationLine == line.Value || identifierLine == line.Value;
                 })
+                .ToList();
+
+            // One type's identifier line can be another's start line (or two types can share a line);
+            // refuse rather than silently pick the first (#3274 review).
+            if (onLine.Count > 1)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.SymbolAmbiguous,
+                    $"Multiple types named '{symbolName}' match line {line}. Provide column to disambiguate.",
+                    new Dictionary<string, object>
+                    {
+                        ["matches"] = onLine.Select(t =>
+                            t.GetLocation().GetLineSpan().StartLinePosition.Line + 1).ToList()
+                    });
+            }
+
+            declaration = onLine.FirstOrDefault()
                 ?? throw new RefactoringException(
                     ErrorCodes.SymbolNotFound,
                     $"No type named '{symbolName}' found at line {line}.");
@@ -218,6 +255,22 @@ public sealed class TypeSymbolResolver
             Declaration = declaration,
             Document = document
         };
+    }
+
+    private static bool MatchesQualifiedName(TypeDeclarationSyntax type, string qualifiedName, bool exact)
+    {
+        var segments = type.Ancestors()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Reverse()
+            .Select(ns => ns.Name.ToString())
+            .Append(type.Identifier.Text);
+        var fullName = string.Join(".", segments);
+        if (string.Equals(fullName, qualifiedName, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return !exact && fullName.EndsWith("." + qualifiedName, StringComparison.Ordinal);
     }
 
     /// <summary>

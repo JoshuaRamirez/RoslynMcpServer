@@ -112,7 +112,8 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
             if (root == null)
                 continue;
 
-            var replacements = CollectConvertibleReplacements(root);
+            var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+            var replacements = CollectConvertibleReplacements(root, semanticModel);
 
             if (replacements.Count == 0)
                 continue;
@@ -184,13 +185,15 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     /// Builds replacements for every distinct eligible switch or if-chain.
     /// Used by allFiles so <see cref="TryConvert"/> runs once per statement.
     /// </summary>
-    internal static IReadOnlyDictionary<StatementSyntax, SyntaxNode> CollectConvertibleReplacements(SyntaxNode root)
+    internal static IReadOnlyDictionary<StatementSyntax, SyntaxNode> CollectConvertibleReplacements(
+        SyntaxNode root,
+        SemanticModel? semanticModel = null)
     {
         var replacements = new Dictionary<StatementSyntax, SyntaxNode>();
         foreach (var statement in root.DescendantNodes().OfType<SwitchStatementSyntax>().Cast<StatementSyntax>()
                      .Concat(root.DescendantNodes().OfType<IfStatementSyntax>()))
         {
-            if (TryConvert(statement, out var replacement))
+            if (TryConvert(statement, out var replacement, semanticModel))
                 replacements[statement] = replacement;
         }
 
@@ -204,7 +207,10 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     /// statements that cannot convert stay no-ops. Eligibility is the same
     /// CannotConvert paths as the single-site helpers.
     /// </summary>
-    internal static bool TryConvert(StatementSyntax statement, out StatementSyntax replacement)
+    internal static bool TryConvert(
+        StatementSyntax statement,
+        out StatementSyntax replacement,
+        SemanticModel? semanticModel = null)
     {
         try
         {
@@ -216,7 +222,7 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
 
             if (statement is IfStatementSyntax ifStmt)
             {
-                replacement = WrapAsReturn(ifStmt, BuildIfChainSwitch(ifStmt));
+                replacement = WrapAsReturn(ifStmt, BuildIfChainSwitch(ifStmt, semanticModel));
                 return true;
             }
 
@@ -301,7 +307,7 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
         IfStatementSyntax ifStmt, ConvertToPatternMatchingParams @params,
         CancellationToken cancellationToken)
     {
-        var switchExpr = BuildIfChainSwitch(ifStmt);
+        var switchExpr = BuildIfChainSwitch(ifStmt, await document.GetSemanticModelAsync(cancellationToken));
 
         var before = ifStmt.NormalizeWhitespace().ToFullString();
         var after = switchExpr.NormalizeWhitespace().ToFullString();
@@ -391,7 +397,7 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     /// Builds a switch expression from an if/is chain. Throws the same
     /// CannotConvert errors as today's single-site path.
     /// </summary>
-    private static SwitchExpressionSyntax BuildIfChainSwitch(IfStatementSyntax ifStmt)
+    private static SwitchExpressionSyntax BuildIfChainSwitch(IfStatementSyntax ifStmt, SemanticModel? semanticModel = null)
     {
         EnsureNoInteriorConditionalCompilation(ifStmt);
 
@@ -426,6 +432,8 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
                 if (bodyExpr == null)
                     throw new RefactoringException(ErrorCodes.CannotConvert,
                         "If body must be a simple return or assignment statement.");
+
+                EnsureConstantPatternConverts(binary, semanticModel);
 
                 var arm = SyntaxFactory.SwitchExpressionArm(
                     SyntaxFactory.ConstantPattern(binary.Right), bodyExpr);
@@ -465,6 +473,35 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
         return SyntaxFactory.SwitchExpression(
             governingExpr,
             SyntaxFactory.SeparatedList(arms));
+    }
+
+    /// <summary>
+    /// A constant pattern needs an implicit (non-user-defined) conversion from the constant to the
+    /// tested expression's type, which is stricter than <c>==</c>'s numeric promotion:
+    /// <c>c == 65</c> (char), <c>n == 1L</c> (int) and <c>b == 300</c> (byte) compile, but
+    /// <c>65 =&gt;</c> / <c>1L =&gt;</c> / <c>300 =&gt;</c> do not (CS0266 / CS0031). Refuse those arms
+    /// instead of writing code that does not build (#3107). Non-constant right sides are left to the
+    /// existing checks.
+    /// </summary>
+    private static void EnsureConstantPatternConverts(BinaryExpressionSyntax binary, SemanticModel? semanticModel)
+    {
+        if (semanticModel == null || binary.SyntaxTree != semanticModel.SyntaxTree)
+            return;
+
+        var inputType = semanticModel.GetTypeInfo(binary.Left).Type;
+        if (inputType == null || inputType.TypeKind == TypeKind.Error)
+            return;
+
+        if (!semanticModel.GetConstantValue(binary.Right).HasValue)
+            return;
+
+        var conversion = semanticModel.ClassifyConversion(binary.Right, inputType);
+        if (!conversion.Exists || !conversion.IsImplicit || conversion.IsUserDefined)
+        {
+            throw new RefactoringException(ErrorCodes.CannotConvert,
+                $"Constant '{binary.Right}' is not implicitly convertible to '{inputType.ToDisplayString()}', " +
+                "so it cannot be a constant pattern.");
+        }
     }
 
     private static ReturnStatementSyntax WrapAsReturn(StatementSyntax original, SwitchExpressionSyntax switchExpr) =>
@@ -532,7 +569,10 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
             {
                 case ReturnStatementSyntax returnStmt:
                     return returnStmt.Expression;
-                case ExpressionStatementSyntax exprStmt when exprStmt.Expression is AssignmentExpressionSyntax assign:
+                // Only a plain '=' arm maps to lhs = <switch>; a compound arm (total += 5, name ??= "x")
+                // would lose its operator, turning each delta into the value (#3200).
+                case ExpressionStatementSyntax exprStmt when exprStmt.Expression is AssignmentExpressionSyntax assign &&
+                                                             assign.IsKind(SyntaxKind.SimpleAssignmentExpression):
                     return assign.Right;
                 case BreakStatementSyntax:
                     continue;
@@ -559,7 +599,8 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
         return body switch
         {
             ReturnStatementSyntax returnStmt => returnStmt.Expression,
-            ExpressionStatementSyntax exprStmt when exprStmt.Expression is AssignmentExpressionSyntax assign => assign.Right,
+            ExpressionStatementSyntax exprStmt when exprStmt.Expression is AssignmentExpressionSyntax assign &&
+                                                    assign.IsKind(SyntaxKind.SimpleAssignmentExpression) => assign.Right,
             _ => null
         };
     }
