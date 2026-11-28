@@ -59,6 +59,16 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                     $"'{change.Name}' is not a valid parameter name.");
             }
 
+            // "_" is a legal identifier, but a parameter named "_" captures every discard in the
+            // method body (_ = Log(7) / out _). Adding one, or renaming a parameter to "_", turns
+            // those discards into writes to the parameter (#3298). Keeping an existing "_" is fine.
+            if (change.Name is "_" or "@_" && change.OriginalName is not ("_" or "@_"))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidSymbolName,
+                    "'_' is not a valid parameter name: existing discards (_ = ... / out _) in the method would bind to the parameter.");
+            }
+
             if (change.OriginalName == null && !change.Remove && string.IsNullOrWhiteSpace(change.Type))
                 throw new RefactoringException(ErrorCodes.MissingRequiredParam, "New parameters require a type.");
         }
