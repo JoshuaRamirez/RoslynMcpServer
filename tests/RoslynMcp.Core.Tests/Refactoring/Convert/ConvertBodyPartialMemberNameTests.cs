@@ -1,7 +1,9 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -97,6 +99,96 @@ public class ConvertBodyPartialMemberNameTests
         Assert.Empty(await workspace.GetDiskErrorsAsync());
     }
 
+    private const string SameNameOverloadSource = """
+        namespace N;
+        public partial class C
+        {
+            public partial int Compute(int x);
+            public int Compute(string s) => s.Length;
+        }
+        public partial class C
+        {
+            public partial int Compute(int x) => x * 2;
+        }
+        """;
+
+    private const string IndexerOverloadSource = """
+        namespace N;
+        public partial class C
+        {
+            public partial int this[int i] { get; }
+            public int this[string s] => s.Length;
+        }
+        public partial class C
+        {
+            public partial int this[int i] => i;
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData("block")]
+    [InlineData("expression")]
+    public async Task MemberName_PrefersMatchingPartialImplementation_OverEarlierSameNameOverload(string tool)
+    {
+        // #3321 review: after the defining Compute(int) is dropped, FirstOrDefault
+        // took Compute(string), declared earlier than the matching implementation.
+        await using var workspace = await TempWorkspace.CreateAsync(SameNameOverloadSource, "latest");
+
+        var result = await RunToBlockBody(workspace, tool, "Compute");
+
+        Assert.True(result.Success, result.Error?.Message);
+        var text = Normalize(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return x * 2;", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Compute(int x) => x * 2;", text, StringComparison.Ordinal);
+        Assert.Contains("Compute(string s) => s.Length;", text, StringComparison.Ordinal);
+        Assert.Contains("public partial int Compute(int x);", text, StringComparison.Ordinal);
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData("block")]
+    [InlineData("expression")]
+    public async Task MemberName_PrefersMatchingPartialIndexerImplementation_OverEarlierSameNameIndexer(string tool)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(IndexerOverloadSource, "latest");
+
+        var result = await RunToBlockBody(workspace, tool, "this[]");
+
+        Assert.True(result.Success, result.Error?.Message);
+        var text = Normalize(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return i;", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("this[int i] => i;", text, StringComparison.Ordinal);
+        Assert.Contains("this[string s] => s.Length;", text, StringComparison.Ordinal);
+        Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [Fact]
+    public void FindMember_TwoPartialImplementations_ThrowsSymbolAmbiguous()
+    {
+        var root = CSharpSyntaxTree.ParseText("""
+            namespace N;
+            public partial class C
+            {
+                public partial int Compute(int x);
+                public partial int Compute(string s);
+            }
+            public partial class C
+            {
+                public partial int Compute(int x) => x * 2;
+                public partial int Compute(string s) => s.Length;
+            }
+            """).GetRoot();
+
+        var block = Assert.Throws<RefactoringException>(() =>
+            ConvertToBlockBodyOperation.FindMember(root, "Compute", line: null, column: null));
+        var expression = Assert.Throws<RefactoringException>(() =>
+            ConvertExpressionBodyOperation.FindMember(root, "Compute", line: null, column: null));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, block.ErrorCode);
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, expression.ErrorCode);
+        Assert.Contains("provide line", block.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void FindMember_DefinitionWithoutImplementationInFile_IsStillPicked()
     {
@@ -153,6 +245,20 @@ public class ConvertBodyPartialMemberNameTests
         Assert.Equal("int", picked.ParameterList.Parameters[0].Type!.ToString());
         Assert.Null(picked.ExpressionBody);
     }
+
+    private static Task<RefactoringResult> RunToBlockBody(TempWorkspace workspace, string tool, string memberName) =>
+        tool == "block"
+            ? new ConvertToBlockBodyOperation(workspace.Context).ExecuteAsync(new ConvertToBlockBodyParams
+            {
+                SourceFile = workspace.SourcePath,
+                MemberName = memberName
+            })
+            : new ConvertExpressionBodyOperation(workspace.Context).ExecuteAsync(new ConvertExpressionBodyParams
+            {
+                SourceFile = workspace.SourcePath,
+                MemberName = memberName,
+                Direction = "ToBlockBody"
+            });
 
     private static string Normalize(string text) => text.Replace("\r\n", "\n", StringComparison.Ordinal);
 

@@ -1,6 +1,8 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using RoslynMcp.Contracts.Errors;
+using RoslynMcp.Core.Refactoring;
 
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
@@ -78,6 +80,44 @@ internal static class PartialMethodHelpers
 
         return list.Where(node =>
             !(IsBodilessPartialDefinition(node) && PartialPartKey(node) is { } key && implementationKeys.Contains(key)));
+    }
+
+    /// <summary>
+    /// Implementing parts whose matching bodiless defining declaration is also
+    /// in <paramref name="candidates"/>. A by-name lookup should pick one of
+    /// these rather than an earlier same-name overload left after
+    /// <see cref="PreferPartialImplementations{T}"/> drops the definition
+    /// (#3321 review).
+    /// </summary>
+    internal static List<T> MatchingPartialImplementations<T>(IEnumerable<T> candidates)
+        where T : SyntaxNode
+    {
+        var list = candidates.ToList();
+        var definitionKeys = new HashSet<string>(
+            list.Where(IsBodilessPartialDefinition).Select(PartialPartKey).OfType<string>(),
+            StringComparer.Ordinal);
+        if (definitionKeys.Count == 0)
+            return [];
+
+        return list.Where(node =>
+            IsPartialImplementation(node) &&
+            PartialPartKey(node) is { } key &&
+            definitionKeys.Contains(key)).ToList();
+    }
+
+    /// <summary>
+    /// Throws 2004 SymbolAmbiguous when more than one matching partial
+    /// implementation remains for a by-name pick.
+    /// </summary>
+    internal static void ThrowIfAmbiguousPartialImplementations(string? memberName, int count)
+    {
+        if (count <= 1)
+            return;
+
+        var name = string.IsNullOrWhiteSpace(memberName) ? "the member" : $"'{memberName}'";
+        throw new RefactoringException(
+            ErrorCodes.SymbolAmbiguous,
+            $"Member {name} has {count} partial implementations; provide line to pick one.");
     }
 
     /// <summary>

@@ -385,16 +385,32 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             filtered = filtered.Where(node => GetMemberName(node) == memberName);
 
         // A by-name pick (no line) resolves a partial member to the part with a
-        // body, not the bodiless defining declaration above it (#3321).
+        // body, not the bodiless defining declaration above it (#3321). When a
+        // matching implementation exists, pick it rather than an earlier
+        // same-name overload left after the definition is dropped (#3321 review).
+        IReadOnlyList<SyntaxNode>? preferredImpls = null;
         if (!line.HasValue)
-            filtered = PartialMethodHelpers.PreferPartialImplementations(filtered);
+        {
+            var snapshot = filtered.ToList();
+            preferredImpls = PartialMethodHelpers.MatchingPartialImplementations(snapshot);
+            filtered = PartialMethodHelpers.PreferPartialImplementations(snapshot);
+        }
+
+        SyntaxNode? PickByName()
+        {
+            if (preferredImpls is { Count: 1 })
+                return preferredImpls[0];
+            PartialMethodHelpers.ThrowIfAmbiguousPartialImplementations(memberName, preferredImpls?.Count ?? 0);
+            return filtered.FirstOrDefault();
+        }
 
         // Column without line is not a source position: substituting each
         // candidate's own start line would match every equally-aligned
         // same-name member and could silently pick the shortest. Keep
-        // today's FirstOrDefault after the memberName filter.
+        // today's FirstOrDefault after the memberName filter, unless a unique
+        // matching partial implementation should win.
         if (column.HasValue && !line.HasValue)
-            return filtered.FirstOrDefault();
+            return PickByName();
 
         if (column.HasValue)
         {
@@ -414,7 +430,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             return filtered.OrderBy(node => node.Span.Length).FirstOrDefault();
         }
 
-        return filtered.FirstOrDefault();
+        return PickByName();
     }
 
     /// <summary>
