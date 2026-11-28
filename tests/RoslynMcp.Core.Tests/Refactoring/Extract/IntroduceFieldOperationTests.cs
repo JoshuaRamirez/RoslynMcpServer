@@ -2505,6 +2505,63 @@ public class IntroduceFieldOperationTests
         Assert.DoesNotContain("Widget copy = new Widget { Value = 0 } with { Value = 1 };", updated, StringComparison.Ordinal);
     }
 
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IntroduceField_AllFiles_LocalNamedDiscard_IsSkipped(bool preview)
+    {
+        // #3297 review: allFiles takes the local's Identifier.Text as FieldName and
+        // never reaches Validate's "_" guard, so `int _ = Log(5)` was promoted to
+        // `private int _ = Log(5);`. Skip that site; an eligible sibling still promotes.
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Run()
+                {
+                    int _ = Log(5);
+                    _ = Log(40);
+                    int total = 1 + 2;
+                    return _ + total;
+                }
+
+                static int Log(int v) => v;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true,
+            Preview = preview
+        });
+
+        Assert.True(result.Success, result.Error?.Message);
+        var onDisk = await File.ReadAllTextAsync(workspace.SourcePath);
+        if (preview)
+        {
+            Assert.True(result.Preview);
+            Assert.Equal(before, onDisk);
+            Assert.NotNull(result.PendingChanges);
+            Assert.DoesNotContain(result.PendingChanges, c =>
+                (c.AfterSnippet ?? c.Description).Contains("private int _", StringComparison.Ordinal));
+            Assert.Contains(result.PendingChanges, c =>
+                (c.AfterSnippet ?? c.Description).Contains("total", StringComparison.Ordinal));
+        }
+        else
+        {
+            var updated = NormalizeNewlines(onDisk);
+            Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+            Assert.DoesNotContain("private int _", updated, StringComparison.Ordinal);
+            Assert.Contains("int _ = Log(5);", updated, StringComparison.Ordinal);
+            Assert.Contains("_ = Log(40);", updated, StringComparison.Ordinal);
+        }
+    }
+
     [SkippableFact]
     public async Task IntroduceField_AllFilesTrue_SkipsConstLocals()
     {

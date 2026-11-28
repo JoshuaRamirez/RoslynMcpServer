@@ -102,6 +102,16 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (!IsValidIdentifier(@params.FieldName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid field name: {@params.FieldName}");
 
+        // "_" is a legal identifier, but a field named "_" captures every discard in the
+        // type (_ = Log(v) / out _ silently write to the new field) (#3297).
+        // "@_" is already rejected above as an invalid identifier.
+        if (@params.FieldName is "_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolName,
+                "'_' is not a valid field name: existing discards (_ = ... / out _) would bind to the new field.");
+        }
+
         if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -429,6 +439,14 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
         var fieldName = declarator.Identifier.Text;
         if (string.IsNullOrWhiteSpace(fieldName) || !IsValidIdentifier(fieldName))
+            return null;
+
+        // "_" is a legal identifier, so IsValidIdentifier lets it through. Validate's
+        // discard guard never runs on the allFiles path (it returns early because
+        // fieldName is forbidden there), and the name is taken from the local itself
+        // (#3297 review). Skip rather than emit `private int _`. ValueText also
+        // covers a verbatim `@_` declarator.
+        if (declarator.Identifier.ValueText is "_")
             return null;
 
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))

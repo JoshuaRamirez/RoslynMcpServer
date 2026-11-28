@@ -93,6 +93,15 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         if (@params.PropertyName != null && !SyntaxIdentifierValidation.IsValidIdentifier(@params.PropertyName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid property name: {@params.PropertyName}");
+
+        // "_" is a legal identifier, but a property named "_" captures every discard in the
+        // type (_ = Log(v) becomes a setter call; out _ fails with CS0206) (#3297).
+        if (@params.PropertyName is "_" or "@_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolName,
+                "'_' is not a valid property name: existing discards (_ = ... / out _) would bind to the new property.");
+        }
     }
 
     /// <inheritdoc />
