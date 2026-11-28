@@ -95,6 +95,15 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
 
         if (!IdentifierValidation.IsValidIdentifier(@params.VariableName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid variable name: {@params.VariableName}");
+
+        // "_" is a legal identifier, but a local named "_" captures every later discard in
+        // its scope (_ = Log(v) / out _ silently write to the new local) (#3297).
+        if (@params.VariableName is "_" or "@_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolName,
+                "'_' is not a valid variable name: existing discards (_ = ... / out _) would bind to the new local.");
+        }
     }
 
 

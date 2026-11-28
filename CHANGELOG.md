@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- `encapsulate_field` refuses `propertyName: "_"`, `introduce_field` refuses `fieldName: "_"` and `extract_variable` refuses `variableName: "_"` with 1003 InvalidSymbolName (#3297). The name is a legal identifier, but a property, field or local named `_` captures every existing discard in its scope: `_ = Log(scaled);` became a setter call that overwrote the field, `_ = Log(40);` overwrote the new field or local before it was read, and `int.TryParse(s, out _)` failed with CS0206, all while the tool reported success. Other names that start with an underscore, such as `__` or `_value`, are still accepted.
+
 ## [0.17.0] - 2026-11-27
 
 ### Added

@@ -102,6 +102,15 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (!IsValidIdentifier(@params.FieldName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid field name: {@params.FieldName}");
 
+        // "_" is a legal identifier, but a field named "_" captures every discard in the
+        // type (_ = Log(v) / out _ silently write to the new field) (#3297).
+        if (@params.FieldName is "_" or "@_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolName,
+                "'_' is not a valid field name: existing discards (_ = ... / out _) would bind to the new field.");
+        }
+
         if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
