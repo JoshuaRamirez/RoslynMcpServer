@@ -48,6 +48,16 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         if (!SyntaxIdentifierValidation.IsValidIdentifier(@params.ParameterName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"'{@params.ParameterName}' is not a valid parameter name.");
 
+        // "_" is a legal identifier, but a parameter named "_" captures every discard in the
+        // method body (_ = Log(7) / out _ bind to the parameter: CS0029 / CS1503, or a silent
+        // write to the parameter when the types match) (#3298).
+        if (@params.ParameterName is "_" or "@_")
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolName,
+                "'_' is not a valid parameter name: existing discards (_ = ... / out _) in the method would bind to the new parameter.");
+        }
+
         if (!IsValidParameterType(@params.ParameterType))
             throw new RefactoringException(ErrorCodes.InvalidParameterType, $"'{@params.ParameterType}' is not a valid C# parameter type.");
 
