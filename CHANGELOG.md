@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- `convert_to_block_body` and `convert_expression_body` with `memberName` on a partial method or partial property now convert the implementing declaration (#3321). The lookup took the first same-name declaration, which is the bodiless defining part when it comes first, so `Compute`, `Prop` and `Twice` were refused with 3020 CannotConvert ("Method does not have an expression body." / "Method body must contain exactly one statement to convert."), in apply and preview, although the implementation in the same file converts. A by-name pick now skips a defining declaration whose implementing part (same containing type, name and parameter types) is also in the file. A defining declaration without an implementation in the file, and a pick by `line`, behave as before.
+
 ## [0.17.0] - 2026-11-27
 
 ### Added

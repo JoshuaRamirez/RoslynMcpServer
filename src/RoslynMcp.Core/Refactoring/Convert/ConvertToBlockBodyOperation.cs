@@ -384,6 +384,11 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         if (!string.IsNullOrWhiteSpace(memberName))
             filtered = filtered.Where(node => GetMemberName(node) == memberName);
 
+        // A by-name pick (no line) resolves a partial member to the part with a
+        // body, not the bodiless defining declaration above it (#3321).
+        if (!line.HasValue)
+            filtered = PartialMethodHelpers.PreferPartialImplementations(filtered);
+
         // Column without line is not a source position: substituting each
         // candidate's own start line would match every equally-aligned
         // same-name member and could silently pick the shortest. Keep

@@ -271,6 +271,11 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
             members = members.Where(m => GetMemberName(m) == memberName);
         }
 
+        // A by-name pick (no line) resolves a partial member to the part with a
+        // body, not the bodiless defining declaration above it (#3321).
+        if (!line.HasValue)
+            members = PartialMethodHelpers.PreferPartialImplementations(members);
+
         // Omitted column keeps today's start-line filter (first match on the
         // line). When column is set, do not require the declaration to start
         // on `line` — a split signature's identifier may live on a
