@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- `inline_variable` now rewrites a use of the local that is the whole initializer of another declarator (#3551). The rewriter skipped every identifier directly under a declarator's `= …` to avoid touching the declaration itself, so `int n = _i; int m = n;` became `int m = n;` with `n`'s declaration removed, and `int[] arr = _a; fixed (int* p = arr)` kept `arr`: both failed with CS0103 while the tool reported success, in single-site and `allFiles` mode. Only the inlined local's own declarator is skipped now, giving `int m = _i;` and `fixed (int* p = _a)`.
+
 ## [0.17.0] - 2026-11-27
 
 ### Added
