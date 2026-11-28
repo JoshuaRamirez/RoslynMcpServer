@@ -985,9 +985,12 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                 return base.VisitIdentifierName(node);
             }
 
-            // Don't replace the declaration itself
-            if (node.Parent is VariableDeclaratorSyntax ||
-                node.Parent?.Parent is VariableDeclaratorSyntax)
+            // Don't replace inside the inlined local's own declarator. A use that is the whole
+            // initializer of *another* declarator (int m = n; / fixed (int* p = arr)) is a
+            // normal read and must be rewritten, or it is left behind once the declaration
+            // is removed (CS0103, #3551).
+            if (node.Parent is EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax owner } &&
+                SymbolEqualityComparer.Default.Equals(_semanticModel.GetDeclaredSymbol(owner), _variableSymbol))
             {
                 return base.VisitIdentifierName(node);
             }

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 - `add_parameter` refuses `parameterName: "_"`, and `change_signature` refuses an added parameter (or a rename) whose `name` is `"_"`, with 1003 InvalidSymbolName (#3298), in single-site and `allFiles` mode. The name is a legal identifier, but a parameter named `_` captures every discard in the method body: with `string _`, `_ = Log(7);` and `int.TryParse(s, out _)` stopped compiling (CS0029 / CS1503), and with `int _` they built cleanly while silently writing to the new parameter, all while the tool reported success. Keeping an existing parameter that is already named `_` is still allowed, as are other names that start with an underscore, such as `__` or `_tag`.
+- `inline_variable` now rewrites a use of the local that is the whole initializer of another declarator (#3551). The rewriter skipped every identifier directly under a declarator's `= …` to avoid touching the declaration itself, so `int n = _i; int m = n;` became `int m = n;` with `n`'s declaration removed, and `int[] arr = _a; fixed (int* p = arr)` kept `arr`: both failed with CS0103 while the tool reported success, in single-site and `allFiles` mode. Only the inlined local's own declarator is skipped now, giving `int m = _i;` and `fixed (int* p = _a)`.
 
 ## [0.17.0] - 2026-11-27
 
