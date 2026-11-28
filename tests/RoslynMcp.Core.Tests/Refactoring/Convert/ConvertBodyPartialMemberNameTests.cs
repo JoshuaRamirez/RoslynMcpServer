@@ -145,14 +145,20 @@ public class ConvertBodyPartialMemberNameTests
         Assert.Empty(await workspace.GetDiskErrorsAsync());
     }
 
-    [SkippableTheory]
-    [InlineData("block")]
-    [InlineData("expression")]
-    public async Task MemberName_PrefersMatchingPartialIndexerImplementation_OverEarlierSameNameIndexer(string tool)
+    [SkippableFact]
+    public async Task ConvertToBlockBody_MemberName_PrefersMatchingPartialIndexerImplementation()
     {
+        // convert_expression_body does not convert indexers to a block body
+        // ("Member type does not support block body conversion."), so apply is
+        // exercised on convert_to_block_body only. Both FindMember lookups are
+        // checked below.
         await using var workspace = await TempWorkspace.CreateAsync(IndexerOverloadSource, "latest");
 
-        var result = await RunToBlockBody(workspace, tool, "this[]");
+        var result = await new ConvertToBlockBodyOperation(workspace.Context).ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            MemberName = "this[]"
+        });
 
         Assert.True(result.Success, result.Error?.Message);
         var text = Normalize(await File.ReadAllTextAsync(workspace.SourcePath));
@@ -160,6 +166,21 @@ public class ConvertBodyPartialMemberNameTests
         Assert.DoesNotContain("this[int i] => i;", text, StringComparison.Ordinal);
         Assert.Contains("this[string s] => s.Length;", text, StringComparison.Ordinal);
         Assert.Empty(await workspace.GetDiskErrorsAsync());
+    }
+
+    [Fact]
+    public void FindMember_PrefersMatchingPartialIndexerImplementation_OverEarlierSameNameIndexer()
+    {
+        var root = CSharpSyntaxTree.ParseText(IndexerOverloadSource).GetRoot();
+
+        var block = (IndexerDeclarationSyntax)ConvertToBlockBodyOperation.FindMember(root, "this[]", line: null, column: null)!;
+        var expression = ConvertExpressionBodyOperation.FindMember(root, "this[]", line: null, column: null);
+
+        Assert.NotNull(block.ExpressionBody);
+        Assert.Equal("i", block.ParameterList.Parameters[0].Identifier.Text);
+        Assert.IsType<IndexerDeclarationSyntax>(expression);
+        Assert.Equal("i", ((IndexerDeclarationSyntax)expression!).ParameterList.Parameters[0].Identifier.Text);
+        Assert.NotNull(((IndexerDeclarationSyntax)expression).ExpressionBody);
     }
 
     [Fact]
@@ -225,7 +246,7 @@ public class ConvertBodyPartialMemberNameTests
     }
 
     [Fact]
-    public void FindMember_OverloadedPartials_PickImplementationWithMatchingParameters()
+    public void FindMember_OverloadedPartials_PicksThePairThatHasAnImplementationInTheFile()
     {
         var root = CSharpSyntaxTree.ParseText("""
             namespace N;
@@ -240,10 +261,12 @@ public class ConvertBodyPartialMemberNameTests
             }
             """).GetRoot();
 
-        // F(int) has no implementation in this file, so it stays the first match.
+        // F(string) has both parts in this file, so the matching implementation
+        // wins even though F(int)'s bodiless definition comes first. F(int) has
+        // no implementation here, so it is not a matching pair.
         var picked = (MethodDeclarationSyntax)ConvertToBlockBodyOperation.FindMember(root, "F", line: null, column: null)!;
-        Assert.Equal("int", picked.ParameterList.Parameters[0].Type!.ToString());
-        Assert.Null(picked.ExpressionBody);
+        Assert.Equal("string", picked.ParameterList.Parameters[0].Type!.ToString());
+        Assert.NotNull(picked.ExpressionBody);
     }
 
     private static Task<RefactoringResult> RunToBlockBody(TempWorkspace workspace, string tool, string memberName) =>
