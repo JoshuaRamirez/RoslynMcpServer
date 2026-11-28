@@ -271,6 +271,18 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
             members = members.Where(m => GetMemberName(m) == memberName);
         }
 
+        // A by-name pick (no line) resolves a partial member to the part with a
+        // body, not the bodiless defining declaration above it (#3321). When a
+        // matching implementation exists, pick it rather than an earlier
+        // same-name overload left after the definition is dropped (#3321 review).
+        IReadOnlyList<MemberDeclarationSyntax>? preferredImpls = null;
+        if (!line.HasValue)
+        {
+            var snapshot = members.ToList();
+            preferredImpls = PartialMethodHelpers.MatchingPartialImplementations(snapshot);
+            members = PartialMethodHelpers.PreferPartialImplementations(snapshot);
+        }
+
         // Omitted column keeps today's start-line filter (first match on the
         // line). When column is set, do not require the declaration to start
         // on `line` — a split signature's identifier may live on a
@@ -282,7 +294,12 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         }
 
         if (!column.HasValue)
+        {
+            if (preferredImpls is { Count: 1 })
+                return (MemberDeclarationSyntax)preferredImpls[0];
+            PartialMethodHelpers.ThrowIfAmbiguousPartialImplementations(memberName, preferredImpls?.Count ?? 0);
             return members.FirstOrDefault();
+        }
 
         var atColumn = members
             .Where(m => MemberCoverage.MemberCoversColumn(m, line ?? SyntaxLineHelpers.StartLine(m), column.Value))
