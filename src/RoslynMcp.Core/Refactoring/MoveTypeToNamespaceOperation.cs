@@ -97,6 +97,11 @@ public sealed class MoveTypeToNamespaceOperation
             // Validate namespace change
             await ValidateNamespaceChangeAsync(@params, resolution, cancellationToken);
 
+            // Only the sourceFile declaration is rewritten, so a partial type with parts
+            // elsewhere would be split across two namespaces (Old.Ns.Part + New.Ns.Part:
+            // CS0104 in consumers). Refuse, as allFiles already skips these (#3550).
+            ThrowIfMultiDeclarationType(resolution);
+
             // Find all references
             var references = await _referenceTracker.FindAllReferencesAsync(
                 resolution.Symbol,
@@ -457,6 +462,32 @@ public sealed class MoveTypeToNamespaceOperation
     /// </summary>
     internal static bool IsMultiDeclarationType(INamedTypeSymbol symbol) =>
         symbol.DeclaringSyntaxReferences.Length > 1;
+
+    /// <summary>
+    /// Single-site guard: refuses a type with more than one declaration
+    /// (a <c>partial</c> split across files or namespace blocks), since only
+    /// the resolved declaration's namespace would change (#3550).
+    /// </summary>
+    internal static void ThrowIfMultiDeclarationType(SymbolResolutionResult resolution)
+    {
+        var named = resolution.Symbol;
+        if (!IsMultiDeclarationType(named))
+            return;
+
+        var files = named.DeclaringSyntaxReferences
+            .Select(r => r.SyntaxTree.FilePath)
+            .Where(f => !string.IsNullOrEmpty(f))
+            .Distinct(StringComparer.Ordinal)
+            .Select(Path.GetFileName)
+            .OrderBy(f => f, StringComparer.Ordinal)
+            .ToList();
+
+        throw new RefactoringException(
+            ErrorCodes.RoslynError,
+            $"Type '{named.Name}' is partial with {named.DeclaringSyntaxReferences.Length} declarations " +
+            $"in {string.Join(", ", files)}; moving one part would split it across two namespaces. " +
+            "Merge the parts into one declaration first, or change every part's namespace together.");
+    }
 
     private async Task<SymbolResolutionResult?> TryResolveTopLevelTypeAsync(
         string sourceFile,

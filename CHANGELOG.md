@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- `move_type_to_namespace` single-site now refuses a `partial` type that has more than one declaration (#3550). Only the `sourceFile` part was moved, so `Old.Ns.Part` and `New.Ns.Part` both existed and a consumer that imported both namespaces failed with CS0104, while the tool reported success. Apply and preview now refuse with 4003 RoslynError naming the files that declare the type, and nothing is written; `allFiles` already skipped these types. A `partial` type with a single declaration still moves.
+
 ## [0.17.0] - 2026-11-27
 
 ### Added
