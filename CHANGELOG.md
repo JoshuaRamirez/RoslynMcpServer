@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- `add_parameter` refuses `parameterName: "_"`, and `change_signature` refuses an added parameter (or a rename) whose `name` is `"_"`, with 1003 InvalidSymbolName (#3298), in single-site and `allFiles` mode. The name is a legal identifier, but a parameter named `_` captures every discard in the method body: with `string _`, `_ = Log(7);` and `int.TryParse(s, out _)` stopped compiling (CS0029 / CS1503), and with `int _` they built cleanly while silently writing to the new parameter, all while the tool reported success. Keeping an existing parameter that is already named `_` is still allowed, as are other names that start with an underscore, such as `__` or `_tag`.
 - `move_type_to_namespace` single-site now refuses a `partial` type that has more than one declaration (#3550). Only the `sourceFile` part was moved, so `Old.Ns.Part` and `New.Ns.Part` both existed and a consumer that imported both namespaces failed with CS0104, while the tool reported success. Apply and preview now refuse with 4003 RoslynError naming the files that declare the type, and nothing is written; `allFiles` already skipped these types. A `partial` type with a single declaration still moves.
 
 ## [0.17.0] - 2026-11-27
