@@ -98,7 +98,8 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
 
         // "_" is a legal identifier, but a local named "_" captures every later discard in
         // its scope (_ = Log(v) / out _ silently write to the new local) (#3297).
-        if (@params.VariableName is "_" or "@_")
+        // "@_" is already rejected above as an invalid identifier.
+        if (@params.VariableName is "_")
         {
             throw new RefactoringException(
                 ErrorCodes.InvalidSymbolName,

@@ -31,8 +31,9 @@ public class DiscardNewNameValidationTests
                 }));
 
             Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
-            if (propertyName == "_")
-                Assert.Contains("discard", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(
+                "'_' is not a valid property name: existing discards (_ = ... / out _) would bind to the new property.",
+                ex.Message);
         });
     }
 
@@ -69,8 +70,11 @@ public class DiscardNewNameValidationTests
                 }));
 
             Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
-            if (fieldName == "_")
-                Assert.Contains("discard", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(
+                fieldName == "_"
+                    ? "'_' is not a valid field name: existing discards (_ = ... / out _) would bind to the new field."
+                    : "Invalid field name: @_",
+                ex.Message);
         });
     }
 
@@ -110,8 +114,11 @@ public class DiscardNewNameValidationTests
                 }));
 
             Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
-            if (variableName == "_")
-                Assert.Contains("discard", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(
+                variableName == "_"
+                    ? "'_' is not a valid variable name: existing discards (_ = ... / out _) would bind to the new local."
+                    : "Invalid variable name: @_",
+                ex.Message);
         });
     }
 
